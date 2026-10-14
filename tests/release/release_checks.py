@@ -62,6 +62,11 @@ def project_version() -> str:
     return re.search(r"project\(joan_native VERSION (\S+)", (ROOT / "CMakeLists.txt").read_text()).group(1)
 
 
+def dist_version(dist: Path) -> str:
+    """Full product version of the built dist (may carry a pre-release suffix, e.g. 0.1.0-alpha.2)."""
+    return json.loads((dist / "manifest.json").read_text())["version"]
+
+
 def epoch() -> str:
     if os.environ.get("SOURCE_DATE_EPOCH"):
         return os.environ["SOURCE_DATE_EPOCH"]
@@ -270,7 +275,7 @@ def appimage(args) -> None:
     out = Path(args.out)
     dist_dir = require_dist(out)
     image = appimage_of(dist_dir)
-    version = project_version()
+    version = dist_version(dist_dir)
     with tempfile.TemporaryDirectory(prefix="joa-appimage-") as scratch:
         work = Path(scratch)
         root = extract_appimage(image, work)
@@ -375,7 +380,7 @@ def product_update(args) -> None:
     testhttp = Path(args.testhttp)
     key = dev_key(out)
     public = run(sys.executable, RELEASE / "sign_manifest.py", "--public-key", "--key", key).stdout.strip()
-    version = project_version()
+    version = dist_version(dist_dir)
     with tempfile.TemporaryDirectory(prefix="joa-product-update-") as scratch:
         work = Path(scratch)
         server = work / "server"
@@ -479,7 +484,7 @@ def install_flow(args) -> None:
         print(f"SKIP: no original game at {game}")
         sys.exit(SKIP)
     image = appimage_of(dist_dir)
-    version = project_version()
+    version = dist_version(dist_dir)
     # Disk-backed scratch (~1 GiB import), never inside the game dir (joa-install refuses that).
     scratch = Path(tempfile.mkdtemp(prefix="joa-install-flow-", dir="/var/tmp" if Path("/var/tmp").is_dir() else None))
     home = scratch / "home"
