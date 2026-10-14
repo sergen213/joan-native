@@ -2,10 +2,10 @@
 // music director rules, and an offline render of mixed game audio to $JOA_TEST_OUT/audio_mix.wav.
 #include "check.hpp"
 #include "engine/audio_system.hpp"
+#include "wav_write.hpp"
 
 #include <algorithm>
 #include <cstdlib>
-#include <fstream>
 
 using namespace joa::engine;
 
@@ -22,16 +22,6 @@ glm::vec2 render_one(Mixer& m) {  // mean |L|, |R| of 1024 frames
     glm::vec2 s(0);
     for (std::size_t i = 0; i < 1024; ++i) s += glm::vec2(std::fabs(out[i * 2]), std::fabs(out[i * 2 + 1]));
     return s / 1024.0f;
-}
-
-void write_wav(const std::string& path, const std::vector<float>& stereo) {
-    std::ofstream f(path, std::ios::binary);
-    const auto u32 = [&](std::uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
-    const auto u16 = [&](std::uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
-    const std::uint32_t bytes = std::uint32_t(stereo.size() * 2);
-    f.write("RIFF", 4); u32(36 + bytes); f.write("WAVEfmt ", 8); u32(16); u16(1); u16(2); u32(kOutputRate);
-    u32(kOutputRate * 4); u16(4); u16(16); f.write("data", 4); u32(bytes);
-    for (float s : stereo) u16(std::uint16_t(std::int16_t(std::lround(std::clamp(s, -1.0f, 1.0f) * 32767.0f))));
 }
 
 }  // namespace
@@ -97,6 +87,25 @@ int main() {
     PlayParams voice;
     voice.bus = Bus::Voice;
     CHECK(m.play(tone(22050, 1, 1.0f), voice) != 0);
+    m.stop_all();
+
+    // SE_play_trigger: when the 12 sources are busy, steal the one farthest from the listener (FUN_00493340).
+    m.set_listener({});
+    VoiceId first_far = 0, last_far = 0;
+    for (int i = 0; i < Mixer::kMaxSfxVoices; ++i) {
+        PlayParams sp;
+        sp.positional = true;
+        sp.position = {0, 0, -100.0f * float(1 + i % 6)};  // two at each distance, 100..600
+        const VoiceId id = m.play(tone(22050, 1, 1.0f), sp);
+        if (i == 5) first_far = id;
+        if (i == 11) last_far = id;
+    }
+    PlayParams steal;
+    steal.steal = true;
+    const VoiceId stolen_for = m.play(tone(22050, 1, 1.0f), steal);
+    CHECK(stolen_for != 0 && m.playing(stolen_for));
+    CHECK(m.playing(first_far) && !m.playing(last_far));  // the last of the farthest goes
+    CHECK(m.play(tone(22050, 1, 1.0f), {}) == 0);  // plain FUN_004950a0 path still drops
     m.stop_all();
 
     // Linear fade: half-way through a 0.1 s fade the stream is at half gain, then it stops.

@@ -56,9 +56,17 @@ void StreamQueue::clear() {
 VoiceId Mixer::play(std::shared_ptr<const Pcm> pcm, const PlayParams& p) {
     if (!pcm || !pcm->frames() || pcm->rate <= 0) return 0;
     std::lock_guard l(m_);
-    if (p.bus == Bus::Sfx &&
-        std::count_if(voices_.begin(), voices_.end(), [](const Voice& v) { return v.p.bus == Bus::Sfx && !v.done; }) >= kMaxSfxVoices)
-        return 0;  // all sources busy: the original drops the sound
+    const auto busy = [](const Voice& v) { return v.p.bus == Bus::Sfx && !v.done; };
+    if (p.bus == Bus::Sfx && std::count_if(voices_.begin(), voices_.end(), busy) >= kMaxSfxVoices) {
+        if (!p.steal) return 0;  // all sources busy: FUN_004950a0 drops the sound
+        // FUN_00493340: the last of the farthest sources (listener-centred voices count as distance 0).
+        auto far = voices_.end();
+        float best = -1.0f;
+        for (auto it = voices_.begin(); it != voices_.end(); ++it)
+            if (busy(*it))
+                if (const float d = it->p.positional ? glm::length(it->p.position - listener_.position) : 0.0f; d >= best) far = it, best = d;
+        voices_.erase(far);
+    }
     Voice v;
     v.id = next_++;
     v.pcm = std::move(pcm);

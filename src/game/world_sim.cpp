@@ -483,18 +483,25 @@ bool World::set_action(Unit& u, int a, char letter) {
     return true;
 }
 
+// FUN_0050db80 turns SOUND/SOUND2 into delayed sound triggers (Trigger_create 0x800, kind 4) that fire at
+// SOUND_TIME whatever the unit does next: only Trigger_process's sender-deleted test removes them. AM2 clip
+// events (kind 1) belong to the clip and end with the action. A shot (SHTOUT / SHTOUTH) sounds SOUND only for
+// the bow classes (SPECIAL 4/5/6/9/10/12) or a unit holding a bow (item type 0xb), SOUND2 only with a crossbow
+// (0xc): the records carry both (Joan: BOW / CROSSBOW).
 void World::schedule_cues(Unit& u, const MoveRecord& r) {
     std::erase_if(u.cues, [](const PendingCue& c) { return c.kind == 1; });
-    u.cues.clear();
-    if (!r.sound.empty()) u.cues.push_back({now_ + std::max(0, r.sound_time), u.action, 0, r.sound});
-    if (!r.sound2.empty()) u.cues.push_back({now_ + std::max(0, r.sound_time2), u.action, 0, r.sound2});
+    const bool shot = u.action == SHTOUT || u.action == SHTOUTH;
+    const int sp = gd_.units[u.cls].special, held = u.inv.ranged.item ? gd_.items[u.inv.ranged.item].type : 0;
+    const bool bow = !shot || sp == 4 || sp == 5 || sp == 6 || sp == 9 || sp == 10 || sp == 12 || held == 0xb;
+    if (!r.sound.empty() && bow) u.cues.push_back({now_ + std::max(0, r.sound_time), u.action, 0, r.sound});
+    if (!r.sound2.empty() && (!shot || held == 0xc)) u.cues.push_back({now_ + std::max(0, r.sound_time2), u.action, 0, r.sound2});
     if (const ClipInfo* c = gd_.clip(r))
         for (const auto& e : c->events) u.cues.push_back({now_ + int(e.time), u.action, 1, e.name});
 }
 void World::emit_cues(Unit& u) {
     for (size_t i = 0; i < u.cues.size();) {
         PendingCue& c = u.cues[i];
-        if (c.action != u.action) { u.cues.erase(u.cues.begin() + long(i)); continue; }
+        if (c.kind == 1 && c.action != u.action) { u.cues.erase(u.cues.begin() + long(i)); continue; }
         if (now_ >= c.at_ms) {
             emit(c.kind ? Ev::AnimEvent : Ev::Sound, u.id, 0, 0, c.name);
             u.cues.erase(u.cues.begin() + long(i));

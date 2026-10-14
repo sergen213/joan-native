@@ -79,7 +79,15 @@ void GameAudio::on_tick(const game::Mission& cm, const std::vector<game::GameEve
     auto& m = const_cast<game::Mission&>(cm);  // read-only, see mood()
     in_menu_ = false;
     const int player = m.world().player_id();
-    for (const game::GameEvent& e : we) world_sound(m.world(), e, cur, player);  // before projectiles(): hit positions
+    const game::World& w = m.world();
+    for (const game::GameEvent& e : we) world_sound(w, e, cur, player);  // before projectiles(): hit positions
+    // Ctrl_run_walk / Ctrl_strafe re-enter Unit_set_action / Unit_set_movement_anim every frame while the player
+    // moves, so FUN_0050db80 repeats the SOUND_TIME -1 step sound whenever its SOUNDTIME has passed.
+    if (const game::Unit* u = w.unit(player); u && !u->deleted)
+        if (const game::MoveRecord* r = w.move(*u); r && unit_pos(cur, player)) {
+            if (r->sound_time == -1 && r->sound.starts_with("TS_")) footstep(w, player, r->sound, *unit_pos(cur, player), player);
+            if (r->sound_time2 == -1 && r->sound2.starts_with("TS_")) footstep(w, player, r->sound2, *unit_pos(cur, player), player);
+        }
     for (const game::MissionEvent& e : me) {
         // b == 0: UI / script sounds at the listener (FUN_004ceef0). Otherwise set_dialog_voice (voices()),
         // keg_explode (Keg_on_event plays nothing) or a map trigger the player entered (ambient()).
@@ -122,7 +130,7 @@ void GameAudio::ambient(const game::Mission& cm, const game::Snapshot& cur, int 
         const bool in = p && (t.radius == 0 || dx * dx + dy * dy + dz * dz <= t.radius * t.radius);
         const auto it = ambient_.find(int(i));
         if (in && it == ambient_.end()) {
-            ambient_[int(i)] = play_at(t.code, t.pos, 0);
+            ambient_[int(i)] = trigger(t.code, t.pos, 0, 0.0f);
         } else if (!in && it != ambient_.end()) {
             audio_.mixer().stop(it->second);
             ambient_.erase(it);
@@ -132,6 +140,16 @@ void GameAudio::ambient(const game::Mission& cm, const game::Snapshot& cur, int 
 
 VoiceId GameAudio::play_at(std::string_view code, const game::Vec3& p, int seed) {
     const VoiceId v = audio_.play_sound(code, to_engine(p.x, p.y, p.z), seed);
+    sounds_3d += v != 0;
+    return v;
+}
+
+// SE_play_trigger 0x4c0680 (Trigger_create 0x800 kind 4: animation sounds, footsteps, map emitters): nothing when
+// the listener is farther than the trigger radius (0 = any distance); all 12 sources busy -> the farthest is stolen.
+VoiceId GameAudio::trigger(std::string_view code, const game::Vec3& p, int seed, float radius) {
+    const glm::vec3 at = to_engine(p.x, p.y, p.z);
+    if (radius > 0.0f && listener_ && glm::length(at - *listener_) > radius) return 0;
+    const VoiceId v = audio_.play_sound(code, at, seed, true);
     sounds_3d += v != 0;
     return v;
 }
@@ -147,11 +165,11 @@ void GameAudio::world_sound(const game::World& w, const game::GameEvent& e, cons
             const std::string code = e.name == "EXPLOSIVEHIT" ? e.name + char('1' + rng_() % 3) : e.name;
             if (p) play_at(code, *p, 0);
         } else if (at && e.name.starts_with("TS_")) {  // AnimGrp_load: "TS_" sounds are surface footsteps (id -99)
-            footstep(w, e, *at, player);
-        } else if (at) {  // move-record SOUND/SOUND2 cue (FUN_0050db80): MAIN_CHAR only for the player, variant by recno
-            const int i = audio_.sounds().find(e.name);
+            footstep(w, e.unit, e.name, *at, player);
+        } else if (at) {  // move-record SOUND/SOUND2 cue (FUN_0050db80): MAIN_CHAR only for the player, variant by recno,
+            const int i = audio_.sounds().find(e.name);  // trigger radius = MAX_DIST of the code's record
             if (i >= 0 && (!audio_.sounds().defs()[std::size_t(i)].main_char || e.unit == player))
-                play_at(e.name, *at, e.unit);
+                trigger(e.name, *at, e.unit, audio_.sounds().defs()[std::size_t(i)].attenuation.max);
         }
         break;
     case Ev::Blocked:  // Melee_tryHit "GUARD" / Ranged_tryHit "GUARDARR" at the defender
@@ -168,22 +186,22 @@ void GameAudio::world_sound(const game::World& w, const game::GameEvent& e, cons
 }
 
 // FUN_0050db80 footstep branch: "<SOUND>_<surface>", not in cut scenes; SOUND_TIME -1 marks player-only steps
-// (not in RTS); one step per unit until the composite sound's SOUNDTIME has passed.
-void GameAudio::footstep(const game::World& w, const game::GameEvent& e, const game::Vec3& at, int player) {
-    const game::Unit* u = w.unit(e.unit);
+// (not in RTS); one step per unit until the composite sound's SOUNDTIME has passed. Trigger radius 0.
+void GameAudio::footstep(const game::World& w, int unit, const std::string& name, const game::Vec3& at, int player) {
+    const game::Unit* u = w.unit(unit);
     const game::MoveRecord* r = u ? w.move(*u) : nullptr;
     if (!r || w.cut_scene) return;
-    const int timing = r->sound2 == e.name ? r->sound_time2 : r->sound_time;
-    if (timing == -1 && (e.unit != player || w.game_mode == 4)) return;
+    const int timing = r->sound2 == name ? r->sound_time2 : r->sound_time;
+    if (timing == -1 && (unit != player || w.game_mode == 4)) return;
     // ponytail: surface is always GROUND; GRASS/SNOW (terrain texture name), WET (rain), WATER (below the
     // water surface) need terrain material and weather queries the game layer does not have yet.
-    const std::string code = e.name + "_GROUND";
+    const std::string code = name + "_GROUND";
     const int i = audio_.sounds().find(code);
     if (i < 0) return;
-    int& last = last_step_[e.unit];
+    int& last = last_step_[unit];
     if (last && w.now() - last <= audio_.sounds().defs()[std::size_t(i)].sound_time) return;
     last = w.now();
-    play_at(code, at, e.unit);
+    trigger(code, at, unit, 0.0f);
 }
 
 void GameAudio::voices(const game::Mission& cm) {
@@ -270,7 +288,11 @@ void GameAudio::environment(const game::Mission& cm, bool battle, bool city) {
 
 void GameAudio::frame(const CameraPose& pose, [[maybe_unused]] float dt) {
     Listener l;
-    l.position = pose.eye;
+    // FUN_005634e0 copies the view's CameraState, zeroes its distance (+0x1c) and hands it to FUN_005a0110
+    // (listener = pivot - forward * distance): the listener stands at the camera pivot (the hero + 50 in follow
+    // mode), turned like the camera, not at the eye. pose.target is that pivot (GameCamera to_pose).
+    l.position = pose.target;
+    listener_ = l.position;
     if (const glm::vec3 f = pose.target - pose.eye; glm::dot(f, f) > 0.0f) l.forward = glm::normalize(f);
     audio_.set_listener(l);
     if (in_menu_) music_.update(audio_, MusicMood::Menu, 0, 0);

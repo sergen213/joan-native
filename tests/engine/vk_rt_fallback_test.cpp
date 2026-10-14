@@ -70,6 +70,10 @@ int main() {
         m.blend = BlendMode::AlphaBlend;
         CHECK(rt_instance_class(m, MaterialClass::Building, false).mask == 0);  // water, glass: not traced
         CHECK(rt_instance_class(m, MaterialClass::Vegetation, false).cutoff == 0.5f);  // distance-faded grass
+        m.depth_write = true;  // blend state 1 (Joan's head and hair): alpha tested + z-written, so traced
+        const RtInstanceClass head = rt_instance_class(m, MaterialClass::Character, false);
+        CHECK(head.mask == kRtMaskCharacter && head.alpha_test && head.cutoff == 0.3f);
+        m.depth_write = false;
         m.blend = BlendMode::Opaque;
         m.unlit = true;
         CHECK(rt_instance_class(m, MaterialClass::Building, false).mask == 0);

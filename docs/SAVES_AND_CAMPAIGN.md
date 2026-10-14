@@ -205,13 +205,13 @@ navmesh path, A/B combos, Q guard / down attack, R at the interact indicator, F3
 character-screen attribute allocation. Strategy (from the mission scripts and the Steam walkthrough):
 
 - **Points:** every attribute point into HIT_POINT (+4 max HP each).
-- **Melee timing:** an English swing lands `anim_start + script StartTime` (~350 ms) after it starts;
-  the bot guards only swings landing within 400 ms, aims the guard at the middle of the incoming
-  swings (guarding blocks ±BLOCKANG and the controller does not turn while guarding, so it turns one
-  frame first), starts its own A when nothing is about to land, queues A A A B late in each
-  follow-up window only while no second enemy is ready, steps back when two are in reach, and down-
-  attacks (Q) a knocked-down foe in reach. Joan's A lands at 267 ms and every hit flinches the target,
-  so a single foe is stun-locked; the danger is the second attacker.
+- **Melee:** an English swing lands `anim_start + script StartTime` (~350 ms) after it starts. Above 45 %
+  HP the bot attacks instead of guarding (every hit flinches its targets and A A A B cleaves; in a ring of
+  attackers a guard only blocks the front — mission 2 kills went from 3–8 to 15–33 per run); below it, it
+  guards swings landing within 400 ms (aimed at their middle, the controller does not turn while
+  guarding), steps back when two are in reach. A knocked-down foe in reach is down-attacked (Q).
+  Surrounded by 3+ within 110 it uses the energy attack (C) when learned (ENGATK skill 0xd; Joan's
+  record is not combo-available, so not before ENERGY_ATTACK_UP) and affordable, with F4 (apples) for EP.
 - **Food:** F3 below 50 % HP; crates (`BOX` map items with content) are broken and floor / dropped
   items walked over within 1200 when no enemy stands within 500 of them (the mission-1 tutorial).
 - **Rest:** below 70 % HP, enemies that have not noticed the player are left alone (backed away from);
@@ -224,48 +224,81 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
 - **Shopping:** while the buy screen is open (`start_buy_interface`), once per opening, the bot makes
   the click handler's purchase (FUN_006c5a00: `World::give_item` of the item's Quantity at the stock
   level, gold −= Price) from `shop_stock()` (mission_ui.hpp, the stock list the engine buy screen also
-  reads): a heavier armour than worn (then worn, `World::use_item`), explosive arrows up to 20, plain
-  arrows with the rest.
-- **Bow:** a foe 150–800 away (arrow damage is full up to FALL_S 800) with nobody within 100 (200 if
-  after the player): Z, camera yaw/pitch at the target's middle, A to draw, A in SHTIDLE to release;
-  explosive ammo (character-screen drag, `World::equip`) when ≥ 2 enemies stand within 150 of the
-  target. Z again leaves range mode when the bot does something else. Joan's arrow hits 11–29 against
-  the 4 of her A swing at level 3 (DAMAGE column 2 of JOAN.csv, DEF_RAT 0).
-- **Plan layer:** `Autopilot::protectee()` — mission 2 stages 3–5: stay with the Bastard (ORLEAN)
-  and fight only enemies within 900 of him.
+  reads): a heavier armour than worn (then worn, `World::use_item`), explosive arrows up to 20 (packs of 5
+  for 500: 15 with mission 2's 1980 gold), plain arrows (10 for 100) with the rest.
+- **Bow:** a foe 150–800 away (arrow damage is full up to FALL_S 800; also up/down a wall, |dz| < 700)
+  with nobody within 100 (200 if after the player): Z, camera yaw/pitch at the target's middle, A to
+  draw, A in SHTIDLE to release. **Explosive volley** first: the densest group of 2+ (within the blast's
+  150) 60–800 away, also the crowd around the player (the ground blast skips the shooter and friends,
+  knocks every enemy in it down). A shot is only released on a **clear shot** (`clear_shot`): the target
+  is on its feet (an arrow aimed at a standing body flies over a knocked-down one and explodes far behind:
+  before this check mission 2 landed 2 of 15 explosive arrows, after it 8–9 of 10) and the release lock
+  (`range_fire`: nearest hostile within d/100 + AIM_R of the aim ray) picks the target itself. With
+  explosive arrows left and nobody on the player, the bot walks to the densest group of 5+ within 3000
+  (squads gathered at a rally point). Explosive ammo is swapped in by the character-screen drag
+  (`World::equip`). Z again leaves range mode. A foe on another level (a wall top) is shot, never circled
+  underneath (mission 2 timed out with Joan walking under a wall-top English for 26000 ticks).
+- **Targets:** the current foe while within 700, else the nearest within 3000 (450 while a marker pulls),
+  with whoever targets the player ×0.5, archers within 350 ×0.3 and **enemies after a citizen ×0.4**.
+  With nobody in reach the bot hunts the enemy with the smallest distance to the player + to `home()`
+  (centroid of the units not hostile to the player: the town under attack before the next towns'
+  garrisons), enemies on another level +5000.
+- **Interact:** the indicator is computed before the physics step moves the player, so the bot stops and
+  presses R only once it stayed lit 3 ticks (R while walking landed out of reach: mission 2 never got the
+  shop talk). Gates are never toggled in passing.
+- **Gates:** a way point on an open interactable gate (mission 2 stage 3: "Someone must approach and close
+  the gate") is closed (walk to 100 inside it, towards `home()`, R) 30 s after it appears: after John's
+  10 s mark (closing then sends him and team 11 off) and long before the 180 s reinforcements (16 more
+  units while the gate is open). `travel()` (way points, territories, hunting) opens a closed gate whose
+  shut passage ends the navmesh path short of the goal (or on another level); a gate the bot opened
+  itself is not closed again while an enemy lives within 4000 outside it.
 - **Navigation:** stuck twice on the same line (house corners the path mesh cuts) → run off sideways,
   alternating sides, further each time, then replan.
 - **Loss:** a finish 2 or the game-over box (`call_gameover_msg`, e.g. a hero that must live died or too
   many citizens were killed; it freezes every unit even when no LOSE record ends the mission).
 
-Hero switching is `Mission::switch_hero` (moved from the engine's hero_switch; the key path, RTS
-commander pick and rts_deinit call it) but the bot does not switch yet: with the bot idle as Jean, the
-AI Joan (DEFEND_PLACE at the gate) died within ~110 s of the mission-2 attack. Not done yet: siege use,
-RTS orders / troop hold-follow, mounting, bribes, choice dialogs (headless answers choice 1). The
-interact prompt (R) also recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits taken /
-dealt, deaths and spawns;
-`JOA_BOT_DBG=T` prints 200 ticks of per-frame inputs and nearby enemies from tick T.
+Hero switching is `Mission::switch_hero` (the key path, RTS commander pick and rts_deinit call it); hold is
+`AiSystem::toggle_hold` (Shift+N). Tried on mission 2: the bot as Jean with Joan on the AI (the script's
+DEFEND_PLACE at the gate) lost Joan in 5/6 seeds; Joan anchored at the Bastard (enemies > 1500 from him
+ignored) lost on citizens in 10/12 seeds; neither is used. Jean's RAPIDFBOW (damage 16 vs Joan's BOW 8)
+with his 90 arrows is the untried switching use (the bot would play Jean, Joan held). Not done yet:
+spending skill points (Learn / ADD: combo levels ×(lvl+10)/11 damage, RUSH from level 4), selling (the buy
+screen sells at Price × SellingRatio), hero-to-hero item transfer (not modelled by the port), siege use,
+RTS orders, mounting, bribes, choice dialogs (headless answers choice 1). The interact prompt (R) also
+recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits taken / dealt, hits on friendly
+heroes (attacker team), deaths (killer team), spawns, interact prompts and the player's shots / projectile
+hits; `JOA_BOT_DBG=T` prints 200 ticks of per-frame inputs and nearby enemies from tick T.
 
 `game.campaign_legit` runs the chain from a new game (Normal, 40000 ticks per attempt, 2 retries) twice,
 checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (1).
-`joa-campaign --autopilot --difficulty D` measures other difficulties (seed 1, 60000 ticks, 2 retries):
+`joa-campaign --autopilot --difficulty D` measures other difficulties (seed 1, 40000 ticks, 2 retries):
 
 | mission | difficulty | result | ticks | kills | HP dealt / taken | cause |
 |---|---|---|---|---|---|---|
-| 1 S1L1 | 0 Easy | WON | 40007 | 43 | 2621 / 197 | — |
-| 1 S1L1 | 1 Normal | WON | 31546 | 23 | 2041 / 194 | — |
-| 1 S1L1 | 2 Hard | LOST ×3 | 21532 | 19 | 1248 / 366 | killed (groups, ×1.5 damage) |
-| 1 S1L1 | 3 Very hard | LOST ×3 | 8332 | 10 | 740 / 232 | killed in the first camp fights |
-| 2 S3L1 | 1 Normal | LOST (checkpoint) | 11581 | 7 | 1314 / 63 | > 17 citizens killed ~165 s after the attack starts |
+| 1 S1L1 | 0 Easy | WON | 18024 | 38 | 2803 / 95 | — |
+| 1 S1L1 | 1 Normal | WON | 26530 | 38 | 2665 / 178 | — |
+| 2 S3L1 | 0 Easy | not won | 40000 | — | — | see the seed sweep below |
+| 2 S3L1 | 1 Normal | not won | 40000 | — | — | see the seed sweep below |
+
+Mission 2 from the chain checkpoints (the bot's own mission-1 result), RETRY seeds 1–12, 40000 ticks each
+(`work/cb5` probe): **Easy** 6/12 survive the first wave into stage 4 (6 lost on citizens); **Normal** 3/12 reach
+stage 4, 8 lose the Bastard (swarmed at the town hall ~t9000–11000 by team 32's ten polemen and team 31, while
+Joan fights at the gate), 1 on citizens. Stage 4 runs then time out: Joan hunts the de Bourges / de Blois
+garrisons (opening the gate herself) but no run reached stage 5 in the budget. Before this round's fixes
+(clear shots, wall-top foes, gate travel) Normal lost 11/12 in stage 3.
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
-80 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
-John 10) spawn outside the west gate and flood the city along four ATTACK_PLACE routes. Stage 4 (and
-the citizens' objective 1) needs every ENGLISH unit inside First_Wave_Place — a box that also covers
-the spawn area outside the gate — dead, John gone (gate closed or John beaten) and the gate closed;
-citizens die meanwhile at ~1 per 15 s wherever the troops walk. Joan alone (melee 4 per A hit, arrows
-~15) kills ~7; the walkthrough wins with Jean's explosive arrows and Joan tanking at the gate. A bot
-RETRY restarts with seed + attempt (the original reseeds from `time(NULL)`).
+0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
+John 10) spawn outside the gate and flood the city along four ATTACK_PLACE routes. They are frozen with
+everyone else by the cut scene and then cross the ~2000 to the gate in ~100 ticks: units more than 4000
+from the player run ×1.8 (Unit_move 0x4f0b50 LOD factor, CONFIRMED) and Joan is ~5000 away at the shop,
+so ~37 are inside before anyone can reach the gate. Stage 4 needs every ENGLISH unit inside
+First_Wave_Place — a box that also covers the spawn area outside the gate — dead, John gone (gate closed
+after 10 s or John beaten) and the gate closed; objective 1 then finishes once no enemy is in the city.
+Citizens (39) die at up to one per 3 s while ~30 enemies roam; the Bastard (level 3, 87 HP, two guards)
+falls ~90 s after the attack when Joan is away from the town hall. Not done: stage 4's Orleans talk / the
+two towns (the gate must be reopened), stage 5's cannon assault. A bot RETRY restarts with seed + attempt
+(the original reseeds from `time(NULL)`).
 
 Port bug fixed with the bot: F3 / F4 (`World::use_recovery_item`, 0x43b490 / 0x43b990) now go
 through the potion effect `World::recover` (0x50b4f0 / 0x50ba00 / 0x50bcd0, called with force 0):

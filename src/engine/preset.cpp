@@ -118,17 +118,20 @@ GraphicsSettings preset_settings(GraphicsPreset preset) {
     s.shadow_softness = 1.5f;
     s.shadow_distance = 2500.0f;
     s.ssao = true;
-    s.aa = AntiAliasing::Taa;
+    // No TAA: it has no per-object motion vectors (CPU skinning), so the always-animating characters, grass and
+    // foliage smear; the native image keeps Original's sharpness. Ultra keeps TAA for its RT noise.
+    s.aa = AntiAliasing::None;
     s.volumetric_fog = true;
     s.fog_density = 1.0f;
     s.particle_lighting = true;
-    s.sharpness = 0.2f;  // RCAS after TAA
+    s.sharpness = 0.0f;  // RCAS: for TAA / FSR1 upscaling
     if (preset == GraphicsPreset::Ultra) {
         s.shadow_map_size = 4096;
         s.shadow_softness = 2.5f;
         s.shadow_distance = 4000.0f;
         s.ssao_radius = 64.0f;
-        s.sharpness = 0.3f;
+        s.aa = AntiAliasing::Taa;
+        s.sharpness = 0.3f;  // RCAS after TAA
         s.rt.reflections = s.rt.shadows = s.rt.gi = true;  // used only on ray-query hardware (Vulkan)
     }
     return s;

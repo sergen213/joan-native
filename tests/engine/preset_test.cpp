@@ -30,8 +30,11 @@ int main() {
     CHECK(GraphicsSettings{}.remastered() == false);
     const GraphicsSettings enh = preset_settings(GraphicsPreset::Enhanced), ultra = preset_settings(GraphicsPreset::Ultra);
     CHECK(enh.remastered() && ultra.remastered());
-    CHECK(enh.pbr && enh.ibl && enh.hdr && enh.ssao && enh.volumetric_fog && enh.aa == AntiAliasing::Taa && enh.shadow_map_size == 2048);
+    CHECK(enh.pbr && enh.ibl && enh.hdr && enh.ssao && enh.volumetric_fog && enh.shadow_map_size == 2048);
+    // Enhanced renders native and unfiltered (TAA smeared the animated scene, gl/vk_remaster sharpness check).
+    CHECK(enh.aa == AntiAliasing::None && enh.upscale == Upscaler::None && enh.render_scale == 1.0f && enh.sharpness == 0.0f);
     CHECK(ultra.shadow_map_size == 4096 && ultra.shadow_softness > enh.shadow_softness && ultra.shadow_distance > enh.shadow_distance);
+    CHECK(ultra.aa == AntiAliasing::Taa && ultra.sharpness > 0.0f);
 
     // settings.ini: preset fixes the features unless custom.
     {
@@ -101,6 +104,7 @@ int main() {
         g.render_scale = 0.5f;
         CHECK(scene_size(g, {3440, 1440}) == glm::ivec2(1720, 720));
         g.render_scale = 1.0f;
+        g.aa = AntiAliasing::Taa;  // Enhanced is native; TAA is opt-in (Ultra)
         FrameData f;
         f.view.view = glm::lookAt(glm::vec3(0, 100, 0), glm::vec3(0, 90, -100), glm::vec3(0, 1, 0));
         f.view.projection = glm::perspective(glm::radians(45.0f), 16.0f / 9.0f, 4.0f, 4096.0f);
@@ -111,6 +115,10 @@ int main() {
         CHECK(b.jitter.z == 1.0f);
         CHECK(std::fabs(b.jitter.x) <= 1.0f / 1920.0f && std::fabs(b.jitter.y) <= 1.0f / 1080.0f);
         CHECK(a.jitter.x != b.jitter.x);
+        CHECK(b.ssao.z == -1.0f && a.fog_range.w != b.fog_range.w);  // TAA: finer mips, animated noise
+        g.aa = AntiAliasing::None;
+        const RemasterFrame c = build_remaster_frame(g, f, {1920, 1080}, {1920, 1080}, 7, h);
+        CHECK(c.jitter == glm::vec4(0.0f) && c.ssao.z == 0.0f && c.fog_range.w == 0.0f);  // no TAA: no jitter, static noise
         CHECK(a.shadow_matrix == b.shadow_matrix);  // same camera: same snapped frustum
         // Moving the camera by less than a shadow texel keeps the texel grid (no shimmer).
         const glm::mat4 s0 = fit_sun_shadow(f.view, {-0.4f, -1.0f, -0.3f}, 2500.0f, 2048);

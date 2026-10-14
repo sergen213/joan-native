@@ -70,6 +70,12 @@ int main() {
         save(vk, "vk_remaster_fsr1_vk.png");
         parity("custom fsr1 67%", gl, vk, 40.0, 1.0);
     }
+    // Blend state 1 (hair): near layer not overdrawn by later far layers, sub-reference alpha discarded.
+    for (GraphicsPreset p : {GraphicsPreset::Original, GraphicsPreset::Enhanced, GraphicsPreset::Ultra}) {
+        const LayerShot s = render_layers(RendererKind::Vulkan, p);
+        save(s.img, p == GraphicsPreset::Original ? "vk_remaster_layers_original.png" : p == GraphicsPreset::Enhanced ? "vk_remaster_layers_enhanced.png" : "vk_remaster_layers_ultra.png");
+        check_layers(s, preset_name(p));
+    }
     if (game_dir()) {
         const auto gl = s1l1(RendererKind::OpenGL, "enhanced", "vk_remaster_s1l1_gl.png");
         const auto vk = s1l1(RendererKind::Vulkan, "enhanced", "vk_remaster_s1l1_vk.png");
@@ -77,6 +83,11 @@ int main() {
         std::fprintf(stderr, "S1L1 enhanced GL vs Vulkan: mean abs diff %.3f, PSNR %.2f dB, pixels off by >32: %zu\n", d.mad, d.psnr, d.outliers);
         CHECK(d.psnr >= 40.0);
         CHECK(d.mad <= 1.0);
+        // Enhanced as sharp as Original (Laplacian variance: 1.00x GL, 1.01x Vulkan; the old TAA default 0.09x).
+        const auto orig = s1l1(RendererKind::Vulkan, "original", "vk_remaster_s1l1_original_vk.png");
+        const double s0 = laplacian_variance(orig, 640), s1 = laplacian_variance(vk, 640);
+        std::fprintf(stderr, "S1L1 Vulkan sharpness (Laplacian variance) original %.1f enhanced %.1f\n", s0, s1);
+        CHECK(s1 >= 0.9 * s0);
     }
     CHECK(vk_validation_errors() == 0);
     if (std::getenv("JOA_REQUIRE_VALIDATION")) CHECK(vk_validation_active());

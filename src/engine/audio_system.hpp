@@ -103,8 +103,9 @@ public:
     void set_listener(const Listener& l) { mixer_.set_listener(l); }
 
     // SOUND-table entry by code. pos = world position (3D), nullopt = at the listener (UI/2D).
-    // variant_seed: unit record number for WF_RANDMAX variants. 0 = unknown code / all 12 sources busy.
-    VoiceId play_sound(std::string_view code, std::optional<glm::vec3> pos = {}, int variant_seed = 0);
+    // variant_seed: unit record number for WF_RANDMAX variants. steal: SE_play_trigger source stealing
+    // (PlayParams::steal). 0 = unknown code / all 12 sources busy without steal.
+    VoiceId play_sound(std::string_view code, std::optional<glm::vec3> pos = {}, int variant_seed = 0, bool steal = false);
     // Dialog voice: entry `id` ("0014" from a "[0014N]" text tag) of Resource/<pack>.RES (e.g. S1L1_tactic).
     VoiceId play_voice(std::string_view pack, std::string_view id);
 

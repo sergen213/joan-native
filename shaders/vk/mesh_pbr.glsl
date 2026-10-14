@@ -29,7 +29,8 @@ layout(location = 6) flat in uint v_draw;
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_ambient;
 
-vec4 tex(uint slot, vec2 uv) { return texture(u_textures[nonuniformEXT(slot)], uv); }
+// R.ssao.z: texture LOD bias (negative under TAA jitter: the accumulated image resolves finer mips).
+vec4 tex(uint slot, vec2 uv) { return texture(u_textures[nonuniformEXT(slot)], uv, R.ssao.z); }
 
 void main() {
     Draw d = u_draws[v_draw];

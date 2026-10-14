@@ -37,16 +37,19 @@ uniform vec3 u_light_att[kMaxLights];
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_ambient;
 
+// R.ssao.z: texture LOD bias (negative under TAA jitter: the accumulated image resolves finer mips).
+vec4 tex(sampler2D s, vec2 uv) { return texture(s, uv, R.ssao.z); }
+
 void main() {
-    vec2 uv = u_bump_scale != 0.0 ? v_uv + u_bump_scale * texture(u_bump, v_uv2).rg : v_uv;
-    vec4 base = texture(u_albedo, uv);
+    vec2 uv = u_bump_scale != 0.0 ? v_uv + u_bump_scale * tex(u_bump, v_uv2).rg : v_uv;
+    vec4 base = tex(u_albedo, uv);
     vec4 vcol = v_color;
     if (!u_unlit && u_vertex_diffuse) vcol.rgb = vec3(1.0);
-    if (u_has_layer2) base.rgb = mix(base.rgb, texture(u_layer2, v_uv).rgb, vcol.a);
+    if (u_has_layer2) base.rgb = mix(base.rgb, tex(u_layer2, v_uv).rgb, vcol.a);
     else base.a *= vcol.a;
     base.rgb *= vcol.rgb;
     base *= u_tint;
-    if (u_has_lightmap) base.rgb *= texture(u_lightmap, v_uv2).rgb;
+    if (u_has_lightmap) base.rgb *= tex(u_lightmap, v_uv2).rgb;
     if (base.a < u_alpha_cutoff) discard;
     if (u_pass == 1) {  // shadow caster: depth only
         o_color = vec4(0.0);
@@ -72,7 +75,7 @@ void main() {
         // with up normals would otherwise light its back faces from the ground).
         s.ng = ng;
         s.n = ng;
-        if (u_maps.x != 0 && R.flags.y != 0.0) s.n = perturb_normal(ng, v_world, uv, texture(u_normal_map, uv).xyz * 2.0 - 1.0);
+        if (u_maps.x != 0 && R.flags.y != 0.0) s.n = perturb_normal(ng, v_world, uv, tex(u_normal_map, uv).xyz * 2.0 - 1.0);
         s.p = v_world;
         s.diffuse = u_vertex_diffuse ? v_color.rgb : u_diffuse;
         s.points = vec3(0.0);
@@ -83,9 +86,9 @@ void main() {
                 s.points += u_light_color[i] * max(dot(s.n, to / max(d, 1e-4)), 0.0) / max(dot(u_light_att[i], vec3(1.0, d, d * d)), 1e-4);
         }
         legacy_material(u_class, s.albedo, s.roughness, s.metal);
-        if (u_maps.y != 0) s.roughness = texture(u_rough_map, uv).r;
-        if (u_maps.z != 0) s.metal = texture(u_metal_map, uv).r;
-        s.ao = u_maps.w != 0 ? texture(u_ao_map, uv).r : 1.0;
+        if (u_maps.y != 0) s.roughness = tex(u_rough_map, uv).r;
+        if (u_maps.z != 0) s.metal = tex(u_metal_map, uv).r;
+        s.ao = u_maps.w != 0 ? tex(u_ao_map, uv).r : 1.0;
         s.shadow_strength = u_class == kClassVegetation ? 0.5 : 1.0;
         c = shade(s, gl_FragCoord.xy, ambient);
         if (u_class == kClassVegetation) ambient = vec3(0.0);  // no SSAO on thin foliage

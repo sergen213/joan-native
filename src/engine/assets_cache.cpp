@@ -201,10 +201,10 @@ std::vector<Material> AssetCache::materials(const formats::Mesh& mesh) {
         m.diffuse = {sub.colors[1].r, sub.colors[1].g, sub.colors[1].b};
         // Alpha-carrying textures (foliage, hair, fences) are alpha tested. Trailer tag 1 a != -1 (any
         // value) sets material +0x38 = 1 (loader 0x5e0530), blend state 1 of FUN_005f82e0:
-        // SRCALPHA/INVSRCALPHA blending, lit, alpha test on, z-write on (CONFIRMED). The renderer's
-        // AlphaBlend sorts back to front without z-write instead.
+        // SRCALPHA/INVSRCALPHA blending, lit, alpha test on (ALPHAREF 0x80, GREATEREQUAL: FUN_005f8110), z-write on
+        // (CONFIRMED) = AlphaBlend (sorted back to front) + depth_write.
         if (tex && tex->has_alpha) m.blend = BlendMode::AlphaTest;
-        if (sub.blendMode != -1) m.blend = BlendMode::AlphaBlend;
+        if (sub.blendMode != -1) m.blend = BlendMode::AlphaBlend, m.depth_write = true;
         // Trailer tag 2 flag -> material flags low nibble 2: HYPOTHESIS two-sided.
         m.two_sided = sub.tag2Flag != 0 || m.blend == BlendMode::AlphaTest;
         out.push_back(m);

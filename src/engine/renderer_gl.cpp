@@ -400,7 +400,7 @@ private:
         glDepthFunc(GL_LEQUAL);
 
         // Opaque + alpha-tested first (stencil = 128 on shadow receivers, else 0), then the shadow
-        // volumes and the shadow fill, then blended back to front without depth writes.
+        // volumes and the shadow fill, then blended back to front (depth writes only for Material::depth_write).
         blended_.clear();
         volumes_.clear();
         glEnable(GL_STENCIL_TEST);
@@ -447,8 +447,8 @@ private:
             const glm::vec3 pa(a->model[3]), pb(b->model[3]);
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
-        glDepthMask(GL_FALSE);
         for (const DrawItem* d : blended_) {
+            glDepthMask(d->material.depth_write ? GL_TRUE : GL_FALSE);
             glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
             draw_item(*d);
         }
@@ -472,7 +472,7 @@ private:
         const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(d.model)));
         glUniformMatrix3fv(mesh_.normal_matrix, 1, GL_FALSE, glm::value_ptr(nm));
         glUniform4fv(mesh_.tint, 1, glm::value_ptr(mat.tint));
-        glUniform1f(mesh_.alpha_cutoff, mat.blend == BlendMode::AlphaTest || mat.blend == BlendMode::ShadowVolume ? mat.alpha_cutoff : -1.0f);
+        glUniform1f(mesh_.alpha_cutoff, alpha_test_cutoff(mat));
         glUniform1i(mesh_.unlit, mat.unlit ? 1 : 0);
         glUniform1i(mesh_.no_fog, mat.fog ? 0 : 1);
         glUniform1i(mesh_.has_layer2, mat.layer2 ? 1 : 0);
@@ -722,9 +722,7 @@ private:
         glUniform1i(pbr_.pass, pass);
         glUniform4fv(pbr_.tint, 1, glm::value_ptr(mat.tint));
         // Shadow pass: blended foliage casts through an alpha test at 0.5.
-        const float cutoff = mat.blend == BlendMode::AlphaTest || mat.blend == BlendMode::ShadowVolume ? mat.alpha_cutoff
-                             : pass == 1 && mat.blend == BlendMode::AlphaBlend                         ? 0.5f
-                                                                                                      : -1.0f;
+        const float cutoff = pass == 1 && mat.blend == BlendMode::AlphaBlend ? 0.5f : alpha_test_cutoff(mat);
         glUniform1f(pbr_.alpha_cutoff, cutoff);
         glUniform1i(pbr_.unlit, mat.unlit ? 1 : 0);
         glUniform1i(pbr_.no_fog, mat.fog ? 0 : 1);
@@ -886,12 +884,11 @@ private:
             bind_unit(13, 0);
         }
 
-        // Translucent back to front (same order as the Original path), no depth writes.
+        // Translucent back to front (same order as the Original path), depth writes only for depth_write blends.
         glBindFramebuffer(GL_FRAMEBUFFER, rt_.fbo_trans);
         glViewport(0, 0, scene.x, scene.y);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
-        glDepthMask(GL_FALSE);
         glUseProgram(pbr_.program);
         const glm::vec3 cam = f.view.camera_position;
         std::sort(blended_.begin(), blended_.end(), [&](const DrawItem* a, const DrawItem* b) {
@@ -899,6 +896,7 @@ private:
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
         for (const DrawItem* d : blended_) {
+            glDepthMask(d->material.depth_write ? GL_TRUE : GL_FALSE);
             glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
             draw_pbr(*d, 0);
         }

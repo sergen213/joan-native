@@ -54,7 +54,7 @@ struct UpgradeEntry {
 // Sound / AM2 event cue scheduled by SetAction, emitted when due (owner: World phase 1).
 struct PendingCue {
     int at_ms = 0;
-    int action = 0;      // only emitted while the unit is still in this action
+    int action = 0;      // kind 1: only emitted while the unit is still in this action
     int kind = 0;        // 0 move-record SOUND, 1 AM2 clip event
     std::string name;
     template <class V> void visit(V& v) { v(at_ms), v(action), v(kind), v(name); }

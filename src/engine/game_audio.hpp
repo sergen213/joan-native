@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -22,7 +23,7 @@ public:
     void menu();  // main-menu music (MUSIC type M) until the next on_tick / stop
     void on_tick(const game::Mission&, const std::vector<game::GameEvent>&, const std::vector<game::MissionEvent>&,
                  const game::Snapshot&);
-    void frame(const CameraPose&, float dt);  // listener + stream refill (AudioSystem::update)
+    void frame(const CameraPose&, float dt);  // listener (camera pivot) + stream refill (AudioSystem::update)
     bool voice_active() const;                // a dialog/attention voice is still playing
     void stop();                              // leaving the mission: music, environment, voices, effects
 
@@ -32,16 +33,18 @@ public:
     int sounds_3d = 0;  // positional effects that got a mixer voice (stats / tests)
 
     void world_sound(const game::World&, const game::GameEvent&, const game::Snapshot&, int player);
-    void footstep(const game::World&, const game::GameEvent&, const game::Vec3& at, int player);
+    void footstep(const game::World&, int unit, const std::string& name, const game::Vec3& at, int player);
     void voices(const game::Mission&);
     void projectiles(const game::Snapshot&);
     void ambient(const game::Mission&, const game::Snapshot&, int player);
     void environment(const game::Mission&, bool battle, bool city);
-    VoiceId play_at(std::string_view code, const game::Vec3& pos, int seed);
+    VoiceId play_at(std::string_view code, const game::Vec3& pos, int seed);                    // FUN_004950a0
+    VoiceId trigger(std::string_view code, const game::Vec3& pos, int seed, float radius);      // SE_play_trigger
 
     AudioSystem& audio_;
     MusicDirector music_;
     bool in_menu_ = false;
+    std::optional<glm::vec3> listener_;        // last frame() listener position (trigger radius test)
     std::map<int, VoiceId> dialog_voices_;     // dialog box id -> voice (0 = no entry in the pack)
     std::map<int, VoiceId> attention_voices_;  // attention message recno -> voice
     std::map<int, VoiceId> arrows_;            // projectile id -> "ARROW" voice (follows the projectile)

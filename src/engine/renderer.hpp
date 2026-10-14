@@ -78,7 +78,10 @@ struct Material {
     TextureHandle albedo;  // empty = white
     glm::vec4 tint{1.0f};  // linear RGBA multiplier
     BlendMode blend = BlendMode::Opaque;
-    float alpha_cutoff = 0.5f;  // AlphaTest and ShadowVolume (a textured stencil blob)
+    float alpha_cutoff = 0.5f;  // AlphaTest and ShadowVolume (a textured stencil blob); AlphaBlend with depth_write
+    // AlphaBlend only: also alpha test at alpha_cutoff and write depth = the original's blend render state 1
+    // (model tag-1 submeshes, e.g. Joan's head and hair). Without it overlapping layers of one mesh show through.
+    bool depth_write = false;
     bool two_sided = false;
     bool unlit = false;
     bool receive_shadow = true;  // Opaque/AlphaTest: stencil 128 (shadowed by volumes) or 0
@@ -93,6 +96,12 @@ struct Material {
     TextureHandle bump{};
     float bump_scale = 0.0f;
 };
+
+// Fragment alpha-test threshold of a material in the colour passes, -1 = no test.
+inline float alpha_test_cutoff(const Material& m) {
+    const bool test = m.blend == BlendMode::AlphaTest || m.blend == BlendMode::ShadowVolume || (m.blend == BlendMode::AlphaBlend && m.depth_write);
+    return test ? m.alpha_cutoff : -1.0f;
+}
 
 // D3D8 fixed-function limit the original runs into: 8 active lights, one of them the sun.
 inline constexpr int kMaxDrawLights = 7;

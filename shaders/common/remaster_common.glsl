@@ -14,13 +14,13 @@ UBO(0) RemasterFrame {
     vec4 sun_color;        // rgb gamma (D3D); w exposure
     vec4 ambient;          // rgb gamma (D3D); w IBL on
     vec4 fog_color;        // rgb gamma (D3D); w volumetric density (0 = off)
-    vec4 fog_range;        // x start, y end, z volumetric steps, w frame index
+    vec4 fog_range;        // x start, y end, z volumetric steps, w noise frame index (0 = static noise without TAA/RT)
     vec4 camera_pos;       // xyz; w SSAO on
     vec4 shadow_params;    // x 1/size, y PCF radius (texels), z distance, w normal offset (units)
     vec4 screen;           // xy scene size (px), zw 1/size
     vec4 jitter;           // xy jitter (NDC) this frame, z TAA history valid, w RCAS sharpness
     vec4 flags;            // x PBR, y normal maps, z particle lighting, w HDR tone mapping
-    vec4 ssao;             // x radius, y intensity, z near, w far
+    vec4 ssao;             // x radius, y intensity, z mesh texture LOD bias (-1 under TAA), w far
     vec4 env;              // x env mip count, y projection[1][1], z projection[0][0], w upscale ratio (output/scene)
 } R;
 

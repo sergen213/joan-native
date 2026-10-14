@@ -70,7 +70,7 @@ Rendering never feeds gameplay. The renderer reads `World::snapshot()` and `Worl
 | Attack triggers for actions 0x1c, 0x1d, 8, 0x19, 0x1e–0x21, 0x49, 0x53, 0x46, 0x44: radius = script Range + max weapon reach; start = now + StartTime; a unit trigger plus a map-object twin. DOWNATK uses type 0x400 with Range only (quirk: no reach). | `set_action` | Part C §3.1 | CONFIRMED |
 | Animation timing: remaining = clip length − (now − start). Animation end (0x7c7ab0): ATTACK/JATTACKB/DOWNATK/CHAIN/RUSH/ENGATK4 → combo index −1, lock = now, idle. ENGATK → ENGATK2/3/4 when the next record is free or the ENERGY_ATTACK skill is learned. Flinches, STANDUP and landings → idle. GUARD1/GUARDR are held. | `update_action` | Part C §2.2, §7 | CONFIRMED |
 | Get-up: AI decrements the lying timer after the knock animation and then stands (or DIE if dead). The player stands as soon as the animation ends. | `update_action` | Part C §5.4 | CONFIRMED |
-| Sound cues: move-record SOUND/SOUND2 at SOUND_TIME, plus AM2 clip events at their clip time. Each is emitted while the action is unchanged. | `schedule_cues`, `emit_cues` | Part A §1d | CONFIRMED data |
+| Sound cues: move-record SOUND/SOUND2 at SOUND_TIME, plus AM2 clip events at their clip time. SOUND/SOUND2 are delayed sound triggers (`FUN_0050db80` → `Trigger_create(0x800, 4)`): they fire even when the action changed or another action started meanwhile; AM2 events are emitted only while the action is unchanged. | `schedule_cues`, `emit_cues` | Part A §1d | CONFIRMED (0x50db80, Trigger_process 0x4ef090) |
 
 ## Player controller (keyboard + mouse, mode 3)
 

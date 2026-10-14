@@ -109,6 +109,11 @@ int main() {
     std::vector<DrawItem> draws;
     joan.build(glm::mat4(1.0f), draws);
     CHECK(draws.size() == 6);  // six submeshes
+    // Tag-1 submeshes 2-5 (head, hair, ponytail: joanface.tga) = blend state 1: blended + alpha test + z-write,
+    // else the head's far-side layers show through the near ones (hair see-through artifacts).
+    for (std::size_t i = 0; i < draws.size(); ++i)
+        CHECK((draws[i].material.blend == BlendMode::AlphaBlend && draws[i].material.depth_write &&
+               alpha_test_cutoff(draws[i].material) == 0.5f) == (i >= 2));
 
     // unit.res + STD.SET ANIMATE + item.res look-ups.
     const UnitDb db(vfs);

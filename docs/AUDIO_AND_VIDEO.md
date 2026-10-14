@@ -41,8 +41,13 @@ Play paths (all CONFIRMED, identical source setup, `AL_SOURCE_RELATIVE = 0`):
 - `FUN_00494810(code, pos)` / `FUN_004950a0(id, pos)`: 3D at a world position.
 - `FUN_00492c40(code)`, `FUN_004cf0f0(id)`: at the listener position (`DAT_00a57ef8+5`), i.e. centred.
 - `FUN_004ceef0(code)`: UI sounds (33 interface callers), at the listener, gain uses CONFIG 0x41.
-- `FUN_004c0680(emitter)`: map ambient emitters; culled beyond the emitter radius, steals the farthest source (`FUN_00493340`) when all are busy.
-- 12 OpenAL sources (`FUN_0045f450` scans 1..12); a sound is dropped when none is free.
+- `SE_play_trigger 0x4c0680(trigger)`: sound triggers (`Trigger_create(0x800, kind 4)`, run by `Trigger_process`
+  at their time while the sender exists): unit animation sounds (`FUN_0050db80`, radius = the record's MAX_DIST,
+  fired at SOUND_TIME even when the unit's action changed meanwhile), footsteps (radius 0) and map emitters
+  (`.stg` radius). Nothing when the listener is farther than a non-zero radius; when all sources are busy the one
+  farthest from the listener is stopped and reused (`FUN_00493340`). Also skipped while another playing source
+  sits at exactly the same position (`FUN_004d00e0`, not ported).
+- 12 OpenAL sources (`FUN_0045f450` scans 1..12); the other paths drop a sound when none is free.
 
 Distance model (`Sound3D_init` 0x5a0330 → `FUN_00454000`): "3D Sound On" → `alDistanceModel(0xD002)`
 = **AL_INVERSE_DISTANCE_CLAMPED**, off → `AL_NONE` (no attenuation). Doppler factor 0, Doppler
@@ -53,8 +58,10 @@ velocity 343. Device `alcOpenDevice("DirectSound3D")`. CONFIRMED. So:
 Shipped values: ROLLOFF 1.0 everywhere; MIN/MAX 100/1500 (attacks, voices), 70–100/5000 (hits),
 10000/15000 for 346 records (effectively un-attenuated within a battlefield).
 OpenAL never spatialises multi-channel buffers, so the 234 stereo WAVE entries always play
-centred and un-attenuated. Listener position/orientation are set from the camera (`FUN_0059ff70`,
-`FUN_005a0050`).
+centred and un-attenuated. Listener (`FUN_005634e0` each frame → `FUN_005a0110`): the view's CameraState
+with its distance (+0x1c) zeroed, so the listener stands at the camera **pivot** (the hero + 50 z in the
+follow camera, the RTS look-at point), oriented like the camera (`FUN_0059ff70` position, `FUN_005a0050`
+orientation). CONFIRMED (asm 0x563541 `mov [ebp-0x10], 0` after copying the state to `ebp-0x2c`).
 
 ## 3. Volumes (CONFIG.DAT, audio options page)
 
@@ -108,12 +115,13 @@ over every frame; mean abs difference 3.4 / 2.2 per 255 in `video_decode_test`).
 - **Mixer** (`Mixer`): software, float stereo 44.1 kHz; linear-interpolation resampling; buses
   Music / Env / Sfx / Voice / Movie × master; `distance_gain` = the clamped inverse model above
   (3D off = no attenuation); constant-power pan from the listener's right vector (centre −3 dB);
-  stereo buffers and streams bypass spatialisation; 12-voice limit on the Sfx bus; linear fades.
+  stereo buffers and streams bypass spatialisation; 12-voice limit on the Sfx bus (`PlayParams::steal`:
+  stop the voice farthest from the listener instead of dropping, `FUN_00493340`); linear fades.
   HRTF: none (the original had none either).
 - **Output**: SDL3 `SDL_OpenAudioDeviceStream` (F32 stereo 44.1 kHz) with a pull callback; no new
   dependency. Missing device → silent, game continues.
 - **Game API** (`AudioSystem`, `audio_system.hpp`):
-  - `play_sound(code, std::optional<vec3> pos, variant_seed)` — SOUND table entry; `nullopt` = at the listener (UI/2D).
+  - `play_sound(code, std::optional<vec3> pos, variant_seed, steal)` — SOUND table entry; `nullopt` = at the listener (UI/2D).
   - `play_voice(pack, id)` — e.g. `("S1L1_tactic", "0014")`.
   - `play_music(code_or_file, loop)`, `fade_out_music(8)`, `stop_music()`, `play_env(slot, …)`, `fade_out_env(slot, 5)`.
   - `set_listener({position, forward, up})` (renderer world space, right-handed), `apply(AudioSettings::from_config(cfg))`, `update()` once per frame (refills streams).
@@ -145,7 +153,7 @@ Verified 2026-10-14 (x86asm on): `ldd joan-native` resolves all five libraries t
 
 ## 8. Gaps
 
-- In-game gaps (§9): footstep surface is always `GROUND`; rain environment variant; source stealing for ambient emitters (the native mixer drops a sound when all 12 Sfx voices are busy); `PICKUP` (no world pickup event yet), gate/wall/box hit sounds (`FUN_004950a0` with ItemRes sound ids: the map-object layer emits no events for them), the RTS death voice in `Unit_die`; the church mood (`8`) needs `Territory::scale == 4`, untested on data.
+- In-game gaps (§9): footstep surface is always `GROUND`; rain environment variant; the same-position skip of `SE_play_trigger` (`FUN_004d00e0`); `PICKUP` (no world pickup event yet), gate/wall/box hit sounds (`FUN_004950a0` with ItemRes sound ids: the map-object layer emits no events for them), the RTS death voice in `Unit_die`; the church mood (`8`) needs `Territory::scale == 4`, untested on data.
 - `A_WAVE1/2.RES` (2D `ilib\se.cpp` set) users are not traced; CONFIG 0x3E is used for the Voice bus only as a HYPOTHESIS; movie audio uses master volume only (HYPOTHESIS).
 - After `--movie-time` seeks, audio restarts at the first packet after the shown frame (≈ 1 packet of drift). Movie frames are uploaded with destroy + create per frame (30 Hz); add `IRenderer::update_texture` if it ever shows in profiles.
 - `WAVE.RES` (80 MB) is read into memory on first `play_sound`.
@@ -155,7 +163,7 @@ Verified 2026-10-14 (x86asm on): `ldd joan-native` resolves all five libraries t
 
 `GameAudio` turns one session tick into audio. The app calls `on_tick(mission, world events, mission
 events, current snapshot)` after each 33 ms step, `frame(camera pose, dt)` every rendered frame
-(listener at `pose.eye`, forward `target − eye`, up +Y; then `AudioSystem::update()`), `menu()` on menu
+(listener at the camera pivot `pose.target`, forward `target − eye`, up +Y, §2; then `AudioSystem::update()`), `menu()` on menu
 screens (MUSIC type `M` until the next `on_tick`; the director keeps running from `frame()`), and
 `stop()` when the mission is left, retried or replaced by a load. `voice_active()` feeds
 `GameUiBridge::voice_active`. It only reads the mission. Positions: `to_engine(UnitView::pos)`.
@@ -164,8 +172,8 @@ World events (`GameEvent`) → 3D sounds at the unit / projectile:
 
 | Event | Sound | Original | Confidence |
 |---|---|---|---|
-| `Ev::Sound`, unit cue (move-record `SOUND`/`SOUND2`) | the code; `MAIN_CHAR` codes only for the player's unit; variant `recno % WF_RANDMAX` | `FUN_0050db80` | CONFIRMED |
-| `Ev::Sound`, code `TS_*` | `<code>_<surface>` footstep (surface = `GROUND` here); not in cut scenes; `SOUND_TIME == -1` steps only for the player outside RTS; one step per unit per composite `SOUNDTIME` | `AnimGrp_load` (`TS_` → id −99), `FUN_0050db80` | HIGH (surface: gap) |
+| `Ev::Sound`, unit cue (move-record `SOUND`/`SOUND2`, World keeps it through later action changes) | the code via `SE_play_trigger` (radius MAX_DIST, source stealing); `MAIN_CHAR` codes only for the player's unit; variant `recno % WF_RANDMAX`; a shot (`SHTOUT`/`SHTOUTH`) emits SOUND only for bow classes (SPECIAL 4/5/6/9/10/12) or a held bow, SOUND2 only with a crossbow | `FUN_0050db80` | CONFIRMED |
+| `Ev::Sound`, code `TS_*`; the player's current record with a `TS_` sound at `SOUND_TIME == -1`, every tick | `<code>_<surface>` footstep (surface = `GROUND` here, trigger radius 0); not in cut scenes; `SOUND_TIME == -1` steps only for the player outside RTS; one step per unit per composite `SOUNDTIME` (`Ctrl_run_walk` / `Ctrl_strafe` re-enter `Unit_set_action` every frame, so steps repeat while running) | `AnimGrp_load` (`TS_` → id −99), `FUN_0050db80` | HIGH (surface: gap) |
 | `Ev::Sound` with a projectile (`other`) | at its last position; `EXPLOSIVEHIT` → `EXPLOSIVEHIT1..3` | `ThrowItem_on_hit_actor`, `ThrowItem_update` | CONFIRMED |
 | projectile types 0–2 in the snapshot | looping `ARROW` that follows the projectile, stopped when it disappears | `ThrowItem_launch`, `ThrowItem_update` (+0x10) | CONFIRMED |
 | `Ev::Blocked` | `GUARD` (melee) / `GUARDARR` (ranged) at the defender | `Melee_tryHit`, `Ranged_tryHit` | CONFIRMED |
@@ -198,7 +206,11 @@ a side sound every 30–60 s in a city (`S` / E_TYPE I at war, C at peace) or du
 track's E_TYPE every 60–120 s. A changed track fades out over 5 s first; everything stops at game over
 or an ending. Side-sound timing and variants use GameAudio's own RNG, never the simulation's.
 
-Verified by `engine.game_audio` (mission 1, offline mixer): Joan's scripted attacks produce 3D voices;
+Verified by `engine.game_audio` (mission 1, offline mixer, music/environment muted, render in
+`$JOA_TEST_OUT/game_audio_fight.wav`): 10 s of A/B combos against an English heavy infantryman sound every
+combo step (`A`/`AA`/`AAA`, `JOAB`/`JOVAAB`…) and the foe's `HIT_H`; every opening swing peaks ≥ 0.6 at the
+pivot listener (0.36 when the listener was the eye); an `AAA` cut by a flinch still sounds; a bow shot
+sounds `BOW` only; 3 s of running give ≥ 3 footsteps. Also
 an injected dialog with `S1L1_tactic:0014` makes `voice_active()` true for 4.4 s, then false; `menu()`
 selects `MAIN_BACK`; a spawned English archer beside Joan switches normal → battle music after the
 8 s fade, the battle track holds through 7.6 s of calm and fades back to normal after > 8 s.

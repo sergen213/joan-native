@@ -24,7 +24,7 @@ Living list; each entry links the document holding evidence. Severity: **B** blo
 
 ## Minor (M)
 - v0.1.0-alpha.1 binaries report version `0.1.0` (pre-release suffix missing), so its updater never offers newer pre-releases; install 0.1.0-alpha.2 or later manually once.
-- RT: blotchy reflections at 1 rpp, GI darker in enclosed spaces than the Original ambient ([RAYTRACING](RAYTRACING.md)); TAA ghosting without per-object motion vectors; HD packs stored uncompressed ([HD_ASSETS](HD_ASSETS.md)).
+- RT: blotchy reflections at 1 rpp, GI darker in enclosed spaces than the Original ambient ([RAYTRACING](RAYTRACING.md)); TAA (Ultra / `aa=taa`; off in Enhanced) ghosts and softens animated characters without per-object motion vectors; HD packs stored uncompressed ([HD_ASSETS](HD_ASSETS.md)).
 - Mission brief: commander 3D figure and siege-weapon model not drawn; battleground camera not draggable ([UI_SYSTEM](reverse-engineering/UI_SYSTEM.md)).
 - `JOA_Encounter.wma` is truncated in the shipped file (last 1.2 s missing) — [AUDIO_AND_VIDEO](AUDIO_AND_VIDEO.md).
 - GPU tests share one Xvfb display; run them with `ctest -j1`.

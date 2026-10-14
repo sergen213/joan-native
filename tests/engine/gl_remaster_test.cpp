@@ -47,7 +47,28 @@ int main() {
         CHECK(img.width == 640 && img.height == 360 && distinct_colours(img.rgba) > 200);
     }
 
-    // 4. S1L1 start view.
+    // 3b. TAA on a static view keeps detail: history read at the un-jittered position (Catmull-Rom), not a
+    // sub-texel bilinear re-sample every frame (Laplacian variance vs no AA: 0.15 before the fix, 0.53 after).
+    {
+        Options o = demo_options(RendererKind::OpenGL, GraphicsPreset::Custom);
+        CHECK(o.graphics.apply("graphics.aa", "none").empty() && o.graphics.apply("graphics.ssao", "false").empty());
+        const Image none = render_demo(o, 24);
+        CHECK(o.graphics.apply("graphics.aa", "taa").empty());
+        const Image taa = render_demo(o, 24);
+        save(taa, "gl_remaster_taa.png");
+        const double s0 = laplacian_variance(none.rgba, none.width), s1 = laplacian_variance(taa.rgba, taa.width);
+        std::fprintf(stderr, "TAA static view sharpness: none %.1f taa %.1f (%.2f)\n", s0, s1, s1 / s0);
+        CHECK(s1 >= 0.35 * s0);
+    }
+
+    // 4. Blend state 1 (hair): near layer not overdrawn by later far layers, sub-reference alpha discarded.
+    for (GraphicsPreset p : {GraphicsPreset::Original, GraphicsPreset::Enhanced, GraphicsPreset::Ultra}) {
+        const LayerShot s = render_layers(RendererKind::OpenGL, p);
+        save(s.img, p == GraphicsPreset::Original ? "gl_remaster_layers_original.png" : p == GraphicsPreset::Enhanced ? "gl_remaster_layers_enhanced.png" : "gl_remaster_layers_ultra.png");
+        check_layers(s, preset_name(p));
+    }
+
+    // 5. S1L1 start view.
     if (game_dir()) {
         const auto orig = s1l1(RendererKind::OpenGL, nullptr, "gl_remaster_s1l1_default.png");
         const auto orig2 = s1l1(RendererKind::OpenGL, "original", "gl_remaster_s1l1_original.png");
@@ -57,6 +78,10 @@ int main() {
         const double l0 = mean_luma(orig), l1 = mean_luma(enh);
         std::fprintf(stderr, "S1L1 enhanced vs original: luma %.1f -> %.1f, mean abs diff %.2f\n", l0, l1, diff(orig, enh).mad);
         CHECK(std::fabs(l1 - l0) < 0.25 * l0);
+        // Enhanced as sharp as Original (Laplacian variance: 1.00x GL, 1.01x Vulkan; the old TAA default 0.09x).
+        const double s0 = laplacian_variance(orig, 640), s1 = laplacian_variance(enh, 640);
+        std::fprintf(stderr, "S1L1 sharpness (Laplacian variance) original %.1f enhanced %.1f\n", s0, s1);
+        CHECK(s1 >= 0.9 * s0);
     } else {
         std::fprintf(stderr, "no original data: S1L1 part skipped\n");
     }

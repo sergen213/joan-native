@@ -31,7 +31,9 @@ RtInstanceClass rt_instance_class(const Material& m, MaterialClass cls, bool ter
     switch (m.blend) {
     case BlendMode::Opaque: return {mask, false, 0.0f};
     case BlendMode::AlphaTest: return {mask, true, m.alpha_cutoff};
-    case BlendMode::AlphaBlend: return foliage ? RtInstanceClass{mask, true, 0.5f} : RtInstanceClass{};
+    case BlendMode::AlphaBlend:
+        if (m.depth_write) return {mask, true, m.alpha_cutoff};
+        return foliage ? RtInstanceClass{mask, true, 0.5f} : RtInstanceClass{};
     default: return {};
     }
 }

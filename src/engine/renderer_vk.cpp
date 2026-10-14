@@ -283,7 +283,7 @@ public:
             }
             vk_.vkDestroySemaphore(device_, timeline_, nullptr);
             vk_.vkDestroyCommandPool(device_, upload_pool_, nullptr);
-            for (VkPipeline p : {opaque_, blend_, additive_, volume_, fill_, ui_}) vk_.vkDestroyPipeline(device_, p, nullptr);
+            for (VkPipeline p : {opaque_, blend_, blend_zwrite_, additive_, volume_, fill_, ui_}) vk_.vkDestroyPipeline(device_, p, nullptr);
             vk_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
             vk_.vkDestroyPipelineLayout(device_, layout_, nullptr);
             vk_.vkDestroyPipelineLayout(device_, fill_layout_, nullptr);
@@ -974,9 +974,9 @@ private:
     }
 
     // mesh: scene pass (colour + depth-stencil), else the UI pass. fill: the attribute-less shadow fill
-    // triangle of the scene pass (blend ignored).
+    // triangle of the scene pass (blend ignored). zwrite: depth writes for a blended pipeline (Material::depth_write).
     VkPipeline make_pipeline(std::span<const std::uint32_t> vs, std::span<const std::uint32_t> fs, bool mesh, BlendMode blend,
-                             bool fill = false) {
+                             bool fill = false, bool zwrite = false) {
         VkShaderModule modules[2];
         for (int i = 0; i < 2; ++i) {
             const auto code = i ? fs : vs;
@@ -1014,7 +1014,7 @@ private:
         const bool solid = blend == BlendMode::Opaque || blend == BlendMode::AlphaTest;
         const bool volume = blend == BlendMode::ShadowVolume;
         depth.depthTestEnable = mesh && !fill;
-        depth.depthWriteEnable = mesh && !fill && solid;
+        depth.depthWriteEnable = mesh && !fill && (solid || zwrite);
         depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         // Stencil (reference dynamic): solid draws write 128 on shadow receivers else 0; volumes count
         // front +1 / back -1 (clamped, the original's INCRSAT/DECRSAT); the fill passes where 128 < stencil.
@@ -1078,6 +1078,7 @@ private:
         load_pipeline_cache();
         opaque_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::Opaque);  // alpha test = discard in the same pipeline
         blend_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::AlphaBlend);
+        blend_zwrite_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::AlphaBlend, false, true);
         additive_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::Additive);
         volume_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::ShadowVolume);
         fill_ = make_pipeline(kFillVert, kFillFrag, true, BlendMode::AlphaBlend, true);
@@ -1381,7 +1382,7 @@ private:
         upload_frame_uniforms(s, f);
 
         // Opaque + alpha-tested first (stencil 128 on shadow receivers, else 0), then the shadow volumes and
-        // the shadow fill, then blended back to front without depth writes (same order as GL).
+        // the shadow fill, then blended back to front (depth writes only for Material::depth_write; same order as GL).
         order_.clear();
         for (const DrawItem& d : f.draws)
             if (d.material.blend == BlendMode::Opaque || d.material.blend == BlendMode::AlphaTest) order_.push_back(&d);
@@ -1429,7 +1430,7 @@ private:
             const std::uint32_t count = d.index_count ? std::min(d.index_count, m.index_count - first) : m.index_count - first;
             if (!count) continue;
             const BlendMode b = d.material.blend;
-            const VkPipeline p = b == BlendMode::AlphaBlend     ? blend_
+            const VkPipeline p = b == BlendMode::AlphaBlend     ? (d.material.depth_write ? blend_zwrite_ : blend_)
                                  : b == BlendMode::Additive     ? additive_
                                  : b == BlendMode::ShadowVolume ? volume_
                                                                 : opaque_;
@@ -1483,7 +1484,7 @@ private:
             const std::uint32_t lightmap = m.lightmap ? texture_slot(m.lightmap) : kNoTexture;
             DrawGpu g{d.model, glm::mat4(glm::transpose(glm::inverse(glm::mat3(d.model)))), m.tint,
                       glm::vec4(m.diffuse, m.vertex_diffuse ? 1.0f : 0.0f),
-                      m.blend == BlendMode::AlphaTest || m.blend == BlendMode::ShadowVolume ? m.alpha_cutoff : -1.0f,
+                      alpha_test_cutoff(m),
                       (m.unlit ? 1u : 0u) | (m.fog ? 0u : 2u), texture_slot(m.albedo),
                       layer2, lightmap, 0, m.bump && m.bump_scale != 0.0f ? texture_slot(m.bump) : kNoTexture, m.bump_scale, {}};
             for (int k = 0; k < std::min<int>(d.light_count, kMaxDrawLights); ++k)
@@ -1690,6 +1691,8 @@ private:
                                      RmBlend::Alpha, 0xf, true, false, fill_layout_});
         rm_blend_ = make_rm_pipeline({kMeshPbrVert, kMeshPbrFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Alpha,
                                       0xf, false, false, L});
+        rm_blend_zwrite_ = make_rm_pipeline({kMeshPbrVert, kMeshPbrFrag, true, {kHdrFormat}, D, true, true, true, RmStencil::None,
+                                             RmBlend::Alpha, 0xf, false, false, L});
         rm_additive_ = make_rm_pipeline({kMeshPbrVert, kMeshPbrFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Add,
                                          0xf, false, false, L});
         rm_shadow_ = make_rm_pipeline({kMeshPbrVert, kShadowCasterFrag, true, {}, shadow_format_, false, true, true, RmStencil::None, RmBlend::Off,
@@ -1773,7 +1776,7 @@ private:
     void destroy_remaster() {
         destroy_rm_targets();
         destroy_rm_shadow();
-        for (VkPipeline p : {rm_opaque_, rm_volume_, rm_fill_, rm_blend_, rm_additive_, rm_shadow_, rm_ssao_, rm_ao_apply_, rm_composite_,
+        for (VkPipeline p : {rm_opaque_, rm_volume_, rm_fill_, rm_blend_, rm_blend_zwrite_, rm_additive_, rm_shadow_, rm_ssao_, rm_ao_apply_, rm_composite_,
                              rm_taa_, rm_easu_, rm_final_})
             if (p) vk_.vkDestroyPipeline(device_, p, nullptr);
         for (Slot& s : slots_) {
@@ -2063,22 +2066,27 @@ private:
             vk_.vkCmdEndRendering(cmd_);
         }
 
-        // Translucent, back to front, depth read-only.
+        // Translucent, back to front; depth writes only for Material::depth_write blends.
         rm_barrier(rmt_.hdr.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         {
-            const VkRenderingAttachmentInfo d = attachment(rmt_.depth.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-                                                           VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_NONE);
+            const VkRenderingAttachmentInfo d = attachment(rmt_.depth.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                           VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
             begin_rendering(scene, {&hdr_load, 1}, &d, true);
             cull = -1;
             push_pass(0);
             VkPipeline bound = VK_NULL_HANDLE;
             for (std::size_t i = first_blended; i < order_.size(); ++i) {
-                const VkPipeline p = order_[i]->material.blend == BlendMode::Additive ? (rt ? rt_additive_ : rm_additive_) : (rt ? rt_blend_ : rm_blend_);
+                const Material& m = order_[i]->material;
+                const VkPipeline p = m.blend == BlendMode::Additive ? (rt ? rt_additive_ : rm_additive_)
+                                     : m.depth_write                ? (rt ? rt_blend_zwrite_ : rm_blend_zwrite_)
+                                                                    : (rt ? rt_blend_ : rm_blend_);
                 if (p != bound) vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = p);
                 draw(i, false);
             }
             vk_.vkCmdEndRendering(cmd_);
         }
+        rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         rm_barrier(rmt_.hdr.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // Post chain, then the final pass + UI into the display target (UNORM view: encoded bytes).
@@ -2163,6 +2171,8 @@ private:
                                        RmBlend::Off, 0xf, false, false, L});
         rt_blend_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Alpha,
                                       0xf, false, false, L});
+        rt_blend_zwrite_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat}, D, true, true, true, RmStencil::None,
+                                             RmBlend::Alpha, 0xf, false, false, L});
         rt_additive_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Add,
                                          0xf, false, false, L});
         rt_shadow_pipe_ = make_compute(kRtShadow);
@@ -2240,7 +2250,7 @@ private:
             destroy(s.rt_ubo);
             destroy(s.rt_instances);
         }
-        for (VkPipeline p : {rt_prepass_, rt_opaque_, rt_blend_, rt_additive_, rt_shadow_pipe_, rt_reflect_pipe_, rt_denoise_, rt_probe_trace_,
+        for (VkPipeline p : {rt_prepass_, rt_opaque_, rt_blend_, rt_blend_zwrite_, rt_additive_, rt_shadow_pipe_, rt_reflect_pipe_, rt_denoise_, rt_probe_trace_,
                              rt_probe_blend_})
             vk_.vkDestroyPipeline(device_, p, nullptr);
         vk_.vkDestroyPipelineLayout(device_, rt_pipe_layout_, nullptr);
@@ -2496,8 +2506,8 @@ private:
     VkPipelineLayout layout_ = VK_NULL_HANDLE, fill_layout_ = VK_NULL_HANDLE;
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
     bool cache_loaded_ = false;
-    VkPipeline opaque_ = VK_NULL_HANDLE, blend_ = VK_NULL_HANDLE, additive_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE,
-               fill_ = VK_NULL_HANDLE, ui_ = VK_NULL_HANDLE;
+    VkPipeline opaque_ = VK_NULL_HANDLE, blend_ = VK_NULL_HANDLE, blend_zwrite_ = VK_NULL_HANDLE, additive_ = VK_NULL_HANDLE,
+               volume_ = VK_NULL_HANDLE, fill_ = VK_NULL_HANDLE, ui_ = VK_NULL_HANDLE;
     VkFormat depth_format_ = VK_FORMAT_UNDEFINED;  // D32_SFLOAT_S8_UINT or D24_UNORM_S8_UINT
 
     Slot slots_[kFramesInFlight];
@@ -2530,7 +2540,7 @@ private:
     VkDescriptorPool rm_pool_ = VK_NULL_HANDLE;
     VkPipelineLayout rm_pipe_layout_ = VK_NULL_HANDLE;
     VkSampler rm_nearest_ = VK_NULL_HANDLE, rm_shadow_sampler_ = VK_NULL_HANDLE;
-    VkPipeline rm_opaque_ = VK_NULL_HANDLE, rm_volume_ = VK_NULL_HANDLE, rm_fill_ = VK_NULL_HANDLE, rm_blend_ = VK_NULL_HANDLE,
+    VkPipeline rm_opaque_ = VK_NULL_HANDLE, rm_volume_ = VK_NULL_HANDLE, rm_fill_ = VK_NULL_HANDLE, rm_blend_ = VK_NULL_HANDLE, rm_blend_zwrite_ = VK_NULL_HANDLE,
                rm_additive_ = VK_NULL_HANDLE, rm_shadow_ = VK_NULL_HANDLE, rm_ssao_ = VK_NULL_HANDLE, rm_ao_apply_ = VK_NULL_HANDLE,
                rm_composite_ = VK_NULL_HANDLE, rm_taa_ = VK_NULL_HANDLE, rm_easu_ = VK_NULL_HANDLE, rm_final_ = VK_NULL_HANDLE;
     VkFormat shadow_format_ = VK_FORMAT_D32_SFLOAT;
@@ -2550,7 +2560,7 @@ private:
     VkDescriptorSetLayout rt_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool rt_pool_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipe_layout_ = VK_NULL_HANDLE;
-    VkPipeline rt_prepass_ = VK_NULL_HANDLE, rt_opaque_ = VK_NULL_HANDLE, rt_blend_ = VK_NULL_HANDLE, rt_additive_ = VK_NULL_HANDLE,
+    VkPipeline rt_prepass_ = VK_NULL_HANDLE, rt_opaque_ = VK_NULL_HANDLE, rt_blend_ = VK_NULL_HANDLE, rt_blend_zwrite_ = VK_NULL_HANDLE, rt_additive_ = VK_NULL_HANDLE,
                rt_shadow_pipe_ = VK_NULL_HANDLE, rt_reflect_pipe_ = VK_NULL_HANDLE, rt_denoise_ = VK_NULL_HANDLE, rt_probe_trace_ = VK_NULL_HANDLE,
                rt_probe_blend_ = VK_NULL_HANDLE;
     Image2D rt_gbuf_[2]{}, rt_img_[kRtImages]{}, rt_irr_{}, rt_depth_atlas_{};

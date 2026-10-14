@@ -125,7 +125,7 @@ Reference used: `work/reference/shots/s04_04_mission1_hud.png` (original S1L1 st
 | Terrain texturing | `mix(tex1, tex2, (255-byte4)/255) * lightmap * DIFFUSE`, ground UV repeats every header_c (4) cells (u from y, v from x); DIFFUSE = the lit vertex colour (bytes 1,2,3 as D3D diffuse material, `Material::vertex_diffuse`): at noon ambient 0.72 + sun·0.78 clamps to 1; sector lightmaps packed in one atlas, sector (ix,iy) at row rows-1-iy | CONFIRMED stage setup (case 0x13 ~line 523175: tex, BLENDDIFFUSEALPHA, MODULATE lightmap, MODULATE DIFFUSE); lit vertex colour HYPOTHESIS (unlit was 0.78× darker than the capture; lit matches within 5%) |
 | Objects | `item/<Path><ObjectFile>.pro` → `Model:`; else `.SMO`/`.AM1`; AM1 props posed at their first AM2 clip; transform `T(X,Y,Z)·Rz(HD)·S(Scale)`; VD, WIDTH/LENGTH/HEIGHT, Kingdom, Treasure, InitState/FinalState unused | HIGH (S1L1: 762/762 placed; 686 within 40 units of the terrain; walls/gate/drawbridge join up) |
 | Materials | textures with any alpha < 255 → alpha test 0.5, two-sided; trailer tag-2 flag → two-sided; tag 3 normals → up | HYPOTHESIS |
-| Tag-1 blend | any value ≠ -1 → material +0x38 = 1 (+0x34 = 0x20000, +0x40 = 1/2) in the SMO loader 0x5e0530 (decompile ~512576); render-state set 1 of `FUN_005f82e0`: SRCALPHA/INVSRCALPHA, alpha test, lighting, z-write → `BlendMode::AlphaBlend` (sorted, no z-write) | CONFIRMED mapping; z-write difference deliberate |
+| Tag-1 blend | any value ≠ -1 → material +0x38 = 1 (+0x34 = 0x20000, +0x40 = 1/2) in the SMO loader 0x5e0530 (decompile ~512576); render-state set 1 of `FUN_005f82e0`: SRCALPHA/INVSRCALPHA, alpha test (ALPHAREF 0x80, GREATEREQUAL from `FUN_005f8110`), lighting, z-write → `BlendMode::AlphaBlend` + `Material::depth_write` (sorted back to front, alpha test 0.5, z-write; all presets, both backends). Without the z-write the far-side layers of Joan's head/hair/ponytail submeshes (joanface.tga) drew over the near ones (see-through hair) | CONFIRMED |
 | Mip maps | the DDS file chain (face 0) is uploaded as-is (`TextureData::mip_pixels`, GL `glTexImage2D` per level + `GL_TEXTURE_MAX_LEVEL`, Vulkan one staging copy per level); single-level files get GPU mips | — |
 | Lighting | stage at a clock (default 12:00) from `<name>w.day`; `.lgt` Type 1 directional (VDir elevation / HDir azimuth, HYPOTHESIS), Type 0 ambient. D3D8 fixed function emulated per vertex in gamma space: `min(ambient·240/255 + diffuse·(sun·N.L + Σ point), 1)`, texture × light, diffuse = SMO/AM1 colour1 (0.588); material ambient is the engine constant 0xF0F0F0 (DAT_00a69cd0 ← DAT_00a18a6c, FUN_0060baf0) | CONFIRMED constants/formula (lighting.nvo, D3D semantics); gamma-space sum HIGH |
 | Fog | linear vertex fog on the eye distance (fog.nvo `calculate_linear_normal_fog_factor`, D3DFOG_LINEAR), 900 → view distance 3996 (FUN_005634e0: min(far−200, 4096 [×0.7 night/rain]) reached within 100), mixed in gamma space; colour = clear colour = Hoffman-Preetham inscattering 2000 units along the view direction from the `.sca` stage (View3D_render 0x614760; betas from 0x617ee0; Normal_12 level view = 106,146,193), recomputed per frame | CONFIRMED (HG denominator taken literally as `2g·cos + g + 1`) |
@@ -181,10 +181,10 @@ again between frames). Without a settings file the engine runs **Original**.
 | HDR + tone map | `hdr`, `exposure` | 0.85 | 0.85 | RGBA16F scene, Narkowicz ACES fit, sRGB encode |
 | Sun shadows | `shadow_map_size`, `shadow_softness`, `shadow_distance` | 2048, 1.5 texel, 2500 | 4096, 2.5, 4000 | replaces the stencil volumes (0 = volumes, also in the HDR path); casters = lit opaque/alpha-test/blended (alpha 0.5) draws except terrain; texel-snapped bounding-sphere ortho, slope bias + normal offset, 12-tap rotated Poisson PCF on hardware compare; vegetation receives at 50 % |
 | SSAO | `ssao`, `ssao_radius`, `ssao_intensity` | 48 | 64 | 12 world-space samples from depth, applied only to the ambient/environment MRT (reverse-subtract pass, 3×3 depth-aware blur); not on foliage |
-| AA | `aa=taa` | TAA | TAA | Halton(2,3) jitter, depth reprojection, YCoCg variance clip |
+| AA | `aa=taa` | none | TAA | Halton(2,3) jitter, depth reprojection with the jitter removed (static pixels read their own history texel), 5-tap Catmull-Rom history, YCoCg variance clip, mesh texture LOD bias −1. Off in Enhanced: without per-object motion vectors the always-animating characters/grass/foliage smeared (S1L1 Laplacian variance 0.09× Original); IGN noise is then static instead of per-frame |
 | Volumetric fog | `volumetric_fog`, `fog_density` | 12 steps | 24 steps | height fog below the camera with shadow-mapped HG(0.55) sun in-scattering, on top of the original linear fog |
 | Particle lighting | `particle_lighting` | on | on | alpha-blended smoke lit by ambient + shadowed sun; additive fire ×1.6 HDR |
-| Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0.2 | off, 1.0, 0.3 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX) |
+| Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0 | off, 1.0, 0.3 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX); set `sharpness` (~0.3) with `aa=taa` |
 
 Passes (both backends, same shader bodies in `shaders/common/`, same CPU constants from `post_frame.cpp`): shadow map →
 opaque (HDR colour + ambient MRT, depth-stencil) [→ stencil volumes + fill when shadow maps are off] → SSAO → AO apply →
@@ -192,13 +192,14 @@ translucent → composite (volumetric fog, exposure, ACES) → TAA → EASU → 
 GL: units = Vulkan set-2 binding + 7, block binding 0 (`shaders/gl/remaster_prelude.glsl`). Vulkan: set 2 (frame
 block, textures, per-draw `MaterialExtra` SSBO), separate depth-only shadow caster shader, `independentBlend` required.
 
-Tests: `engine.preset` (names, ini/CLI keys, custom semantics, jitter, shadow texel snapping), `engine.gl_remaster`
-(Original bit-identical incl. after toggling; Enhanced/Ultra/FSR1 sane and within ±25 % mean luma of Original;
-S1L1 when data present), `engine.vk_remaster` (GL vs Vulkan: Enhanced 53.1 dB / MAD 0.26, Ultra 52.4 / 0.30, FSR1
-67 % 51.6 / 0.32, S1L1 Enhanced 50.8 / 0.38; thresholds 40 dB / 1.0; 0 validation errors), `engine.hd_pack`,
-`tools.hd_upscale`.
+Tests: `engine.preset` (names, ini/CLI keys, custom semantics, jitter/LOD bias/noise index, shadow texel snapping),
+`engine.gl_remaster` (Original bit-identical incl. after toggling; Enhanced/Ultra/FSR1 sane and within ±25 % mean luma
+of Original; TAA static-view sharpness; blend-state-1 layer/halo pixels for Original/Enhanced/Ultra; S1L1 when data
+present, incl. Enhanced Laplacian variance ≥ 0.95× Original), `engine.vk_remaster` (GL vs Vulkan parity: Enhanced, Ultra
+(TAA), FSR1 67 %, S1L1 Enhanced; thresholds 40 dB / 1.0; layer pixels and S1L1 sharpness as GL; 0 validation errors),
+`engine.hd_pack`, `tools.hd_upscale`.
 
-Remaster gaps: SMAA not implemented (TAA only); no soft particles (GL 3.3 cannot sample the attached depth);
-characters ghost slightly under TAA (no per-object motion vectors, CPU skinning); GL GPU timing (`JOA_GPU_TIMING=1`)
+Remaster gaps: SMAA not implemented (TAA only, off in Enhanced); no soft particles (GL 3.3 cannot sample the attached
+depth); characters ghost and soften under TAA (Ultra / `aa=taa`: no per-object motion vectors, CPU skinning); GL GPU timing (`JOA_GPU_TIMING=1`)
 uses timestamps that include driver submission bubbles; no bloom; the volumetric density is relative to the camera
 height (no absolute ground reference); the in-game options menu does not expose presets yet.

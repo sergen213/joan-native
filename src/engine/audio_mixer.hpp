@@ -48,6 +48,7 @@ struct PlayParams {
     bool positional = false;  // false = at the listener (UI, music); mono buffers only are spatialised
     glm::vec3 position{0.0f};
     Attenuation attenuation;
+    bool steal = false;  // SE_play_trigger 0x4c0680: all Sfx voices busy -> stop the one farthest from the listener (FUN_00493340)
 };
 
 // FIFO of interleaved stereo frames at kOutputRate fed by a decoder thread/loop (music, movies).

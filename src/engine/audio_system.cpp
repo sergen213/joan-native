@@ -220,7 +220,7 @@ void AudioSystem::apply(const AudioSettings& s) {
     enabled_ = s.enabled;
 }
 
-VoiceId AudioSystem::play_sound(std::string_view code, std::optional<glm::vec3> pos, int seed) {
+VoiceId AudioSystem::play_sound(std::string_view code, std::optional<glm::vec3> pos, int seed, bool steal) {
     const int i = bank_.variant(bank_.find(code), seed);
     if (!enabled_ || i < 0) return 0;
     const SoundDef& d = bank_.defs()[std::size_t(i)];
@@ -231,6 +231,7 @@ VoiceId AudioSystem::play_sound(std::string_view code, std::optional<glm::vec3> 
     p.positional = pos.has_value();
     p.position = pos.value_or(glm::vec3(0.0f));
     p.attenuation = d.attenuation;
+    p.steal = steal;
     return mixer_.play(bank_.pcm(i), p);
 }
 

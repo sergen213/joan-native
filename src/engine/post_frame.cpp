@@ -71,14 +71,16 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     r.sun_color = glm::vec4(l.sun_color, g.hdr ? g.exposure : 1.0f);
     r.ambient = glm::vec4(l.ambient, g.ibl ? 1.0f : 0.0f);
     r.fog_color = glm::vec4(l.fog_color, g.volumetric_fog ? g.fog_density : 0.0f);
-    r.fog_range = glm::vec4(l.fog_start, l.fog_end, g.preset == GraphicsPreset::Ultra ? 24.0f : 12.0f, float(h.frame % 64));
+    // Per-frame noise rotation only when something accumulates it (TAA, RT denoiser); else it would flicker.
+    const float noise_frame = taa || g.rt.any() ? float(h.frame % 64) : 0.0f;
+    r.fog_range = glm::vec4(l.fog_start, l.fog_end, g.preset == GraphicsPreset::Ultra ? 24.0f : 12.0f, noise_frame);
     r.camera_pos = glm::vec4(f.view.camera_position, g.ssao ? 1.0f : 0.0f);
     const float texel_world = shadows ? 2.0f / std::abs(r.shadow_matrix[0][0] * float(g.shadow_map_size)) : 0.0f;
     r.shadow_params = glm::vec4(shadows ? 1.0f / float(g.shadow_map_size) : 0.0f, g.shadow_softness, g.shadow_distance, texel_world * 1.5f);
     r.screen = glm::vec4(glm::vec2(scene), 1.0f / glm::vec2(scene));
     r.jitter = glm::vec4(jitter, taa && h.valid ? 1.0f : 0.0f, g.sharpness);
     r.flags = glm::vec4(g.pbr ? 1.0f : 0.0f, g.normal_maps ? 1.0f : 0.0f, g.particle_lighting ? 1.0f : 0.0f, g.hdr ? 1.0f : 0.0f);
-    r.ssao = glm::vec4(g.ssao_radius, g.ssao_intensity, 1.0f, 3000.0f);
+    r.ssao = glm::vec4(g.ssao_radius, g.ssao_intensity, taa ? -1.0f : 0.0f, 3000.0f);
     r.env = glm::vec4(float(env_mips), f.view.projection[1][1], f.view.projection[0][0], float(output.x) / float(scene.x));
 
     h.prev_view_proj = unjittered;

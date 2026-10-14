@@ -34,19 +34,31 @@ public:
 private:
     InputFrame decide();
     void steer(InputFrame& f, const Unit& p, Vec3 goal, bool replan);
+    void travel(InputFrame& f, const Unit& p, Vec3 goal);  // steer, opening a closed gate that shuts the way
+    Vec3 home() const;                                     // centroid of the units not hostile to the player
+    Vec3 gate_inside(const MapItem& g) const;              // a point 100 inside a gate (towards home())
     void fight(InputFrame& f, Unit& p, const Unit& foe);
     void shoot(InputFrame& f, Unit& p, const Unit& foe);  // bow: range mode, aim, draw, release
+    bool clear_shot(const Unit& p, const Unit& t) const;  // an arrow aimed at t now hits t
+    const Unit* densest(const Unit& p, float range, bool steady, int& n) const;  // centre of the densest enemy group
     bool load_ammo(Unit& p, bool explosive);               // character screen: arrows into the ammo slot
+    int arrows(const Unit& p, bool explosive) const;       // arrows of that kind carried (0 without a bow)
     void shop(Unit& p);                                    // buy screen open: armour, arrows
     bool loot(InputFrame& f, const Unit& p, float radius = 1200);  // break boxes / pick up items nearby
     int swing_eta(const Unit& u) const;
-    const Unit* protectee() const;  // mission plan: hero to stay with
+    bool energy_ok(const Unit& p) const;  // EP / HP for the energy attack
 
     Mission& m_;
     int tick_ = 0;
     bool prompt_ = false;          // interact indicator shown
     std::string prompt_kind_;
     int prompt_id_ = 0;              // unit / item the indicator points at
+    int prompt_tick_ = 0;            // tick the indicator last changed
+    int gate_ = 0, gate_seen_ = 0;   // gate item the plan closes (R at its indicator), 0 none; tick its marker appeared
+    int open_gate_ = 0;              // closed gate the bot opens to get through (R at its indicator)
+    Vec3 open_goal_{};               // the destination it is opened for
+    int travel_tick_ = -1;           // last tick travel() ran
+    int opened_gate_ = 0;            // last gate the bot opened itself (closed again once nobody is left outside)
     std::map<int, int> talked_;      // unit -> tick the player last talked to it (or gave up)
     int talk_key_ = 0, talk_tick_ = 0;
     int last_interact_ = -1000, last_heal_ = -1000;
