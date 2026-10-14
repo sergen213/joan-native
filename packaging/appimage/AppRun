@@ -1,0 +1,6 @@
+#!/bin/sh
+# Entry point: the launcher; JOA_APPIMAGE_ENTRY=joan-native|joa-install|joa-updater runs another tool.
+here=$(dirname "$(readlink -f "$0")")
+entry=${JOA_APPIMAGE_ENTRY:-joa-launcher}
+case $entry in */*|.*) echo "AppRun: invalid JOA_APPIMAGE_ENTRY" >&2; exit 2 ;; esac
+exec "$here/usr/bin/$entry" "$@"

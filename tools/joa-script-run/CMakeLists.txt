@@ -1,0 +1,5 @@
+if(TARGET joa_game)
+  add_executable(joa-script-run main.cpp)
+  target_link_libraries(joa-script-run PRIVATE joa_game)
+  target_compile_options(joa-script-run PRIVATE -Wall -Wextra)
+endif()

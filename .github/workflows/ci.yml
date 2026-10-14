@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    # Arch container: Ubuntu 24.04 lacks SDL3 and current Qt/Vulkan packages.
+    container: archlinux:latest
+    timeout-minutes: 60
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf python python-cryptography \
+            libsodium curl libarchive nlohmann-json openssl zstd sdl3 qt6-base qt6-svg qt6-wayland \
+            vulkan-headers vulkan-icd-loader shaderc glslang glm freetype2 ffmpeg openal
+      - uses: actions/checkout@v4
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build
+      # No game data in CI: asset-backed tests exit 77 (skipped). The updater refuses to
+      # run as root, so tests run as an unprivileged user.
+      - name: Tests
+        run: |
+          useradd -m ci
+          chown -R ci: .
+          su ci -c "ctest --test-dir build --output-on-failure"

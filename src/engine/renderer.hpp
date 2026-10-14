@@ -1,0 +1,140 @@
+#pragma once
+// API-neutral rendering interface. Gameplay/simulation never includes this; the app layer
+// turns simulation state into a FrameData draw list. Backends: OpenGL (renderer_gl), Vulkan (planned).
+#include <glm/glm.hpp>
+
+#include <array>
+#include <cstdint>
+#include <span>
+#include <vector>
+
+namespace joa::engine {
+
+// Skinning-ready layout: up to 4 bone influences per vertex. Unskinned meshes leave
+// bones = {0,0,0,0}, weights = {1,0,0,0}. Coordinate system: right-handed, +Y up.
+// Original-asset scenes use the original world units (see world_scene.hpp for the axis mapping).
+struct Vertex {
+    glm::vec3 position{0.0f};
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    glm::vec2 uv{0.0f};
+    std::array<std::uint8_t, 4> bones{0, 0, 0, 0};
+    glm::vec4 weights{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec2 uv2{0.0f};      // Material::lightmap coordinates
+    glm::vec4 color{1.0f};    // linear; rgb multiplies albedo; a = Material::layer2 weight if set, else multiplies alpha
+};
+
+struct MeshData {
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;  // triangle list, counter-clockwise front faces
+};
+
+enum class PixelFormat : std::uint8_t {
+    Rgba8Srgb,   // colour textures (albedo, UI): sampled as linear after sRGB decode
+    Rgba8Unorm,  // data textures (normal maps, masks)
+};
+
+struct TextureData {
+    int width = 0;
+    int height = 0;
+    PixelFormat format = PixelFormat::Rgba8Srgb;
+    std::vector<std::uint8_t> pixels;  // width*height*4 bytes, top row first; UV (0,0) = top-left (D3D)
+    bool mipmaps = true;
+    bool repeat = true;  // false = clamp to edge
+};
+
+struct MeshHandle {
+    std::uint32_t id = 0;
+    explicit operator bool() const { return id != 0; }
+};
+struct TextureHandle {
+    std::uint32_t id = 0;
+    explicit operator bool() const { return id != 0; }
+};
+
+enum class BlendMode : std::uint8_t { Opaque, AlphaTest, AlphaBlend, Additive };
+
+struct Material {
+    TextureHandle albedo;  // empty = white
+    glm::vec4 tint{1.0f};  // linear RGBA multiplier
+    BlendMode blend = BlendMode::Opaque;
+    float alpha_cutoff = 0.5f;  // AlphaTest only
+    bool two_sided = false;
+    bool unlit = false;
+    TextureHandle layer2{};    // optional second albedo (same uv): rgb = mix(albedo, layer2, vertex color.a)
+    TextureHandle lightmap{};  // optional rgb multiplier sampled with uv2 (clamped)
+};
+
+struct DrawItem {
+    MeshHandle mesh;
+    Material material;
+    glm::mat4 model{1.0f};
+    std::uint32_t first_index = 0;
+    std::uint32_t index_count = 0;  // 0 = whole mesh
+};
+
+// Matrices use the OpenGL clip convention (glm default: RH, z in [-1,1]). A Vulkan backend
+// premultiplies its fixed y-flip/z-remap correction instead of changing the camera code.
+struct FrameView {
+    glm::mat4 view{1.0f};
+    glm::mat4 projection{1.0f};
+    glm::vec3 camera_position{0.0f};
+    glm::ivec4 viewport{0, 0, 0, 0};  // x, y (top-left origin), w, h in framebuffer pixels
+};
+
+struct Lighting {
+    glm::vec3 sun_direction{-0.4f, -1.0f, -0.3f};  // direction light travels
+    glm::vec3 sun_color{1.0f};
+    glm::vec3 ambient{0.25f};
+    glm::vec3 fog_color{0.6f, 0.7f, 0.8f};  // linear
+    float fog_start = 60.0f;
+    float fog_end = 250.0f;  // <= fog_start disables fog
+    glm::vec4 clear_color{0.0f, 0.0f, 0.0f, 1.0f};  // linear; outside viewport is always black
+};
+
+// Screen-space quad, pixel coordinates with top-left origin (see ui_layout in camera.hpp).
+struct UiQuad {
+    glm::vec2 position{0.0f};
+    glm::vec2 size{0.0f};
+    glm::vec2 uv0{0.0f};
+    glm::vec2 uv1{1.0f};
+    glm::vec4 color{1.0f};  // linear RGBA multiplier
+    TextureHandle texture;   // empty = white
+};
+
+struct FrameData {
+    FrameView view;
+    Lighting lighting;
+    std::span<const DrawItem> draws;
+    std::span<const UiQuad> ui;
+};
+
+// sRGB-encoded RGBA8, top row first (ready for PNG).
+struct Image {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
+class IRenderer {
+public:
+    virtual ~IRenderer() = default;
+    virtual const char* name() const = 0;
+
+    virtual MeshHandle create_mesh(const MeshData& mesh) = 0;
+    virtual void destroy_mesh(MeshHandle mesh) = 0;
+    // Replaces a mesh's vertices/indices in place (CPU-skinned characters, once per frame before
+    // begin_frame). Returns false if the backend cannot; callers then destroy + create.
+    virtual bool update_mesh(MeshHandle, const MeshData&) { return false; }
+    virtual TextureHandle create_texture(const TextureData& texture) = 0;
+    virtual void destroy_texture(TextureHandle texture) = 0;
+
+    // One frame: begin_frame(size) -> submit(frame) once -> end_frame() presents.
+    virtual void begin_frame(glm::ivec2 framebuffer_pixels) = 0;
+    virtual void submit(const FrameData& frame) = 0;
+    virtual void end_frame() = 0;
+
+    // Copy of the most recently rendered frame (valid after submit, before or after end_frame).
+    virtual Image read_back() = 0;
+};
+
+}  // namespace joa::engine

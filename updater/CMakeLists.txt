@@ -1,0 +1,48 @@
+# Signed GitHub-release updater: lib joa_update + CLI joa-updater (see docs/RELEASE_PROCESS.md).
+if(NOT JOA_BUILD_UPDATER)
+  return()
+endif()
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
+find_package(CURL REQUIRED)
+find_package(LibArchive REQUIRED)
+find_package(nlohmann_json 3 REQUIRED)
+
+set(JOA_UPDATE_REPO "OWNER/joan-native" CACHE STRING "GitHub OWNER/NAME whose releases joa-updater follows")
+if(NOT JOA_UPDATE_REPO MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" OR JOA_UPDATE_REPO MATCHES "\\.\\.")
+  message(FATAL_ERROR "JOA_UPDATE_REPO must be OWNER/NAME")
+endif()
+set(_pubkey_file "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/release/update_pubkey.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pubkey_file}")
+file(READ "${_pubkey_file}" JOA_UPDATE_PUBKEY)
+string(STRIP "${JOA_UPDATE_PUBKEY}" JOA_UPDATE_PUBKEY)
+if(NOT JOA_UPDATE_PUBKEY MATCHES "^[A-Za-z0-9+/]+=?$")
+  message(FATAL_ERROR "${_pubkey_file} must hold base64 of a raw 32-byte Ed25519 public key")
+endif()
+
+function(joa_update_library name)
+  add_library(${name} STATIC update.cpp layout.cpp)
+  target_include_directories(${name} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(${name} PUBLIC PkgConfig::SODIUM CURL::libcurl LibArchive::LibArchive nlohmann_json::nlohmann_json)
+  target_compile_definitions(${name} PUBLIC JOA_VERSION="${PROJECT_VERSION}" JOA_UPDATE_REPO="${JOA_UPDATE_REPO}"
+    PRIVATE JOA_UPDATE_PUBKEY="${JOA_UPDATE_PUBKEY}" ${ARGN})
+  target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+endfunction()
+joa_update_library(joa_update)
+add_executable(joa-updater main.cpp)
+target_link_libraries(joa-updater PRIVATE joa_update)
+target_compile_options(joa-updater PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS joa-updater RUNTIME DESTINATION bin)
+
+if(BUILD_TESTING)
+  # Test-only transport (http://127.0.0.1, env API base/public key). Never installed.
+  joa_update_library(joa_update_testhttp JOA_UPDATER_TEST_TRANSPORT=1)
+  add_executable(joa-updater-testhttp main.cpp)
+  target_link_libraries(joa-updater-testhttp PRIVATE joa_update_testhttp)
+  add_executable(updater_unit_test "${CMAKE_CURRENT_SOURCE_DIR}/../tests/updater/updater_unit_test.cpp")
+  target_link_libraries(updater_unit_test PRIVATE joa_update)
+  add_test(NAME updater.unit COMMAND updater_unit_test)
+  find_program(JOA_PYTHON3 python3 REQUIRED) # PATH python3 with the cryptography module
+  add_test(NAME updater.e2e COMMAND "${JOA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/../tests/updater/updater_e2e.py"
+    "$<TARGET_FILE:joa-updater-testhttp>" "$<TARGET_FILE:joa-updater>" "${JOA_UPDATE_REPO}")
+endif()

@@ -1,0 +1,19 @@
+# Whitelist: this repo lives inside the user's original GOG install. Never track game data.
+/*
+!/.gitignore
+!/.github/
+!/CMakeLists.txt
+!/README.md
+!/cmake/
+!/docs/
+!/src/
+!/launcher/
+!/updater/
+!/tests/
+!/tools/
+!/packaging/
+!/shaders/
+!/third_party/
+/build*/
+/work/
+__pycache__/

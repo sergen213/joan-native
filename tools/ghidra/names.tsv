@@ -1,0 +1,144 @@
+# joan.exe analyst names, applied by ApplyNames.java on every run_headless.sh import/reexport.
+# addr	name	subsystem	confidence	evidence (see docs/reverse-engineering/FUNCTION_MAP.md)
+# --- startup / main loop
+00420ea0	WinMain	startup	CONFIRMED	called from CRT entry 0x7b71e6 with GetModuleHandleA(0),cmdline,nShow; ret 0x10
+00447150	V3d_select_cpu_dll	startup	HIGH	LoadLibrary V3D_SSE/K3D/X87, GetProcAddress vertexf_check_cpu, CopyFileA over v3d_87.dll
+004d6c50	Sys_init	startup	HIGH	ecx=0xa50088; calls Vga_init then Sys_init_subsystems
+004d6fe0	Sys_init_subsystems	startup	HIGH	Audio_init, Sound3D_init, CODEPAGE.RES, font loading
+004d6e00	Sys_create_window	startup	HIGH	RegisterClassA/CreateWindowExA class "JoanOfArc"
+004d6ce0	Sys_deinit	startup	HIGH	ecx=0xa50088 after Game_main in WinMain
+00479720	Game_main	game	HIGH	ecx=0xa58f90 from WinMain; init, Game_run(0), deinit
+0042ca90	Game_run	game	HIGH	calls Sys_main_loop
+004715a0	Game_run_restartable	game	HYPOTHESIS	loops Game_run while flag 0xa50098==4; no static refs
+00499960	Sys_main_loop	game	CONFIRMED	PeekMessage/MsgWaitForMultipleObjectsEx loop, frame timer, disp+process
+004d48f0	Sys_disp_frame	render	HIGH	switch on sys+0x3a screen mode; mode 9 -> World_draw
+004e5fc0	Game_process_tick	game	HIGH	called from main loop on logic tick; calls per-subsystem process
+00499540	Sys_set_screen_mode	game	HYPOTHESIS	called when sys+0x3c != sys+0x3a
+0058a830	FrameTimer_init	game	HIGH	(30,30,1,now) in main loop: 30 fps draw/logic
+0058aa90	FrameTimer_wait_ms	game	HIGH	result passed to MsgWaitForMultipleObjectsEx timeout
+0058acb0	FrameTimer_draw_due	game	HYPOTHESIS	gates Sys_disp_frame
+0058ac80	FrameTimer_process_due	game	HYPOTHESIS	gates Game_process_tick
+00591050	Misc_get_time	ilib	CONFIRMED	returns timeGetTime()
+0045c8c0	CpuSpeed_measure	startup	HIGH	rdtsc-like counter vs QueryPerformanceCounter over Sleep(100); only when CONFIG.DAT missing
+# --- config
+00459e70	Config_init	config	HIGH	ecx=0xa57fb8, empty body
+0045aaf0	Config_load	config	CONFIRMED	"CONFIG.DAT", requires file size 0xb05
+0045adc0	Config_read	config	HIGH	reads 0xb05 bytes into config object, restores runtime fields
+00459e90	Config_save	config	CONFIRMED	Config_write_file("CONFIG.DAT")
+0045a9f0	Config_write_file	config	HIGH	File_create + write
+00459e30	Config_set_defaults	config	HIGH	calls 4 default groups when CONFIG.DAT missing
+0045a010	Config_default_display	config	HIGH	1024x768x32@60, detail by CPU MHz
+0045b240	Config_validate_caps	config	HIGH	adapter id "geforce3", D3DXCreateTexture probes (RT 64x64, V8U8 256x256), clamps config+0x9c..0x9e
+# --- Direct3D 8 device (global object 0xa52420)
+00603710	Vga_init	render	HIGH	creates window (vtbl+0x18), then Vga_init_d3d
+006037f0	Vga_init_d3d	render	HIGH	D3DDevice_init, PAL_STD.RES, texture dir select, async loader
+005f6620	D3DDevice_init	render	HIGH	Direct3DCreate8 then D3DDevice_create
+005f6b60	D3DDevice_create_d3d	render	CONFIRMED	Direct3DCreate8(0x78)
+005f6c00	D3DDevice_create	render	CONFIRMED	EnumAdapterModes 1024x768, CreateDevice, caps, "Cannot create z buffer"
+005ff920	D3D_is_display_format_ok	render	HYPOTHESIS	filters modes in D3DDevice_create
+005ffe60	D3D_format_class	render	HYPOTHESIS	returns 4 for preferred (32-bit) format
+005ff9d0	D3D_choose_backbuffer_format	render	HYPOTHESIS	BackBufferFormat in present params
+005ffc90	D3D_choose_depth_format	render	HYPOTHESIS	AutoDepthStencilFormat
+006002b0	D3D_error_string	render	HIGH	maps HRESULT to "D3DERR_*" names
+00603af0	Vga_flip	render	HIGH	called after Sys_disp_frame; -> D3D_present
+005ff0e0	D3D_present	render	CONFIRMED	IDirect3DDevice8::Present(0,0,0,0), counts back buffers
+005ff180	D3D_present_until_front0	render	HIGH	error-box helper
+005ff210	D3D_present_restore	render	HIGH	error-box helper
+004189a0	ErrorBox_pre	render	HIGH	registered via 0x4171b0 on error object 0xa47d78
+00418bc0	ErrorBox_post	render	HIGH	registered via 0x4171b0
+006032d0	D3D_create_rt_depth	render	HIGH	CreateDepthStencilSurface(w,h); 1024x1024 when config+0x9d==2
+00603400	D3D_create_render_texture	render	HIGH	"CreateTexture fails" (512x256)
+00618990	Shader_create_nvlinker	render	CONFIRMED	SHADER\nvlinker.dll CreateLinker + 7 .nvo fragment files
+00618ab0	Shader_add_fragment_file	render	HIGH	called per .nvo
+00618e40	Shader_build_vertex_shader	render	HIGH	fragment names calculate_skin_vertex/write_d3d_fog_factor
+005e5a50	PixelShader_load	render	HIGH	SHADER\clip_am.pso / clip_at.pso, CreatePixelShader
+00601380	VertexShader_load_dot3	render	HIGH	item\dot3_directional.vsc
+00608e10	Texture_select_dir	render	HIGH	TEXTUREH\ / TEXTURE\ / TEXTUREL\
+# --- view / scene
+006141a0	View3D_update_matrices	render	CONFIRMED	view=inverse(world), D3DXMatrixPerspectiveFovLH(atan(fovparam), w/h, zn, zf) or OrthoLH
+00614040	View3D_set_camera_params	camera	HIGH	copies 10-dword camera block to view+0xa0
+00614760	View3D_render	render	CONFIRMED	SetTransform(VIEW/PROJ), SetViewport, Clear, BeginScene, Scene_render, EndScene
+00617370	View3D_render_prepass	render	HYPOTHESIS	before BeginScene; per-light/sector pass
+005ebac0	Scene_render	render	HIGH	called between BeginScene/EndScene
+005d8650	View3D_render_to_texture	render	HIGH	Get/SetRenderTarget, Get/SetViewport, BeginScene/EndScene
+006153c0	View3D_project	camera	HIGH	world->screen with bounds check
+006154d0	View3D_unproject	camera	HIGH	screen->ray, uses proj _11/_22
+006159f0	View3D_sphere_visible	camera	HIGH	6 frustum planes at view+0x326 + user planes
+00615840	View3D_point_visible	camera	HIGH	frustum test
+00616ec0	View3D_get_view_matrix	camera	HIGH	returns view+0xee
+00616ef0	View3D_get_proj_matrix	camera	HIGH	returns view+0x12e
+007674a4	D3DXMatrixPerspectiveFovLH	d3dx	CONFIRMED	static d3dx8; fsincos(fovy*0.5); _11=cot/aspect; target of community FOV fix pattern
+00767723	D3DXMatrixOrthoLH	d3dx	HIGH	ortho branch of View3D_update_matrices
+007648ba	D3DXCreateTexture	d3dx	HIGH	(dev,w,h,mips,usage,fmt,pool,out)
+005bec90	CD3DCamera_SetProjParams	dxsdk	HIGH	DX8 SDK d3dutil: stores fov/aspect/near/far then PerspectiveFovLH
+005bf130	DXUtil_GetDXSDKMediaPath	dxsdk	CONFIRMED	"Software\Microsoft\DirectX","DX8SDK Samples Path"
+005baae0	CD3DFont_InitDeviceObjects	dxsdk	HIGH	CreateFontA in DX8 SDK framework region
+# --- camera
+00423600	CamMan_init	camera	HIGH	camman.cpp; t=1.0
+004236d0	CamMan_deinit	camera	HIGH	camman.cpp list free
+00423e70	CamMan_reset_mode	camera	HIGH	mode=1, interp=1, no-collision=1
+00423ec0	CamMan_start_transition	camera	HIGH	from,to 10-dword states, start time
+00423f40	CamMan_set_target	camera	HIGH	current->from, param->to, start time
+004237a0	CamMan_update	camera	CONFIRMED	easing modes 1-4, wraps yaw, lerps 10-dword state, collision
+00424010	CamMan_collision_adjust	camera	HYPOTHESIS	ray tests (0x5d4a80) push camera out of geometry
+00425c80	Cam_lerp_float	camera	HIGH	per-field interpolation
+00425b90	Cam_lerp_angle	camera	HIGH	wrap-aware yaw interpolation
+00563c80	CameraArray_get	camera	CONFIRMED	this->array + idx*200
+00563dc0	CameraArray_current_index	camera	CONFIRMED	returns this+0x2f
+0042bcd0	Camera_mouse_aim	camera	HYPOTHESIS	mouse deltas 0xa516f4/f8, invert 0xa5802b, camera 1
+00445990	Camera_rts_edge_scroll	camera	HYPOTHESIS	screen-edge scroll with frame ms 0xa500b6
+0043f000	Camera_follow_update	camera	HYPOTHESIS	uses config auto-turn angle 0xa5802e (default 90)
+00428e90	CamRes_load_tracks	camera	HIGH	CreateCameraTrackArray/CreateCameraTrack/CreateCameraAnimatedTrack
+0044c800	World_draw	render	HIGH	culls sectors, copies camera->View3D, View3D_render
+# --- input / audio / video
+00592380	Input_init_dinput	input	CONFIRMED	DirectInput8Create, mouse+keyboard devices
+0057a440	Audio_init	audio	HIGH	ilib audio.cpp object init
+0057a740	Audio_init_dsound	audio	CONFIRMED	DSOUND ordinal 1 (DirectSoundCreate)
+005a0330	Sound3D_init	audio	HIGH	sound3d.cpp; OpenAL device, alGetError
+007a9420	OpenAL_open_ds3d	audio	CONFIRMED	alcOpenDevice("DirectSound3D"), alcCreateContext, MakeCurrent
+004907e0	Sound3D_create_sources	audio	HIGH	alGenSources (sound3d.cpp)
+00582d20	DirectMusic_init	audio	CONFIRMED	CoCreateInstance CLSID_DirectMusicLoader/Performance, IID_*8
+00684650	Video_open_wmf	video	HIGH	LoadLibrary wmvcore.dll WMCreateSyncReader (video.cpp)
+00686350	VideoCap_open	video	HYPOTHESIS	videocap.cpp CreateFile/ReadFile/LoadLibrary
+# --- ilib file / memory / resources
+004179c0	File_ctor	ilib	HIGH	paired with File_dtor
+005872b0	File_dtor	ilib	HIGH	SEH unwinds
+00586da0	File_open	ilib	CONFIRMED	CreateFileA; "Error opening file %s."
+00586f00	File_create	ilib	HIGH	CreateFileA write; Config/GameFile save
+005873a0	File_read	ilib	HIGH	ReadFile
+005872e0	File_write	ilib	HIGH	WriteFile
+00587260	File_close	ilib	HIGH	CloseHandle path
+00587f30	File_size	ilib	HIGH	compared to 0xb05 in Config_load
+00587c20	File_get_short	ilib	HYPOTHESIS	ResourceIdx count read
+00417ad0	DynArray_size	ilib	HIGH	returns this+0xc; 322 callers, used as loop bound
+0041b3f0	DynArrayB_get_ptr	ilib	HIGH	1-based recno, this+0x19 body, this+0x10 ele_size
+0041b3c0	UnitArray_get	game	HYPOTHESIS	wrapper of DynArrayB_get_ptr, 540 callers
+00613730	View3D_init	camera	CONFIRMED	zn=1.0, zf persp=8193.0, zf ortho=16385.0, camera block defaults, SetMaterial(1.0)
+00613bf0	View3D_set_viewport	camera	CONFIRMED	(x1,y1,x2,y2): w=x2-x1+1, h=y2-y1+1
+00616d50	CameraState_init	camera	CONFIRMED	zero 0x28 bytes; +0x1c=100.0, +0x20 k=1.0, +0x24=1.0
+00590b80	Misc_is_file_exist	ilib	CONFIRMED	FindFirstFileA; used for *.SYS flag files
+00589550	FileTxt_open	ilib	HIGH	text resource reader (filetxt.cpp)
+00589890	FileTxt_close	ilib	HIGH	paired with FileTxt_open
+00589f10	FileTxt_read_field	ilib	HIGH	skips ' ,:\t', reads to CR
+0058e7b0	Mem_add	ilib	CONFIRMED	(size,__FILE__,__LINE__) allocator
+0058e8d0	Mem_add_zero	ilib	HIGH	new(size+0x11)+memset
+0058ed70	Mem_del	ilib	CONFIRMED	(ptr,__FILE__,__LINE__)
+00586bc0	Error_run	ilib	CONFIRMED	vsprintf + MessageBox "Wars & Warriors: Joan of Arc"
+0059c550	ResourceIdx_init	resource	HIGH	resx.cpp: File_open, count via File_get_short
+0058ae90	GameSet_open	resource	HIGH	RESOURCE\*.SET enumeration
+00577d10	AsyncFile_read	resource	HYPOTHESIS	CreateFile/SetFilePointer/ReadFile streaming
+00578d70	AsyncLoader_init	resource	HYPOTHESIS	CreateEventA, ReadFileEx
+00645de0	Script_open_compile	script	HIGH	"Cannot open script" (uti3d esstate2.cpp)
+005af5d0	Actor_load_model	resource	HIGH	"Error loading 3D Model : %1s"
+005b23d0	AnimDef_load	resource	HIGH	"Error loading Animation : %1s"
+005c6820	Morph_load	resource	HIGH	"Error loading Morph Data : %1s"
+# --- save / load
+00478180	GameFile_save	save	HIGH	"Error creating file."/"Error saving file."
+00477e80	GameFile_load	save	HIGH	"Error opening file."/"Error loading file."
+00477d80	GameFile_load_from_open	save	HYPOTHESIS	"Error loading file." variant
+00478520	GameFile_read_header	save	HIGH	"Invalid file format."
+004735c0	GameFile_read_world	save	HIGH	gamefil2.cpp bulk object read
+00477770	GameFile_make_name	save	HIGH	"SAVE\%s%%04d.%s", "_AUTO%03d.SAV"
+004770a0	GameFile_enum_saves	save	HIGH	"*.SAV" directory scan
+0042e1a0	Game_quick_save	save	HYPOTHESIS	"-QuickSave", "Mission", "SAVE\"
+004c8220	Profile_save	save	HYPOTHESIS	profile.cpp writes SAVE\ (Player.dat)

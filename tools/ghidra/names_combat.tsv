@@ -1,0 +1,315 @@
+# joan.exe combat/character analyst names (CombatRE). Same format as names.tsv: addr<TAB>name<TAB>subsystem<TAB>confidence<TAB>evidence.
+# See docs/reverse-engineering/GAMEPLAY_CHARACTER_COMBAT.md. 0x42e1a0 overrides names.tsv (misnamed Game_quick_save there).
+# --- rng
+005904c0	Misc_get_seed	rng	CONFIRMED	returns this+0x7a; no callers (seed never saved)
+005904e0	Misc_randomize	rng	CONFIRMED	seed = CRT time(0) (0x7b33bf); called by WinMain 0x420f71 for 0xa45fa8 and 0xa50490
+00590510	Misc_set_seed	rng	CONFIRMED	this+0x7a = seed
+00590540	Misc_random	rng	CONFIRMED	seed=seed*0x15A4E35+1; return (n*((seed>>16)&0x7fff))>>15 in [0,n); 255 call sites on 0xa45fa8
+005905a0	Misc_rand15	rng	CONFIRMED	seed=seed*0x15A4E35+1; return (seed>>16)&0x7fff
+005905f0	Misc_rand_raw	rng	CONFIRMED	advance LCG, return full 32-bit seed
+00590630	Misc_rand_unit_excl	rng	CONFIRMED	rand15*3.0517578e-05 (=1/32768) in [0,1)
+00590660	Misc_rand_unit_incl	rng	CONFIRMED	rand15*3.051851e-05 (=1/32767) in [0,1]
+00590690	Misc_random_range	rng	CONFIRMED	lo+ftol(rand15/32767.0f*(hi-lo)+0.5) inclusive [lo,hi]; asm 0x5906a7
+005906f0	Misc_random_float	rng	CONFIRMED	a+(b-a)*rand15/32767
+00591cb0	Misc_ctor	rng	HIGH	sets +0x79=0; called for 0xa45fa8/0xa50490 at 0x563f39
+# --- unit
+00414a30	AnimGrp_load	unit	CONFIRMED	0x99-byte records
+004157c0	Anim_parse_position	unit	CONFIRMED	STAND0 JUMP1
+00415820	Anim_parse_movement	unit	CONFIRMED	action enum
+004168d0	AnimGrp_get_record	unit	CONFIRMED	base+(i-1)*0x99
+00416910	Anim_parse_item_using	unit	CONFIRMED	weapon anim set enum
+004216d0	Unit_get_leader	unit	CONFIRMED	self if leader
+0042d0e0	Unit_is_dead	unit	CONFIRMED	HP<1 && lives==0
+00430050	UnitRes_is_hero_code	unit	CONFIRMED	JOAN_OF_ARC/JEAN_DE_METZ/LAHIRE/ALENCON
+0044a660	Unit_is_team_leader	unit	CONFIRMED	+0x33!=0
+00454b20	Unit_follow_attach_yaw	unit	HIGH	phase-1 helper
+00455e30	Script_unit_add_hp	unit	CONFIRMED	maxHP clamp 9999
+0045b720	Unit_set_max_hp	unit	CONFIRMED	heals by increase
+0045bba0	Unit_set_max_ep	unit	HIGH	called by 0x50d640 case 7
+00462610	UnitSnapshot_save	unit	CONFIRMED	no callers
+00466320	UnitSnapshot_restore	unit	CONFIRMED	no callers
+00472ee0	GameplayRes_load_game_consts	unit	CONFIRMED	{MUSIC} BATTLE_R -> 0xa39180; {GAME} EASY_D..VDIFF_D -> 0xa391ac/8c/b0/94, *_A read twice -> 0xa39184/9c/a8/90 (guard chance) and 0xa391a4/88/a0/98 (BLOCKPER); *_B never read
+00476bb0	TimeOfDay_process	unit	HIGH	minute += dt_ms*0.0004; wraps at 1440
+0047c180	GameplayRes_find_key	unit	HIGH	returns line ptr; value parsed at +9
+0047cbf0	GameplayRes_select_section	unit	HIGH	called with section name before every key lookup
+0049d810	Unit_process_ai	unit	HIGH	phase 3: player unit -> 0x4fd630, else AI think after rand(500)+rec ScriptDuration
+004f0b50	Unit_move	unit	CONFIRMED	speed calc, body move
+004f8550	Unit_init	unit	CONFIRMED	copies rec fields, inventory, drop roll, upgrades
+004fe4f0	Unit_get_name	unit	CONFIRMED	this+0x3d
+004fe510	Unit_set_hp	unit	CONFIRMED	clamp, extra-life revive
+004fe5d0	Unit_set_ep	unit	CONFIRMED	clamp [0,maxEP]
+004fe640	Unit_set_life_max	unit	HYPOTHESIS	+0x11c
+004fe670	Unit_set_lives	unit	CONFIRMED	+0x120
+004fe6a0	Unit_set_attached_items	unit	HYPOTHESIS	+0x1bd/+0x1bf
+004fe6e0	Unit_set_str	unit	CONFIRMED	+0x155
+004fe710	Unit_set_dex	unit	CONFIRMED	+0x157
+004fe740	Unit_set_def	unit	CONFIRMED	+0x159
+004fe770	Unit_set_leadership	unit	CONFIRMED	+0x15b
+004fe7a0	Unit_set_archery	unit	CONFIRMED	+0x16f
+004fe7d0	Unit_set_horse_riding	unit	CONFIRMED	+0x173
+004fe800	Unit_set_swimming	unit	CONFIRMED	+0x177
+004fe830	Unit_set_level_raw	unit	CONFIRMED	+0x124
+004fe860	Unit_set_12e	unit	CONFIRMED	+0x12e
+004fe890	Unit_set_loyalty	unit	CONFIRMED	+0x161
+004fe8c0	Unit_set_morale	unit	CONFIRMED	MORALE_BASE/DROP logic
+004fe9c0	Unit_set_reputation	unit	CONFIRMED	+0x165
+004fe9f0	Unit_set_mode	unit	CONFIRMED	+0x167
+004fea20	Unit_set_regen_hp_stat	unit	CONFIRMED	+0x141
+004fea50	Unit_set_regen_ep_stat	unit	CONFIRMED	+0x14d
+004fea80	Unit_set_fall_gauge	unit	CONFIRMED	clamp 0..100, knockdown at 0
+004feb80	Unit_set_elephant_riding	unit	CONFIRMED	+0x17b
+004febb0	Unit_set_wide_animal	unit	CONFIRMED	+0x17f
+004febe0	Unit_set_preaching	unit	CONFIRMED	+0x183
+004fec10	Unit_set_power_jump	unit	CONFIRMED	+0x187
+004fec40	Unit_set_disguise	unit	CONFIRMED	+0x18b
+004fec70	Unit_set_persuade	unit	CONFIRMED	+0x18f
+004feca0	Unit_set_lock_picking	unit	CONFIRMED	+0x193
+004fecd0	Unit_set_mountain	unit	CONFIRMED	+0x197
+004fed00	Unit_set_world	unit	CONFIRMED	+0x335
+004fedb0	Unit_get_position	unit	CONFIRMED	+0xe vec3
+004fedf0	Unit_set_position	unit	CONFIRMED	actor or +0xe
+004ff850	Unit_get_yaw_rad	unit	CONFIRMED	+0x1a
+004ff870	Unit_set_yaw_rad	unit	CONFIRMED	+0x1a (+horse)
+004ff9f0	Unit_play_anim_record	unit	HIGH	writes +0xa
+00500d10	Unit_set_anim_position	unit	CONFIRMED	+0x213
+00501190	Unit_set_action	unit	HIGH	+0x215 state machine entry
+005045f0	Unit_animRemainingMs	unit	CONFIRMED	anim length − elapsed
+00504760	Unit_animLengthMs	unit	CONFIRMED	
+00505cc0	Unit_launch	unit	CONFIRMED	set jump velocity, gravity scale
+00505d90	Unit_set_actor_velocity	unit	HIGH	actor+0x6c..0x74
+00508880	Unit_calc_lod_tier	unit	CONFIRMED	dist^2 to player unit (or RTS camera): <=4e6 ->1, <=1.6e7 ->2, <=6.4e7 ->3, else 4; player=1
+005089e0	Unit_set_rank	unit	CONFIRMED	+0x104
+00508b90	Unit_stop	unit	HIGH	back to idle
+00508fb0	Unit_is_knocked_down	unit	CONFIRMED	action 64..66
+005091d0	Unit_is_side_moving	unit	CONFIRMED	state 0xe..0x14
+00509250	Unit_set_nation	unit	CONFIRMED	+0x2, nation power bookkeeping
+00509400	Unit_get_nation_obj	unit	CONFIRMED	
+0050abd0	Unit_set_yaw_deg	unit	CONFIRMED	+0x1e
+0050ac00	Unit_get_yaw_deg	unit	CONFIRMED	+0x1e
+00510030	Unit_set_training_mode	unit	CONFIRMED	+0x10c
+005124b0	Unit_set_movement_anim	unit	CONFIRMED	+0x217/+0x219, anim lookup
+00518b90	Unit_clear_climb_idle	unit	HIGH	CLB_IDLE
+0051c680	GameplayRes_load_unit_consts	unit	CONFIRMED	GAMEPLAY.RES {UNIT},{CRITICAL},{DANGER},{MINIMAP},{EXP},{R_ATT},{C_BOUNS},{KILL} -> globals 0xa3cbc8..0xa3cd2c (int keys atoi into i16/i32)
+0051e1f0	UnitArray_del_unit	unit	HIGH	0x471530(1) on unit, DynArray delete 0x5858c0, clears cached recno +0x2e
+0051e280	UnitArray_process	unit	CONFIRMED	per tick (Game_process_tick, ecx=0xa47c08): LOD tier pass + 12 round-robin Unit_process passes with adaptive budgets
+00523320	Unit_get_max_hp	unit	CONFIRMED	+0x13d + item1
+00523700	Unit_get_max_ep	unit	CONFIRMED	+0x149 + item2
+005237e0	Unit_get_str	unit	CONFIRMED	+0x155 + item3
+00523860	Unit_get_dex	unit	CONFIRMED	+0x157 + item4
+005238c0	Unit_get_def	unit	CONFIRMED	+0x159 + item5
+00523920	Unit_get_leadership	unit	CONFIRMED	+0x15b + item6
+00525080	UnitRes_load_record	unit	CONFIRMED	unitres.cpp key/value parser
+00527130	UnitRes_parse_ranking	unit	CONFIRMED	KING5 GENERAL4 CAPTAIN3 ARCHER1 INFANTRY0 CAVALRY2
+00527220	UnitRes_parse_unit_class	unit	CONFIRMED	CITIZEN0..CART9
+00527d20	UnitRes_parse_collision_type	unit	CONFIRMED	None/Sphere/Box3d/Cylinder
+00527dd0	UnitRes_morale_weight	unit	CONFIRMED	rank→1/2/3
+00527e60	UnitRes_morale_weight_killer	unit	CONFIRMED	rank→1/2/(Joan 4 else 3)/KING 0
+0052c490	Unit_process	unit	CONFIRMED	regen in phase 1
+0052daa0	Unit_process_movement	unit	HIGH	Unit_process phase 1 when actor present: path/order following (WK_DIST, REACH_DT, MAX_W_C, INIT_W_C), calls Unit_move 0x4f0b50
+0064f320	Unit_dieNoKiller	unit	CONFIRMED	MOR_CH_U/MOR_CH_T
+006a45a0	Physics_step_body	unit	HIGH	gravity −9.81*g, ms→s
+006b10a0	Body_set_move	unit	CONFIRMED	vel, start, duration
+# --- player
+00416680	Player_critCheck	player	CONFIRMED	CRI_DIFF
+0042ad50	Player_range_mode_update	player	CONFIRMED	draw timing with RATE_OF_FIRE
+0042ba40	Player_release_arrow	player	CONFIRMED	aim dir, state 0x33
+0042c260	Player_pick_range_target	player	CONFIRMED	AIM_R/AIM_MXD/AIM_HA
+0042c830	Player_validate_range_lock	player	CONFIRMED	drop lock beyond AIM_MXD/AIM_HA
+0042de70	PlayerCtrl_init_mode	player	CONFIRMED	mode from config 0xa58023
+0042e040	PlayerCtrl_set_mode	player	CONFIRMED	switch mode, RTS save/restore
+0042e1a0	PlayerCtrl_process	player	CONFIRMED	per-frame dispatcher (misnamed Game_quick_save); CORRECTS names.tsv "Game_quick_save" (F5/F6 quick save/load are only 2 of its hotkeys)
+0042fe30	Ctrl_world_dir	player	CONFIRMED	(camYaw+rel−90) mod 360
+00430480	PlayerCtrl_kbd_mouse	player	CONFIRMED	mode 3
+00431570	Input_move_angle	player	CONFIRMED	WASD → relative angle
+00431680	Input_move_code	player	CONFIRMED	WASD → move code
+00431790	Ctrl_mouse_yaw	player	CONFIRMED	mouse yaw/pitch
+00432300	Ctrl_switch_commander	player	CONFIRMED	0=cycle,1..4
+00432d30	PlayerCtrl_joystick	player	HIGH	mode 1 (same structure, not fully read)
+004343e0	PlayerCtrl_keyboard	player	CONFIRMED	mode 0
+004350f0	Ctrl_forward_state	player	CONFIRMED	RUN/H_RUN/CLIMB/WALK by mode
+004352f0	Ctrl_face_move_dir	player	CONFIRMED	facing, cam auto-rotate, air steering/landing
+004367c0	Player_attackInput	player	CONFIRMED	A/B/rush, queue, EP cost
+00437910	Player_energyAttack	player	CONFIRMED	EGATK_MP/EGATK_HP costs
+00437b60	Ctrl_jump	player	CONFIRMED	jump velocity
+00437ed0	Ctrl_run_walk	player	CONFIRMED	RUN/WALK request
+00438110	Ctrl_strafe	player	CONFIRMED	MOVE_* request
+00438820	Player_chain	player	CONFIRMED	CHAINPRO window, chain level++
+00438b30	PlayerCtrl_mouse_click	player	HIGH	mode 2 point&click move/attack
+0043a7d0	Player_autoAttackSetTarget	player	HIGH	mode 2 costs raw EGATK_MP
+0043acb0	Player_autoAttackUpdate	player	HIGH	
+0043c5c0	Ctrl_horse	player	CONFIRMED	horse dispatcher
+0043c920	Ctrl_horse_dismount	player	CONFIRMED	R while idle
+0043d7a0	Ctrl_horse_gear	player	CONFIRMED	walk/run/back
+0043dab0	Ctrl_horse_turn	player	CONFIRMED	TURN_ANG clamp, modes A/B
+00440b30	PlayerCtrl_rts	player	HIGH	mode 4
+00454090	GameplayRes_load_charmove	player	CONFIRMED	{CHARMOVE} AIM_R/AIM_MXD/AIM_HA/TURN_ANG/JUMPMAXD/JUMPMIND/CHAINPRO/CRI_TIME -> 0xa3373c..0xa33758
+0045fae0	Crit_drawHUD	player	CONFIRMED	CRI_TIME expiry
+00462810	Crit_key	player	CONFIRMED	sets +0x1b4
+00462970	Crit_startSequence	player	CONFIRMED	
+00503fb0	PC_resetChain	player	CONFIRMED	+0x9d=1
+00702740	ComboHUD_update	player	CONFIRMED	2000 ms counter reset
+007036f0	ComboHUD_show	player	CONFIRMED	
+# --- input
+00432250	Ctrl_set_mouse_sens	input	CONFIRMED	clamp ±1
+00433930	Joy_stick_level	input	CONFIRMED	0..3 deflection
+00433af0	Joy_stick_angle	input	CONFIRMED	deg or -1
+004cae70	KeyMap_load	input	CONFIRMED	DEFAULTK/KEYDESC → table
+004cb5b0	KeyMap_get_name	input	CONFIRMED	UI name of binding
+004cb6d0	Action_held	input	CONFIRMED	mode 0/1/3
+004cb820	Action_pressed	input	CONFIRMED	mode 0/1/3
+004cc220	KeyMap_apply_config	input	CONFIRMED	Config +0xb5 overrides
+004cc3d0	Key_held	input	CONFIRMED	DIK held incl. modifiers
+004cc570	Key_pressed	input	CONFIRMED	current event == DIK
+0052f930	Sys_process_frame_input	input	HIGH	called once per drawn frame from Sys_main_loop; pops one input event, hotkeys, video-capture flag 0xa3a30c
+00592d00	Input_queue_event	input	CONFIRMED	ring push (20 entries)
+00592dc0	Input_queue_keydown	input	CONFIRMED	ring entry type 2
+00592f00	Input_queue_keyup	input	CONFIRMED	ring entry type 6
+005932e0	Input_get_event	input	CONFIRMED	pop one event into current-event fields
+00593f60	Input_set_mouse_clip	input	CONFIRMED	clamp cursor rect
+00594700	Mouse_clicked	input	CONFIRMED	click count of current event
+00594f90	Input_poll	input	CONFIRMED	GetDeviceData merge by timestamp, mouse accum, queue events
+005959c0	Input_poll_all	input	CONFIRMED	loop 0x594f90 until empty, reset ring
+00597ed0	Joy_button	input	CONFIRMED	pad button state
+00598730	Input_poll_joysticks	input	CONFIRMED	4 pads, button edge events
+00598ac0	Input_reset_keys	input	CONFIRMED	GetKeyState locks, clear table
+00598bd0	Input_on_key	input	CONFIRMED	modifiers/arrow bits, keystate[dik]=data&0x80, queue down/up
+0065e0a0	Script_key_name	input	CONFIRMED	script action name → key text
+# --- combat
+00416dc0	AnimTable_findAction	combat	CONFIRMED	first rec with MOVEMENT==id
+00416e30	AnimTable_findCombo	combat	CONFIRMED	rec with MOVEMENT & COMBO string
+00416ed0	AnimRec_isFree	combat	CONFIRMED	COMBOAVAIL=='Y'
+00419320	AnimScript_parse	combat	CONFIRMED	animscr.res Range/StartTime/angles/AttackForce
+00436250	Ctrl_block	combat	CONFIRMED	GUARD1
+004363a0	Ctrl_down_attack	combat	CONFIRMED	DOWNATK
+0043a530	Trigger_isExpired	combat	CONFIRMED	
+0043ca90	Ctrl_horse_attack	combat	CONFIRMED	H_ATTACK A/B
+0047e200	Trigger_init	combat	CONFIRMED	field layout
+00494dc0	TriggerName_to_type	combat	CONFIRMED	TRIGGER_ATTACK=1 … DOWN_ATTACK=0x400
+004bbbc0	AICommand_parse	combat	CONFIRMED	COMBO_ATTACK=1, BLOCK=4, TURN=10, DOWN/ENERGY/RUSH=0x13..0x15
+004bca60	AI_energyAttack	combat	HIGH	same cost formula
+004eef00	Trigger_create	combat	CONFIRMED	message/trigger object (0x43 bytes)
+004ef090	Trigger_process	combat	CONFIRMED	sphere test, dispatch to units/objects
+00500ba0	Unit_canAct	combat	CONFIRMED	free-state + CLB_IDLE
+00500d40	Unit_canUseSpecial	combat	CONFIRMED	ENGATK/DOWNATK/RUSH availability
+00504010	Unit_findCurrentAnimRec	combat	CONFIRMED	matches posture/action/weapon/special/combo; sets +0x237/+0x23b
+005048b0	Melee_tryHit	combat	CONFIRMED	validity, range, arc, block
+00505960	Unit_relAngleToUnit	combat	CONFIRMED	degrees [-180,180]
+00505a00	Unit_relAngleToPoint	combat	CONFIRMED	
+00509000	Unit_knockdown	combat	CONFIRMED	random KNOCKDN1-3
+005094d0	Unit_isHostileToPlayer	combat	CONFIRMED	
+00509950	Melee_applyDamage	combat	CONFIRMED	
+00509d40	PC_getChain	combat	CONFIRMED	returns +0x9d
+0050d0d0	Unit_clearCombo	combat	CONFIRMED	
+005104f0	Unit_meleeAttackPower	combat	CONFIRMED	
+00510750	Unit_attackSkillMult	combat	CONFIRMED	(lvl+10)/11 × item A/B/jump/rush/down
+00510bf0	Unit_ranged_base_damage	combat	CONFIRMED	DEX/item formula + difficulty
+00510e80	Unit_meleeDamageTakenMult	combat	CONFIRMED	bonus 9 & 0x16
+00510f10	Unit_damageTakenMult	combat	CONFIRMED	bonus 0x16 only
+00510f80	Unit_isAttacking	combat	CONFIRMED	
+00511e70	Unit_base_guard_chance	combat	HIGH	30/50/90
+00511f80	Unit_get_guard_chance	combat	HIGH	× difficulty
+00512070	AI_blockChance	combat	CONFIRMED	BLOCKPER × diffA
+0075d540	Unit_onMessage	combat	CONFIRMED	hit reaction, force, balance, death
+007c7ab0	Unit_updateAction	combat	CONFIRMED	anim-end transitions, energy chain, get-up
+# --- ranged
+00420110	ThrowItem_ctor	ranged	CONFIRMED	memset 0x6c
+0042a810	Ctrl_range_update	ranged	CONFIRMED	exit/fire/aim
+0042b3c0	Ctrl_range_enter	ranged	CONFIRMED	Z toggle in
+0042b6e0	Ctrl_range_exit	ranged	CONFIRMED	Z toggle out
+00431480	ThrowItems_launch_for_shooter	ranged	CONFIRMED	calls 0x5133e0 for unlaunched items of unit
+004551f0	ThrowItem_release	ranged	HIGH	frees trail/model/sound
+004913c0	ThrowItems_process	ranged	CONFIRMED	DL/TL/collision removal, calls update
+004945c0	Aim_solve_by_type	ranged	CONFIRMED	wrapper choosing THROWI row for 0x496d40
+00496d40	Aim_solve_ballistic	ranged	CONFIRMED	t=d/AV, arc raise loop, out=v*M*1000
+00498e90	ThrowItem_load_params	ranged	CONFIRMED	switch(+0xc) copies TL..GL to +0x32..+0x52
+004e6fb0	ThrowItem_destroy	ranged	CONFIRMED	0x4551f0 + flag +0x24
+004ea700	ThrowItem_create	ranged	CONFIRMED	new 0x6c, init, add to pool
+004ea9c0	ThrowItems_remove	ranged	HIGH	remove by record id
+004ead00	ThrowItems_remove_foreign	ranged	HYPOTHESIS	destroys items whose shooter nation != param
+004fbc90	ThrowItem_on_hit_object	ranged	CONFIRMED	events to map objects + splash
+004fcc00	ThrowItem_update	ranged	CONFIRMED	orient, ground explosion (r=150), destroy
+005051e0	Ranged_tryHit	ranged	HIGH	same BLOCKANG test
+00507fc0	ThrowItem_init	ranged	CONFIRMED	itemType→proj type, DL*RANGE_DISTANCE, body create
+00509e90	Ranged_applyDamage	ranged	CONFIRMED	
+0050aca0	Unit_compute_aim_dir	ranged	CONFIRMED	unit+0x365 = norm(target-self)
+00510e40	Unit_rangeSkillMult	ranged	CONFIRMED	
+00512130	Ranged_spread_offset	ranged	CONFIRMED	±rand(ARR_ACCU)
+005133e0	ThrowItem_launch	ranged	CONFIRMED	force pulse / aim solve / spread / ammo use
+00514c40	ThrowItem_on_hit_actor	ranged	CONFIRMED	height check, events 2/0x40/0x2000
+005525b0	GameplayRes_load_throwi	ranged	CONFIRMED	reads THROWI keys, derives V0/FT
+0068de40	Physics_sweep_actors	ranged	HIGH	swept shape test vs units/objects, sets +0x298
+00693750	Physics_sweep_structures	ranged	HIGH	look-ahead FT/V0 mesh sweep
+006a8060	Physics_integrate_projectile	ranged	CONFIRMED	substeps, force pulse, gravity, collisions
+006ad660	Physics_step_all	ranged	CONFIRMED	dt = now - last; dispatch per body type
+006b08e0	RigidBody_init	ranged	HIGH	mass, shape, reset state
+006b11a0	RigidBody_set_force_pulse	ranged	CONFIRMED	force, start, duration
+# --- siege
+00416aa0	AnimVariant_from_name	siege	CONFIRMED	crew pose enum
+00451f20	Wall_take_melee	siege	CONFIRMED	melee*0.5 (ram only)
+0048c8c0	Gate_take_melee	siege	CONFIRMED	melee*0.5, LAHIRE x3
+0048c990	Gate_take_ranged	siege	CONFIRMED	ranged*0.5
+0048ca30	Gate_take_keg	siege	CONFIRMED	keg+0x72
+0048caf0	Gate_on_event	siege	CONFIRMED	HP damage rules
+0048d4b0	Gate_set_open_collision	siege	HIGH	opens/clears collision (also on destruction)
+0048e430	Gate_check_stage	siege	CONFIRMED	stage threshold advance
+0048fa50	Keg_on_event	siege	CONFIRMED	chain explosion r=200
+00492b10	Wall_take_ranged	siege	CONFIRMED	ranged*0.5
+00492bb0	Wall_take_keg	siege	CONFIRMED	keg+0x72
+0049d5f0	Item_applyDamage	siege	CONFIRMED	keg/explosive item damage
+00505650	Item_tryHit	siege	CONFIRMED	
+00546520	SkeletonSet_from_name	siege	CONFIRMED	human_cannon/batterram ids
+0054ffd0	Wall_on_event	siege	CONFIRMED	HP damage rules
+00650e70	Script_break_wall	siege	CONFIRMED	0x40 event r=1000
+0065c050	Script_change_animation_special	siege	CONFIRMED	unit+0x21d = variant
+# --- item
+0043b490	Ctrl_use_hp_item	item	CONFIRMED	F3 best-fit potion
+0043b990	Ctrl_use_ep_item	item	CONFIRMED	F4 best-fit potion
+00463cb0	DropList_parse	item	CONFIRMED	DROPITEM.RES
+00464030	DropList_roll	item	CONFIRMED	weighted RNG
+00495950	Inventory_ctor	item	CONFIRMED	0x1e bytes
+004959b0	Inventory_create_bags	item	CONFIRMED	
+00495b40	Inventory_ensure_bags	item	CONFIRMED	rank>2
+004970c0	Inventory_set_melee_slot	item	CONFIRMED	
+00497270	Inventory_set_ranged	item	CONFIRMED	
+004973a0	Inventory_set_ammo	item	CONFIRMED	
+00497490	Inventory_consume_ammo	item	CONFIRMED	count -= n, remove at <1
+004974f0	Inventory_get_slot	item	CONFIRMED	
+00497560	Inventory_get_ranged	item	CONFIRMED	
+00497580	Inventory_get_ammo	item	CONFIRMED	
+00497e10	Inventory_aggregate_effect	item	CONFIRMED	defaults 0, MORALE_DROP/EP_CONSUME 100
+004a41c0	ItemRes_baseValue	item	CONFIRMED	base+(lvl-min)*perLvl
+004a4200	ItemRes_effectValue	item	CONFIRMED	
+0050afe0	Unit_dropItem	item	CONFIRMED	
+00522c10	Gold_add	item	CONFIRMED	DAT_00a596c4 += n
+0065c3a0	Script_get_unit_arrow_quantity	item	CONFIRMED	ammo count
+# --- xp
+00454560	Script_cheat_dispatch	xp	CONFIRMED	unit_level_up etc.
+00454c80	Script_cheat_exec	xp	CONFIRMED	
+00455cc0	Script_unit_level_up	xp	CONFIRMED	clamp 1..30
+004949f0	Unit_apply_upgrade	xp	CONFIRMED	
+004a4ca0	LevelRes_load	xp	CONFIRMED	LEVEL table
+004a4e60	LevelRes_get	xp	CONFIRMED	7-byte rec
+004a95a0	Unit_ai_auto_upgrade	xp	CONFIRMED	unitlvl.cpp
+0050d170	Unit_hasCombo	xp	CONFIRMED	
+0050d240	UpItemRes_get	xp	CONFIRMED	100-byte rec
+0050d320	Unit_hasSkill	xp	CONFIRMED	
+0050d3d0	Unit_skillLevel	xp	CONFIRMED	learned upgrade level by type/string
+0050d4b0	Unit_energySkillProgress	xp	CONFIRMED	
+0050d640	Unit_spend_stat_point	xp	CONFIRMED	
+005229a0	Unit_add_exp	xp	CONFIRMED	EXPUP
+00522c40	Unit_check_level_up	xp	CONFIRMED	LEVELUP
+00523190	Unit_set_level	xp	CONFIRMED	
+00523240	Unit_unlock_upgrades	xp	CONFIRMED	
+00530d70	UnitUpgradeList_load	xp	CONFIRMED	<X>UP.csv
+005313d0	UpgradeList_unlock	xp	CONFIRMED	
+00531520	UpgradeList_mark_applied	xp	CONFIRMED	
+005315a0	UpgradeEntry_inc_applied	xp	CONFIRMED	
+00531790	UpItemRes_load	xp	CONFIRMED	UPITEM
+005319a0	UpgradeRes_load	xp	CONFIRMED	UPGRADE
+00531ba0	UpItem_parse_type	xp	CONFIRMED	
+00531df0	UpgradeRes_find_by_code	xp	CONFIRMED	
+00531e70	UpgradeRes_get	xp	CONFIRMED	0x35-byte rec
+00531ed0	UpItem_is_skill_type	xp	CONFIRMED	types 8..16
+0065c250	Script_set_unit_level	xp	CONFIRMED	
+0065c9e0	Script_add_unit_experience	xp	CONFIRMED	
+007c6240	Unit_die	xp	CONFIRMED	XP/EP/morale rewards

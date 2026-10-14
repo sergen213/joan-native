@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wars and Warriors: Joan of Arc (Native)
+Comment=Native Linux port launcher (requires your own copy of the original game)
+Exec=joa-launcher
+Icon=joan-native
+Terminal=false
+Categories=Game;StrategyGame;
+StartupWMClass=joa-launcher
