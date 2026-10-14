@@ -200,37 +200,64 @@ for a loss/timeout the blocking WIN objective, the bot's goal and the player pos
 
 ### 8.1 Campaign bot (`src/game/autopilot_player.{hpp,cpp}`, test/diagnostic only)
 Drives the player through `Mission::tick(InputFrame)` with only player inputs (W + camera yaw along a
-navmesh path, A/A/A/B combos, Q guard against any facing swing, R when the interact indicator shows
-talk/prisoner/item/recruit, F3 under 45 % HP) plus the character-screen attribute allocation
-(STR/HP/DEF). Targets, in order: close archers (< 350), whoever targets the player, the nearest enemy
-within 450; then an ally hero left > 700 behind (regroup), the first active minimap way point / followed
-unit, then — once a marker was stood at for 10 s without the script moving it — the territory of the
-open WIN objective (`territory_link`), the nearest enemy, items. Below 30 % HP with F3 ineffective it
-retreats to the nearest allied hero, guarding, until 70 %.
-Not done yet: siege use, RTS orders / troop hold-follow-recruit, chokepoint play, mounting, bribes,
-choice dialogs (the headless UI answers choice 1).
+navmesh path, A/B combos, Q guard / down attack, R at the interact indicator, F3) plus the
+character-screen attribute allocation. Strategy (from the mission scripts and the Steam walkthrough):
+
+- **Points:** every attribute point into HIT_POINT (+4 max HP each).
+- **Melee timing:** an English swing lands `anim_start + script StartTime` (~350 ms) after it starts;
+  the bot guards only swings landing within 400 ms, aims the guard at the middle of the incoming
+  swings (guarding blocks ±BLOCKANG and the controller does not turn while guarding, so it turns one
+  frame first), starts its own A when nothing is about to land, queues A A A B late in each
+  follow-up window only while no second enemy is ready, steps back when two are in reach, and down-
+  attacks (Q) a knocked-down foe in reach. Joan's A lands at 267 ms and every hit flinches the target,
+  so a single foe is stun-locked; the danger is the second attacker.
+- **Food:** F3 below 50 % HP; crates (`BOX` map items with content) are broken and floor / dropped
+  items walked over within 1200 when no enemy stands within 500 of them (the mission-1 tutorial).
+- **Rest:** below 70 % HP, enemies that have not noticed the player are left alone (backed away from);
+  the bot stands and regenerates. Below 30 % with no food it retreats to the nearest allied hero.
+- **Allies:** waits for (regroups with) an ally hero only while it follows the player (FOLLOW_UNIT).
+- **Objectives:** the first active minimap way point not yet stood at for 10 s; near it, NPCs showing
+  the talk icon (`can_interact`) are walked up to and talked to once (the shops of mission 2); then
+  the open WIN objective's territory, the nearest enemy, items.
+- **Plan layer:** `Autopilot::protectee()` — mission 2 stages 3–5: stay with the Bastard (ORLEAN)
+  and fight only enemies within 900 of him.
+- **Navigation:** stuck twice on the same line (house corners the path mesh cuts) → run off sideways,
+  alternating sides, further each time, then replan.
+- **Loss:** a finish 2 or the game-over box (`call_gameover_msg`, e.g. a hero that must live died or too
+  many citizens were killed; it freezes every unit even when no LOSE record ends the mission).
+
+Not done yet: ranged combat (Z mode), siege use, RTS orders / troop hold-follow-recruit, shop purchases
+(the buy screen is engine-side), mounting, bribes, character switching, choice dialogs (headless
+answers choice 1). `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits, deaths and spawns;
+`JOA_BOT_DBG=T` prints 200 ticks of per-frame inputs and nearby enemies from tick T.
 
 `game.campaign_legit` runs the chain from a new game (Normal, 40000 ticks per attempt, 2 retries) twice,
-checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (0 today).
-`joa-campaign --autopilot --difficulty D` measures other difficulties. Mission 1 (seed 1, 3 attempts each):
+checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (1).
+`joa-campaign --autopilot --difficulty D` measures other difficulties (seed 1, 60000 ticks, 2 retries):
 
-| difficulty | result | ticks | kills | HP dealt / taken by the player | furthest progress | death |
+| mission | difficulty | result | ticks | kills | HP dealt / taken | cause |
 |---|---|---|---|---|---|---|
-| 0 Easy (hostile dmg ×0.7) | LOST ×3 | 23349 | 21 | 2025 / 171 | event-1 marker, camp fight | while retreating at 5 % HP, (5773,10277) |
-| 1 Normal (×1.0) | LOST ×3 | 61803 | 21 | 2499 / 456 | messenger met (objectives 6/7 enabled, 0/4 done), tick 20601 | while retreating at 1 % HP, (12475,7948) |
-| 2 Hard (×1.5) | LOST ×3 | 5712 | 6 | 426 / 183 | camp fight | at 1 % HP, (10599,13808) |
+| 1 S1L1 | 0 Easy | WON | 40007 | 43 | 2621 / 197 | — |
+| 1 S1L1 | 1 Normal | WON | 31546 | 23 | 2041 / 194 | — |
+| 1 S1L1 | 2 Hard | LOST ×3 | 21532 | 19 | 1248 / 366 | killed (groups, ×1.5 damage) |
+| 1 S1L1 | 3 Very hard | LOST ×3 | 8332 | 10 | 740 / 232 | killed in the first camp fights |
+| 2 S3L1 | 1 Normal | LOST ×3 (chained) | 52088 | 9 | — | > 17 citizens killed ~100 s after the attack starts |
 
-The player deals 5–12× the damage it takes; deaths come from attrition (Joan's regen is
-`max(DEF·0.1, 1)` HP per 10 s, ~1 HP/10 s at level 1–2, and the bot runs out of potions) and from
-fighting groups, not from a damage/difficulty mismatch: EASY_D..VDIFF_D 0.7/1.0/1.5/2.0 on
-player-hostile attack power match GAMEPLAY.RES and 0x5104f0/0x510bf0 (`melee_attack_power`). Easy
-dying sooner than Normal is trajectory divergence (different fights), not balance. Missions 2–8 are
-not reached: the chain stops at the first loss.
+Mission 2: the bot meets the Bastard, collects ~17 food from crates, talks to both shopkeepers (stage
+3), then 28 English/Burgundian units spawned outside the west gate on one tick flood the city along
+four ATTACK_PLACE routes and kill citizens faster than Joan alone can intercept. The walkthrough
+answer is multi-hero play (Jean's squad near the blacksmith, archers on the wall, explosive arrows),
+which the bot does not do yet. A bot RETRY restarts with seed + attempt (the original reseeds from
+`time(NULL)`), so retries stay deterministic without replaying the identical loss.
 
-No port bug blocked mission 1. Port bugs found and fixed while bringing the bot up: see
-GAMEPLAY_IMPLEMENTATION.md "AI riders" (move-record lookup order, combo END_TIME, last-waypoint
-radius, Unit_deinit mount unlink) and the `PHYS` save section (pending push-asides were lost on load,
-breaking the `game.multimap_nav` round trip).
+Port bug fixed with the bot: F3 / F4 (`World::use_recovery_item`, 0x43b490 / 0x43b990) now go
+through the potion effect `World::recover` (0x50b4f0 / 0x50ba00 / 0x50bcd0, called with force 0):
+refused and kept at full HP / EP, team share (a leader gives amount/2 to every live member, a
+member's surplus heals its leader's most hurt members), red 0x15 preferred over 0x19 (EP restored
+too). The inventory right-click (`use_item`, force 1), the pickup of a fitting red potion (0x49da30,
+0x50b4f0 force 1) and `is_in_danger` share that one implementation (`game.items_recovery`).
+Earlier fixes: GAMEPLAY_IMPLEMENTATION.md "AI riders" (move-record lookup order, combo END_TIME,
+last-waypoint radius, Unit_deinit mount unlink) and the `PHYS` save section.
 
 ## 9. Gaps
 

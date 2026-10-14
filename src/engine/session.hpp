@@ -52,6 +52,10 @@ public:
     // ViewCtrl_reset 0x42de70 at every mission start: view/controller mode = config+0x6b input scheme (0 keyboard,
     // 1 joypad, 3 keyboard+mouse = key_scheme(GameOptions::input_method)); scripts read it (get_charmove_mode).
     int control_mode = 3;
+    // Options -> Input Method (0x73ca80): sets control_mode and, in a running mission, outside RTS switches the
+    // controller at once (PlayerCtrl_set_mode 0x42e040: +0x14 = old mode, +0x10 = new; refused while the player is
+    // on a ladder/vehicle, +0xcd), in RTS only the mode remembered for leaving RTS (+0x14).
+    void set_control_mode(int mode);
     // Game-end CONTINUE after a win: next campaign mission with the carried profile. False after mission 8
     // (*err = "campaign complete") or on error.
     bool continue_after_win(std::string* err = nullptr);

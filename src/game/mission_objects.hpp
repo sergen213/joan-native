@@ -22,6 +22,7 @@ namespace joa::game {
 class Mission;
 class NavWorld;
 struct Trigger;
+struct StructureHit;
 
 // ItemRes record (0x2bf bytes, ItemRes_parse 0x4a0160): the fields the mission layer reads.
 // Ids: item/item.res records first (== GameData item ids), then every ITEM\**\*.pro file in
@@ -47,6 +48,7 @@ struct ObjRes {
     int struction = 0;      // +0x1c StructionType
     std::vector<ObjStage> stages;  // +0x62 count
     bool pickable = false, unique = false, open_with_interact = false;  // +0x1c4 / +0x25b / +0x25e
+    bool skip_intersect = false;  // +0x1e3 SkipIntersectWithItem (structure sweep 0x693750)
     std::string description;  // +0x20 Description (interact prompt text "Press %1s to ..."), raw cp1252
 };
 
@@ -136,10 +138,14 @@ public:
     // pos inside [mn,mx] are recreated as new_res at the same pos/angles, owner = nation.
     void change_in_box(Mission& m, Vec3 mn, Vec3 mx, int old_res, int new_res, int nation);
     bool hostile(Mission& m, int a, int b) const;        // Diplomacy FUN_004b6860
+    // Physics_sweep_structures 0x693750 candidates + mesh ray (World::structure_ray contract).
+    StructureHit structure_ray(int item, Vec3 from, Vec3 to);
 
 private:
     void load_res(Mission& m, const formats::Vfs& vfs);
     int clip_ms(int res_id, int stage, std::string_view clip);   // clip length of the stage's model
+    struct ObjMesh { std::vector<Vec3> tri; Vec3 lo, hi; };   // triangle corners + bounds, model space
+    const ObjMesh& mesh(const MapItem& it);                   // collision triangles of the shown model
     bool footprint(const MapItem& it, Vec3 p, int r) const;   // ModItem_footprint_contains 0x41c5e0
     void deliver(Mission& m, int ir, const Trigger& t);
     void gate_event(Mission& m, int ir, const Trigger& t);    // Gate_on_event 0x48caf0
@@ -164,6 +170,7 @@ private:
     std::map<std::string, int> res_index_;        // upper(code) -> first id
     std::vector<std::string> sell_lists_;         // upper Code per sellitem.res record
     std::map<std::string, int> clip_cache_;       // "<res>:<CLIP>" -> ms (derived, not saved)
+    std::map<std::string, ObjMesh> mesh_cache_;   // "<dir><model>" (derived, not saved)
     const formats::Vfs* vfs_ = nullptr;
     NavWorld* nav_ = nullptr;                     // Mission::nav() (null without a .pfd)
 

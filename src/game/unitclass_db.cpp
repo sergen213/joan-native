@@ -146,7 +146,8 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         I("UNIT", "RECOV_T", c.recov_t); I("UNIT", "CLB_IDLE", c.clb_idle); I("UNIT", "MAX_COM", c.max_com);
         I("UNIT", "CRI_DIFF", c.cri_diff); F("UNIT", "CRITEXP", c.critexp); I("UNIT", "LEVELARR", c.levelarr);
         F("UNIT", "AI_MOVE", c.ai_move); I("UNIT", "MINDEXS", c.mindexs); I("UNIT", "MAXDEXS", c.maxdexs);
-        F("UNIT", "STOP_CC", c.stop_cc);
+        F("UNIT", "STOP_CC", c.stop_cc); F("UNIT", "IDLE2_CH", c.idle2_ch); F("UNIT", "IDLE3_CH", c.idle3_ch);
+        F("UNIT", "IDLE_CC", c.idle_cc);
         I("UNIT", "MOR_NOR", c.mor_nor); F("UNIT", "MOR_CH_U", c.mor_ch_u); F("UNIT", "MOR_CH_T", c.mor_ch_t);
         I("UNIT", "WP_DAMG", c.wp_damg); I("UNIT", "AMR_DEF", c.amr_def); F("UNIT", "AMREXDEF", c.amrexdef);
         F("UNIT", "SIE_UDAM", c.sie_udam); I("UNIT", "F_ATTACK", c.f_attack); I("UNIT", "F_DEFEND", c.f_defend);
@@ -264,6 +265,14 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
                 if (k + 1 < kv.lines.size()) x.value = std::atoi(kv.lines[k + 1].value.c_str());
                 if (k + 2 < kv.lines.size()) x.inc = std::atoi(kv.lines[k + 2].value.c_str());
                 it.extra.push_back(x);
+            } else if (formats::iequals(trim(kv.lines[k].key), "EffectiveRequirementType")) {
+                // 0x4a0160: type, then the next three values by position; EffectiveWhen "BELOW" -> 0, "OVER" -> 1
+                // (anything else leaves +0xc uninitialised in the original; every shipped item says one of the two).
+                ItemDef::Requirement q{effect_from_name(kv.lines[k].value), 0, 0, true};
+                if (k + 1 < kv.lines.size()) q.value = std::atoi(kv.lines[k + 1].value.c_str());
+                if (k + 2 < kv.lines.size()) q.inc = std::atoi(kv.lines[k + 2].value.c_str());
+                if (k + 3 < kv.lines.size()) q.over = upper(trim(kv.lines[k + 3].value)) != "BELOW";
+                it.require.push_back(q);
             }
         usable.push_back(kv.str("UsableUnit"));
         it.use_immediately = kv.i("UseImmediately") != 0;

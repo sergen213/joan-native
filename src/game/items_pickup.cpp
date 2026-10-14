@@ -38,7 +38,7 @@ void install_auto_pickup(Mission& m) {
                 w.emit(Ev::Effect, u.id, marker, item, "PICKUP");       // item emitter (+0x17a), 5000 ms
             };
             if (d.type == 0x15 && d.damage < w.max_hp(u) - u.hp) {
-                w.set_hp(u, u.hp + d.damage);   // red potion used at once when it fits (0x50b4f0)
+                w.recover(u, item, true);   // red potion used at once when it fits (0x50b4f0(item, 0, 1): team share)
             } else if (mission && d.code == "S7_GOLDBAR") {   // FUN_007c07b0 (strcmp) "S7_GOLDBAR"
                 ++st.gold_crates;                              // DAT_00a591b6: SMS 11 / 12 (FUN_006e5700 type 1)
                 m.emit(MissionEvent::Kind::Ui, st.gold_crates, 0, "sms_gold_crates");

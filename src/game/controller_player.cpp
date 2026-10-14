@@ -1,4 +1,6 @@
-// Keyboard+mouse player controller 0x430480 and its helpers (Part B §3, Part C §2.2, §3.9-3.12).
+// Player controller dispatcher 0x42e1a0, keyboard+mouse controller 0x430480 and the helpers shared with the
+// keyboard (controller_keyboard.cpp) and joystick (controller_joystick.cpp) controllers (Part B §3, Part C §2.2,
+// §3.9-3.12).
 #include "game/controller_player.hpp"
 
 #include <algorithm>
@@ -17,26 +19,33 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     Unit* up = w.unit(unit);
     if (!up) return false;
     Unit& u = *up;
-    const int now = w.now();
-    const Consts& c = w.data().c;
     camera_yaw_out = in.camera_yaw_deg;
+    camera_pitch_out = in.camera_pitch_deg;
     // Dispatcher 0x42e1a0: states that swallow input.
     if (w.dead(u) || u.action == DIE || u.action == STANDUP || is_knocked(u.action) || u.action == H_DROP) {
         run_ts = 0;
         return false;
     }
+    bool r = false;
+    switch (mode) {
+        case 0: r = process_keyboard(w, u, in); break;
+        case 1: r = process_joystick(w, u, in); break;
+        case 2: return process_click(w, u, in);   // its ViewCtrl update (0x439090) runs from World::tick_units
+        default: r = process_kbm(w, u, in); break;
+    }
+    // ViewCtrl_process mode updates 0x434f40 / 0x4338c0 / 0x431520 (modes 0 / 1 / 3) end in 0x4384e0 outside
+    // range mode. Mode 3 never sets +0x74 here, so this is a no-op for it.
+    if (!range_mode) center_camera_step();
+    return r;
+}
+
+bool PlayerController::process_kbm(World& w, Unit& u, const InputFrame& in) {
+    const int now = w.now();
     const bool A = in.pressed[IN_ATTACK_A], B = in.pressed[IN_ATTACK_B], C = in.pressed[IN_ENERGY];
     const bool Wh = in.held[IN_FORWARD], Sh = in.held[IN_BACKWARD], Ah = in.held[IN_STRAFE_LEFT], Dh = in.held[IN_STRAFE_RIGHT];
     const bool def = in.held[IN_DEFEND];
-    // Jump timer (+0x9e).
-    bool jfire = false;
     int hold = 0;
-    if (in.held[IN_JUMP]) {
-        jump_hold += World::kTickMs;
-        if (jump_hold >= c.jumpmaxd) jfire = true, hold = jump_hold, jump_hold = 0;
-    } else if (jump_hold > 0) {
-        jfire = true, hold = jump_hold, jump_hold = 0;
-    }
+    const bool jfire = jump_timer(w, in.held[IN_JUMP], hold);
     // Move code / relative angle (0x431680 / 0x431570); A+D cancel.
     const bool l = Ah && !Dh, r = Dh && !Ah;
     int move_code = 0, rel = -1;
@@ -72,23 +81,11 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     if (energy_attack(w, u, C || (A && B))) return true;
     if (attack_input(w, u, A, B, dt == 4)) return true;
     if (!(u.action >= MOVE_L && u.action <= MOVE_BR)) {
-        // 0x43c7d0: R mounts a free horse within 70. Deviation: ride mode (+0xc4) is set only when
-        // the mount succeeded (the original sets it regardless and leaves a refused rider stuck).
-        if (in.pressed[IN_INTERACT] && w.can_act(u) && u.posture != 1 && !u.mount) {
-            const int h = find_mount(w, u, 2);
-            if (const Unit* hu = w.unit(h); hu && hu->m.rider == 0) {
-                if (ride_horse(w, u, h) == 1) ride_mode = 1;
-                jump_hold = 0;
-                return true;
-            }
-        }
+        if (mount_input(w, u, in.pressed[IN_INTERACT])) return true;   // 0x43c7d0
         if (w.ladder_input && w.ladder_input(u, in)) return true;   // 0x42d300
         if (jump(w, u, jfire, magnitude, rel, hold, in.camera_yaw_deg)) return true;
     }
-    if (const int ev = dt == 5 ? JUMP_B : dt == 7 ? JUMP_R : dt == 6 ? JUMP_L : 0) {
-        if (w.can_act(u) && u.posture != 1 && u.action != IDLEUP && u.action != IDLEDN && w.find_move(u, ev)) w.set_action(u, ev);
-        return true;
-    }
+    if (const int ev = dt == 5 ? JUMP_B : dt == 7 ? JUMP_R : dt == 6 ? JUMP_L : 0) return evade(w, u, ev, true);
     if (chain_input(w, u, in.pressed[IN_CHAIN])) return true;
     // Movement.
     if (l || r) strafe(w, u, Wh, Sh, l, r);
@@ -109,6 +106,69 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     }
     if (forward_only) locomotion(w, u, move_code, in.held[IN_WALK]);
     return false;
+}
+
+// Jump key timer (+0x9e, 0x430480 / 0x4343e0 / 0x432d30): fires at JUMPMAXD held or on release with the hold time.
+bool PlayerController::jump_timer(const World& w, bool held, int& hold) {
+    if (held) {
+        jump_hold += World::kTickMs;
+        if (jump_hold < w.data().c.jumpmaxd) return false;
+    } else if (jump_hold <= 0) {
+        return false;
+    }
+    hold = jump_hold, jump_hold = 0;
+    return true;
+}
+
+// Double-tap evade (dt 5 JUMP_B, 7 JUMP_R, 6 JUMP_L): canAct, posture != 1, not IDLEUP/IDLEDN; 0x430480 and
+// 0x432d30 also need the move in the list (0x416dc0), 0x4343e0 does not. Consumes the frame even when refused.
+bool PlayerController::evade(World& w, Unit& u, int ev, bool need_move) {
+    if (w.can_act(u) && u.posture != 1 && u.action != IDLEUP && u.action != IDLEDN && (!need_move || w.find_move(u, ev)))
+        w.set_action(u, ev);
+    return true;
+}
+
+// 0x43c7d0: R mounts a free horse within 70. Deviation: ride mode (+0xc4) is set only when the mount
+// succeeded (the original sets it regardless and leaves a refused rider stuck).
+bool PlayerController::mount_input(World& w, Unit& u, bool r) {
+    if (!r || !w.can_act(u) || u.posture == 1 || u.mount) return false;
+    const int h = find_mount(w, u, 2);
+    const Unit* hu = w.unit(h);
+    if (!hu || hu->m.rider != 0) return false;
+    if (ride_horse(w, u, h) == 1) ride_mode = 1;
+    jump_hold = 0;
+    return true;
+}
+
+// 0x436190(on): on = save the facing (+0x75) and hold camera centring (+0x74 = 2); off = a held centring
+// finishes (2 -> 1).
+void PlayerController::center_camera(const Unit& u, bool on) {
+    if (!on) {
+        if (cam_center == 2) cam_center = 1;
+        return;
+    }
+    if (cam_center == 0 || cam_center == 1) cam_center = 2;
+    cam_center_yaw = u.yaw_deg;
+}
+
+// 0x4384e0 (0x577a20: the shorter way, at most 40 deg, snaps when within the step). HIGH.
+void PlayerController::center_camera_step() {
+    if (!cam_center) return;
+    const float d = std::remainder(cam_center_yaw - camera_yaw_out, 360.0f);
+    if (std::fabs(d) > 40.0f) {
+        camera_yaw_out += d > 0 ? 40.0f : -40.0f;
+        return;
+    }
+    camera_yaw_out = cam_center_yaw;
+    if (cam_center == 1) cam_center = 0;
+}
+
+// Ctrl_strafe 0x438110 as modes 0/1 call it with raw direction flags: only single directions and the four
+// diagonals act, forward alone walks (0x437ed0(0xc, walk = 1)), opposite directions together do nothing.
+void PlayerController::strafe_exact(World& w, Unit& u, bool f, bool b, bool l, bool r, int fwd) {
+    if (!w.can_act(u) || u.posture == 1 || (f && b) || (l && r)) return;
+    if (f && !l && !r) locomotion(w, u, 0xc, true, fwd);
+    else strafe(w, u, f, b, l, r);
 }
 
 // Player_attackInput 0x4367c0 (decomp 0x4367c0..0x437339 read for this port).
@@ -291,7 +351,7 @@ bool PlayerController::down_attack(World& w, Unit& u, bool held) {
 }
 
 // Jump 0x437b60.
-bool PlayerController::jump(World& w, Unit& u, bool fire, int magnitude, int rel_angle, int hold, float cam_yaw) {
+bool PlayerController::jump(World& w, Unit& u, bool fire, int magnitude, float rel_angle, int hold, float cam_yaw) {
     if (!fire || !w.can_act(u) || u.posture == 1 || u.action == IDLEUP || u.action == IDLEDN) return false;
     const Consts& c = w.data().c;
     const int world_dir = int(cam_yaw + float(rel_angle) - 90.0f) % 360;
@@ -324,16 +384,23 @@ bool PlayerController::jump(World& w, Unit& u, bool fire, int magnitude, int rel
 // vz <= 0 after rising (+0xa6 == 1) and canAct -> combo cleared, IDLEDN, +0xa6 = 2; then one air-steer
 // step: the heading turns <= 30 deg toward the input and the horizontal velocity is rotated onto it
 // keeping its magnitude (+0xa6 = 0). On the ground the heading is set to the input direction.
+// Camera 0 follows each of these turns (on the ground only while +0x74 == 0): + frame ms * 0.002 deg/ms per
+// degree of offset, offset = rel - 90 (rel < 180) else 270 - rel; zero for rel 90 (keyboard+mouse only calls this
+// running forward), so it matters in keyboard-only / joystick mode (turn keys, stick).
 // Deviation: the ATTACK re-aim (+-45 deg steps from the last direction +0x126a) is not modelled; the
-// heading is left alone during ATTACK.
-void PlayerController::face_move_dir(World& w, Unit& u, int rel, int magnitude, float cam_yaw) {
+// heading (and camera) is left alone during ATTACK.
+void PlayerController::face_move_dir(World& w, Unit& u, float rel, int magnitude, float cam_yaw) {
     const int a = u.action;
     if (guarding(a) || (a >= H_MNT_L && a <= H_DMNT_R)) return;
     const bool input = magnitude != 0 && rel != -1;
     const float wd = float(int(cam_yaw + float(rel) - 90.0f) % 360);   // Ctrl_world_dir 0x42fe30
-    if (a == DOWN && input) w.set_yaw(u, wd);
+    const auto turn_camera = [&] {
+        const float off = rel < 180.0f ? rel - 90.0f : 270.0f - rel;
+        if (off != 0.0f) camera_yaw_out += float(World::kTickMs) * 0.002f * off;
+    };
+    if (a == DOWN && input) w.set_yaw(u, wd), turn_camera();
     if (a == UP && w.anim_remaining(u) > 180) {
-        if (input) w.set_yaw(u, wd);
+        if (input) w.set_yaw(u, wd), turn_camera();
         const float ang = (input ? wd : u.yaw_goal) * 0.017453292f, f = float(magnitude * 1400) * World::kUnitsPerMetre / 1000.0f;
         u.vel.x = std::cos(ang) * f, u.vel.y = std::sin(ang) * f;
     }
@@ -360,8 +427,9 @@ void PlayerController::face_move_dir(World& w, Unit& u, int rel, int magnitude, 
         const float sp = std::hypot(u.vel.x, u.vel.y), g = u.yaw_goal * 0.017453292f;
         u.vel.x = std::cos(g) * sp, u.vel.y = std::sin(g) * sp;
         air_state = 0;
-    } else if (a != ATTACK && a != DOWN && a != UP) {
-        w.set_yaw(u, wd);
+    } else if (a != ATTACK) {
+        if (a != DOWN && a != UP) w.set_yaw(u, wd);
+        if (cam_center == 0) turn_camera();
     }
 }
 
@@ -382,7 +450,6 @@ bool PlayerController::chain_input(World& w, Unit& u, bool go) {
 // Range mode: enter 0x42b3c0, draw 0x42ad50, target 0x42c260, fire 0x42ba40, exit 0x42b6e0.
 bool PlayerController::range_input(World& w, Unit& u, const InputFrame& in) {
     const int now = w.now();
-    const Consts& c = w.data().c;
     const bool has_ammo = u.inv.ranged.item && u.inv.ammo.item && u.inv.ammo.quantity > 0;
     if (!range_mode) {
         if (!w.can_act(u) || u.posture == 1 || w.dead(u)) return false;
@@ -401,11 +468,21 @@ bool PlayerController::range_input(World& w, Unit& u, const InputFrame& in) {
         return true;
     }
     w.set_yaw_now(u, in.camera_yaw_deg);   // Camera_mouse_aim 0x42222f sets both headings
+    range_fire(w, u, in);
+    return true;
+}
+
+// Draw 0x42ad50 (SHTLOAD -> SHTIDLE after the RATE_OF_FIRE-scaled anim) and A: release 0x42ba40 in SHTIDLE, else
+// start drawing.
+void PlayerController::range_fire(World& w, Unit& u, const InputFrame& in) {
+    const int now = w.now();
+    const Consts& c = w.data().c;
+    const bool has_ammo = u.inv.ranged.item && u.inv.ammo.item && u.inv.ammo.quantity > 0;
     if (u.action == SHTLOAD) {
         const int need = w.anim_length(u) * 100 / (w.bonus(u, RATE_OF_FIRE) + 100);
         if (now - attack_ts >= need) w.set_action(u, SHTIDLE);
     }
-    if (!in.pressed[IN_ATTACK_A] || !has_ammo) return true;
+    if (!in.pressed[IN_ATTACK_A] || !has_ammo) return;
     if (u.action == SHTIDLE) {
         const UnitClass& cls = w.data().units[size_t(u.cls)];
         const Vec3 cam{u.pos.x, u.pos.y, u.pos.z + float(cls.height)};   // HYPOTHESIS: camera eye at class height
@@ -435,13 +512,45 @@ bool PlayerController::range_input(World& w, Unit& u, const InputFrame& in) {
         w.set_action(u, SHTLOAD);
         attack_ts = now;
     }
+}
+
+// Ctrl_range_update 0x42a810 in modes 0/1 (entered through range_input like mode 3): exit 0x42b6e0 (`exit`: mode 0
+// Z pressed, mode 1 Z released = hold to aim; the exit also centres camera 0, 0x436190(1)+(0)), else release
+// 0x42ba40, else Camera_mouse_aim 0x42bcd0 with keys/stick: yaw -= cos(angle) * level deg and pitch (up +) +=
+// sin(angle) * level deg per frame (1/2/3 deg; keyboard always 3), kept only while yaw is within AIM_HA of the
+// facing at entry (+0xb1) and pitch within AIM_HA of level (+0xb5 = 0 at entry); then both hero headings = yaw
+// and the lock (+0xbb, unit +0x2db) is dropped. The camera reads camera_yaw_out / camera_pitch_out back.
+bool PlayerController::range_update(World& w, Unit& u, const InputFrame& in, bool exit, float angle, int level) {
+    if (exit) {
+        range_mode = false;
+        u.range_target = 0;
+        w.stop(u);
+        center_camera(u, true), center_camera(u, false);
+        return true;
+    }
+    const bool has_ammo = u.inv.ranged.item && u.inv.ammo.item && u.inv.ammo.quantity > 0;
+    const bool release = in.pressed[IN_ATTACK_A] && u.action == SHTIDLE && has_ammo;
+    if (!release && angle != -1.0f && level != 0) {
+        const float a = angle * 0.017453292f, k = float(level), ha = w.data().c.aim_ha;
+        float yaw = in.camera_yaw_deg - std::cos(a) * k;
+        const float pitch = in.camera_pitch_deg + std::sin(a) * k;
+        if (yaw < 0) yaw += 360.0f;
+        else if (yaw >= 360.0f) yaw -= 360.0f;
+        if (std::fabs(std::remainder(yaw - range_base_yaw, 360.0f)) < ha && std::fabs(pitch) < ha) {
+            w.set_yaw_now(u, yaw);
+            u.range_target = 0;
+            camera_yaw_out = yaw, camera_pitch_out = pitch;
+        }
+    }
+    range_fire(w, u, in);
     return true;
 }
 
-// 0x437ed0: forward locomotion.
-void PlayerController::locomotion(World& w, Unit& u, int move_code, bool walk) {
+// 0x437ed0: forward locomotion; fwd = Ctrl_forward_state 0x4350f0 (RUN; joystick: IDLE / WALK / RUN by stick level),
+// the walk key turns RUN into WALK.
+void PlayerController::locomotion(World& w, Unit& u, int move_code, bool walk, int fwd) {
     if (move_code != 0) {
-        const int st = walk ? WALK : RUN;
+        const int st = walk && fwd == RUN ? WALK : fwd;
         if (u.action != st && w.can_act(u) && u.posture != 1 && !guarding(u.action) && w.set_action(u, st) && st == RUN) run_ts = w.now();
     } else if (u.action == TIPTOE || u.action == WALK || u.action == RUN) {
         w.stop(u);

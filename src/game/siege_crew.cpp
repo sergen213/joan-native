@@ -86,15 +86,17 @@ void siege_on_set_action(World& w, Unit& u, int a) {
     }
 }
 
-void siege_on_death(World& w, Unit& v, int killer) {   // Unit_die 0x7c6240 crew / driver part
+void siege_on_death(World& w, Unit& v, int killer) {   // Unit_die 0x7c6240 / Unit_dieNoKiller 0x64f320 crew / driver part
     const UnitClass& c = cls_of(w, v);
     for (std::size_t i = c.attach_points.size(); i-- > 0;) {
         Unit* m = live(w, crew_at(v, i));
         if (!m) continue;
         m->m.slot = 0;
         m->m.vehicle = 0;
-        m->special = 0;
-        w.stop(*m);
+        if (killer) {   // 0x64f320 (killer 0) neither resets +0x21d nor calls Unit_stop on the crew
+            m->special = 0;
+            w.stop(*m);
+        }
         // The ram's front crew stands inside the ram and dies with it.
         if (c.special == 11 && (c.attach_points[i].usage & 2) && !w.dead(*m)) {
             m->lives = 0;

@@ -178,7 +178,7 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
     ai_ = std::make_unique<AiSystem>(*world_, nav_.get());
     phys_ = std::make_unique<CharPhysics>(nav_.get());  // navmesh walls, step-up, unit pushes, gravity
     world_->set_physics(phys_.get());
-    ai_->chapter = cm.no;
+    ai_->chapter = world_->scenario_no = cm.no;
 
     host_ = std::make_unique<MissionHost>(*this);
     vm_ = std::make_unique<Vm>(vfs_source_loader(vfs_), *host_, seed);
@@ -232,7 +232,7 @@ void Mission::restore_profile() {
 
 bool Mission::continue_in_world(const CampaignMission& cm, std::string* err) {
     info_ = cm;
-    ai_->chapter = cm.no;
+    ai_->chapter = world_->scenario_no = cm.no;
     // Game_deinit keep path: enabled, finished, non-imperative objectives are dropped
     // (Game_drop_end_condition 0x471f90 frees the texts; the record stays and is ignored) and the
     // per-unit scenario counters (+0x1b0 +0x1b2 +0x1b5 +0x1b7 +0x1b9 +0x1bb) are cleared.

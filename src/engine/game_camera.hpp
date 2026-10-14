@@ -111,6 +111,10 @@ public:
     // view_proj = the frame's engine-space projection * view (GL clip convention); viewport x, y, w, h in pixels
     // (top-left origin). Presses inside `rts_blocked` (HUD minimap / portraits) are left to the HUD.
     void rts_input(game::Mission& m, const RawInput& raw, glm::vec2 mouse_px, glm::ivec4 viewport, const glm::mat4& view_proj);
+    // Point & click (mode 2) pick for the tick's popped click (PlayerCtrl_mouse_click 0x438b30, game_camera_rts.cpp):
+    // drops the click outside the 3-D view (Mouse_click_in_rect 0x5945d0), else fills f.pick_* with the nearest unit
+    // (hero excluded) / map item / floor drop on the ray (0x439110) or the terrain point (0x43a3b0).
+    void click_pick(game::Mission& m, game::InputFrame& f, glm::vec2 mouse_px, glm::ivec4 viewport, const glm::mat4& view_proj) const;
     // Working selection = group[active] (ViewCtrl +0xf9/+0x105/+0x1236): group 0 or an Alt-recalled group 1..9.
     const std::vector<int>& rts_selection() const { return groups_[std::size_t(active_)]; }
     const std::vector<int>& rts_group(int n) const { return groups_[std::size_t(n)]; }

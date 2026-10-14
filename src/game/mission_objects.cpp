@@ -31,6 +31,7 @@
 #include <optional>
 
 #include "formats/anim_clip.hpp"
+#include "formats/model_mesh.hpp"
 #include "formats/res_archive.hpp"
 #include "formats/world_text.hpp"
 #include "game/mission.hpp"
@@ -137,6 +138,7 @@ void parse_res(ObjRes& r, std::string_view text, const std::string& rec_name) {
             i = j - 1;
         } else if (is("Width")) r.width = std::atoi(v.c_str());
         else if (is("Height")) r.height = std::atoi(v.c_str());
+        else if (is("SkipIntersectWithItem")) r.skip_intersect = std::atoi(v.c_str()) != 0;
         else if (is("Quantity")) r.quantity = std::atoi(v.c_str());
         else if (is("MinLevel")) r.min_level = std::atoi(v.c_str());
         else if (is("Damage")) r.damage = std::atoi(v.c_str());
@@ -278,6 +280,133 @@ int MapObjects::clip_ms(int res_id, int stage, std::string_view clip) {
     }
     auto it = clip_cache_.find(done + upper(clip));
     return it == clip_cache_.end() ? 0 : it->second;
+}
+
+// Collision triangles of the model the item shows (stage model, else Model: FUN_004a3f20). 0x693750
+// ray-tests the scene object's own mesh and skips triangles whose material +0x38 == 1 (set by the
+// loader 0x5e0530 for trailer tag 1 = blended submeshes). An AM1 is posed at its AM2's first clip
+// start, the rest pose the engine draws (HYPOTHESIS: the original tests the animated pose).
+const MapObjects::ObjMesh& MapObjects::mesh(const MapItem& it) {
+    static const ObjMesh none;
+    const ObjRes* r = res(it.res);
+    if (!r || !vfs_) return none;
+    const int s = it.stage;
+    const std::string& model =
+        s >= 1 && s <= int(r->stages.size()) && !r->stages[s - 1].model.empty() ? r->stages[s - 1].model : r->model;
+    if (model.empty()) return none;
+    const std::string key = upper(r->dir + model);
+    if (auto c = mesh_cache_.find(key); c != mesh_cache_.end()) return c->second;
+    ObjMesh& out = mesh_cache_[key];
+    const auto dot = model.rfind('.');
+    const bool skinned = dot != std::string::npos && formats::iequals(model.substr(dot), ".am1");
+    const auto bytes = vfs_->read("item\\" + r->dir + model);
+    formats::Mesh mm;
+    std::string err;
+    if (!bytes || !formats::parse_mesh(*bytes, skinned, mm, err)) return out;
+    std::vector<formats::Mat3x4> pose;
+    if (skinned) {
+        const std::string stem = model.substr(0, dot);
+        auto ab = vfs_->read("item\\" + r->dir + "anim\\" + stem + ".am2");
+        if (!ab) ab = vfs_->read("anim\\" + stem + ".am2");
+        formats::Animation a;
+        if (!ab || !formats::parse_animation(*ab, a, err)) return out;
+        pose = formats::sample_pose(a, a.clips.empty() ? a.start : a.clips.front().start);
+    }
+    out.lo = {1e30f, 1e30f, 1e30f};
+    out.hi = {-1e30f, -1e30f, -1e30f};
+    for (const formats::Submesh& sub : mm.submeshes) {
+        if (sub.blendMode != -1) continue;
+        const std::vector<formats::MeshVertex> posed = skinned ? formats::skin_vertices(sub, pose) : std::vector<formats::MeshVertex>{};
+        const std::vector<formats::MeshVertex>& vs = skinned ? posed : sub.vertices;
+        const std::vector<std::uint32_t> idx = formats::strip_to_triangles(sub.strip);
+        for (std::size_t t = 0; t + 2 < idx.size(); t += 3) {
+            if (idx[t] >= vs.size() || idx[t + 1] >= vs.size() || idx[t + 2] >= vs.size()) continue;
+            for (std::size_t c = t; c < t + 3; ++c) {
+                const Vec3 p{vs[idx[c]].pos[0], vs[idx[c]].pos[1], vs[idx[c]].pos[2]};
+                out.tri.push_back(p);
+                out.lo = {std::min(out.lo.x, p.x), std::min(out.lo.y, p.y), std::min(out.lo.z, p.z)};
+                out.hi = {std::max(out.hi.x, p.x), std::max(out.hi.y, p.y), std::max(out.hi.z, p.z)};
+            }
+        }
+    }
+    return out;
+}
+
+namespace {
+Vec3 vsub(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3 vcross(Vec3 a, Vec3 b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+float vdot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+// Segment o + t·d (t in [0,1]) against an axis-aligned box.
+bool seg_box(Vec3 o, Vec3 d, Vec3 lo, Vec3 hi) {
+    const float O[3] = {o.x, o.y, o.z}, D[3] = {d.x, d.y, d.z}, L[3] = {lo.x, lo.y, lo.z}, H[3] = {hi.x, hi.y, hi.z};
+    float t0 = 0, t1 = 1;
+    for (int i = 0; i < 3; ++i) {
+        if (D[i] == 0) {
+            if (O[i] < L[i] || O[i] > H[i]) return false;
+            continue;
+        }
+        float a = (L[i] - O[i]) / D[i], b = (H[i] - O[i]) / D[i];
+        if (a > b) std::swap(a, b);
+        t0 = std::max(t0, a), t1 = std::min(t1, b);
+        if (t0 > t1) return false;
+    }
+    return true;
+}
+// Two-sided ray/triangle (Moller-Trumbore): t along d, or -1.
+float ray_tri(Vec3 o, Vec3 d, Vec3 a, Vec3 b, Vec3 c) {
+    const Vec3 e1 = vsub(b, a), e2 = vsub(c, a), p = vcross(d, e2);
+    const float det = vdot(e1, p);
+    if (det == 0) return -1;
+    const Vec3 s = vsub(o, a);
+    const float u = vdot(s, p) / det;
+    if (u < 0 || u > 1) return -1;
+    const Vec3 q = vcross(s, e1);
+    const float v = vdot(d, q) / det;
+    if (v < 0 || u + v > 1) return -1;
+    return vdot(e2, q) / det;
+}
+}  // namespace
+
+// Physics_sweep_structures 0x693750 look-ahead pass (HIGH): candidates are the map items except carried
+// weapons (type 8..12), POTION/GOLD/ENHANCER/MISSION/CROSS (class 7, 8, 9, 0xf, 0x13) and
+// SkipIntersectWithItem; the nearest triangle hit on the segment wins. Port: item transform
+// pos + scale·Rz(dir) (pitch/roll ignored, as the renderer); an open gate (passage not blocking) does
+// not collide (HYPOTHESIS: its leaves are swung aside); TERRAIN scenery is not in this array.
+StructureHit MapObjects::structure_ray(int item, Vec3 a, Vec3 b) {
+    StructureHit h;
+    auto fill = [&](int ir) {
+        const MapItem& it = items_[ir - 1];
+        h.item = ir, h.modify = it.modify, h.pos = it.pos;
+        if (const ObjRes* r = res(it.res)) h.struction = r->struction;
+    };
+    if (item) {
+        if (valid(item)) fill(item);
+        return h;
+    }
+    int best = 0;
+    for (int ir = 1; ir <= int(items_.size()); ++ir) {
+        const MapItem& it = items_[ir - 1];
+        if (it.deleted || (it.type >= 8 && it.type <= 12) || it.cls == 7 || it.cls == 8 || it.cls == 9 || it.cls == MISSION ||
+            it.cls == CROSS)
+            continue;
+        const ObjRes* r = res(it.res);
+        if (!r || r->skip_intersect || (it.cls == GATE && !it.blocking)) continue;
+        const ObjMesh& m = mesh(it);
+        if (m.tri.empty()) continue;
+        const float k = it.scale > 0 ? it.scale : 1.0f, c = std::cos(it.dir), s = std::sin(it.dir);
+        auto local = [&](Vec3 p) {
+            const float dx = (p.x - it.pos.x) / k, dy = (p.y - it.pos.y) / k;
+            return Vec3{c * dx + s * dy, -s * dx + c * dy, (p.z - it.pos.z) / k};
+        };
+        const Vec3 o = local(a), d = vsub(local(b), o);
+        if (!seg_box(o, d, m.lo, m.hi)) continue;
+        for (std::size_t i = 0; i < m.tri.size(); i += 3) {
+            const float t = ray_tri(o, d, m.tri[i], m.tri[i + 1], m.tri[i + 2]);
+            if (t >= 0 && t <= 1 && (!best || t < h.t)) h.t = t, best = ir;
+        }
+    }
+    if (best) fill(best);
+    return h;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -493,7 +622,9 @@ bool MapObjects::load(Mission& m, const formats::Vfs& vfs, const std::string& ma
 
 void MapObjects::install_hooks(Mission& m) {
     m.world().object_trigger = [this, &m](const Trigger& t) { on_trigger(m, t); };
+    m.world().object_nation = [this](int ir) { const MapItem* it = item(ir); return it ? it->nation : 0; };
     m.world().ladder_input = [&m](Unit& u, const InputFrame& in) { return ladder_input(m, u, in); };
+    m.world().structure_ray = [this](int item, Vec3 a, Vec3 b) { return structure_ray(item, a, b); };
     AiSystem& ai = m.ai();
     ai.item = [this](int id) -> std::optional<AiItem> {
         const MapItem* it = item(id);
@@ -501,6 +632,9 @@ void MapObjects::install_hooks(Mission& m) {
         AiItem a;
         a.pos = it->pos;
         if (const ObjRes* r = res(it->res)) a.code = r->code;
+        // Point & click: floor marker +0xa2; reach radius = the RTS pick's ItemRes footprint proxy (>= 30, scaled).
+        a.on_floor = it->on_floor;
+        if (const ObjRes* r = res(it->res)) a.radius = std::max(30.0f, float(std::max(r->width, r->height)) * 0.5f) * (it->scale > 0 ? it->scale : 1.0f);
         a.nation = it->nation;
         a.gate = it->cls == GATE, a.wall = it->cls == WALL, a.box = it->cls == BOX;
         a.hp = (a.gate || a.wall || it->cls == OBSTACLE || it->cls == HOUSE) ? it->hp : (a.box ? it->stage : 1);

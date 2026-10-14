@@ -266,6 +266,7 @@ void install_interact(Mission& m) {
         const bool a = recruit_screen_handler(m, u);
         return workshop_handler(m, u) || a;
     };
+    m.world().interact_item = [&m](Unit& u) { return !u.deleted && !m.world().dead(u) && item_handler(m, u); };
 }
 
 InteractTarget interact_target(Mission& m) {   // FUN_006d3590 (the RTS branch DAT_00a5b9f8 == 4 shows no prompt)

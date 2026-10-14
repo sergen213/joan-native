@@ -283,7 +283,7 @@ int main() {
             UiPad p;
             p.used = true, p.dir = {1, 0}, p.connected = connected;
             d.frame(p);
-            CHECK(u.menu.options.input_method == (connected ? 2 : 0));  // Keyboard & Mouse -> next (wraps without a pad)
+            CHECK(u.menu.options.input_method == (connected ? 2 : 3));  // Keyboard & Mouse -> next (Gamepad, else Point & Click)
         }
     }
 

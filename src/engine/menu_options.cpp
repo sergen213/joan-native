@@ -303,10 +303,16 @@ void audio_page(Ctx& c) {
 void input_page(Ctx& c) {
     GameOptions& o = c.m.options;
     auto opt = [&](int i) { return c.ui.text("OPTMENU", i); };
-    // Gamepad/Joystick is only listed when a pad is present (0x7435e0).
-    o.input_method = (o.input_method == 2 || c.ui.input().pad.connected
-                          ? combo_row(c, 0, 5, opt(15), {opt(12), opt(13), opt(14)}, o.input_method + 1)
-                          : combo_row(c, 0, 5, opt(15), {opt(12), opt(13)}, o.input_method + 1)) - 1;
+    // Gamepad/Joystick is only listed when a pad is present (0x7435e0). Point & Click (input_method 3, mode 2) is a
+    // port entry, last: the original combo maps {1,2,3} -> modes {0,3,1} only (0x73ca80) and reaches mode 2 solely
+    // through CONFIG.DAT 0x6B = 2; t_basic POPUP|4 calls it "mouse-driven control mode".
+    constexpr std::string_view kClick = "Point & Click";
+    if (o.input_method == 2 || c.ui.input().pad.connected) {
+        o.input_method = combo_row(c, 0, 5, opt(15), {opt(12), opt(13), opt(14), kClick}, o.input_method + 1) - 1;
+    } else {
+        const int i = combo_row(c, 0, 5, opt(15), {opt(12), opt(13), kClick}, o.input_method == 3 ? 3 : o.input_method + 1);
+        o.input_method = i == 3 ? 3 : i - 1;
+    }
     int s = ftol(double(o.mouse_sensitivity) * 10 + 10);
     if (int n = slider_row(c, 1, 5, opt(16), s, 21); n != s) o.mouse_sensitivity = float(n - 10) / 10.0f;
     o.invert_mouse = combo_row(c, 2, 5, opt(17), {opt(9), opt(10)}, o.invert_mouse + 1) == 2;
@@ -343,7 +349,7 @@ void remap_page(Ctx& c) {
     if (m.bindings.empty()) m.bindings = default_bindings(ui.vfs());  // sample state / no runner load
     const UiFont* f = button_font(ui);
     auto opt = [&](int i) { return ui.text("OPTMENU", i); };
-    const int method = m.options.input_method;
+    const int method = m.options.input_method == 3 ? 0 : m.options.input_method;  // point & click keys = K_KEY column
 
     // Category combo drops from (116, 62) to (116, 236 + lc) last (1050 ms, 0x748540); rows = DEFAULTK ids per
     // category (0x7478a0) whose current binding name is neither "Not Available" nor "Escape", 10 slots max.

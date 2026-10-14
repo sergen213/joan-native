@@ -6,6 +6,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -25,16 +27,25 @@ public:
     int last_progress_tick = 0;    // last tick an objective finished or a new way point appeared
     std::string goal;              // current goal ("waypoint 1 (x,y)", "fight #12", ...)
     std::vector<std::string> log;  // objective events (tick: text)
+    std::map<int, int> atk_start_;
+    std::size_t seen_units_ = 0;
+    int trace = 0;                 // diagnostic: print a status line every `trace` ticks (env JOA_BOT_TRACE)
 
 private:
     InputFrame decide();
     void steer(InputFrame& f, const Unit& p, Vec3 goal, bool replan);
     void fight(InputFrame& f, const Unit& p, const Unit& foe);
+    bool loot(InputFrame& f, const Unit& p, float radius = 1200);  // break boxes / pick up items nearby
+    int swing_eta(const Unit& u) const;
+    const Unit* protectee() const;  // mission plan: hero to stay with
 
     Mission& m_;
     int tick_ = 0;
     bool prompt_ = false;          // interact indicator shown
     std::string prompt_kind_;
+    int prompt_id_ = 0;              // unit / item the indicator points at
+    std::map<int, int> talked_;      // unit -> tick the player last talked to it (or gave up)
+    int talk_key_ = 0, talk_tick_ = 0;
     int last_interact_ = -1000, last_heal_ = -1000;
     // path following
     std::vector<Vec3> path_;
@@ -47,8 +58,10 @@ private:
     int fight_target_ = 0;
     bool retreat_ = false;           // HP < 30 % and F3 had no effect: guard near an ally until 70 %
     int heal_hp_ = 0;                // HP when F3 was last pressed
-    Vec3 done_wp_{-1e9f, -1e9f, 0};  // marker stood at for 10 s without the script moving it
+    std::vector<Vec3> done_wps_;     // markers stood at for 10 s without the script moving them
     int seen_tick_ = 0;              // last tick the player was away from the marker
+    int loot_key_ = 0, loot_tick_ = 0;  // current loot target (-map item recno / world item id), since
+    std::set<int> skip_;             // loot targets given up on
 };
 
 // One mission played by the bot from its start: Mission::tick until finish != 0 or `max_ticks`.

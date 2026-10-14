@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace joa::engine {
 namespace {
@@ -15,9 +16,15 @@ int norm_dik(int d) { return d == 0x36 ? 0x2a : d == 0x9d ? 0x1d : d == 0xb8 ? 0
 bool never_held(int d) { return d == 0x3a || d == 0x45 || d == 0x46; }  // Caps / Num / Scroll Lock
 // Input_poll 0x594f90: these only update the modifier word, they are not queued (CONFIRMED).
 bool modifier(int d) { return d == 0x2a || d == 0x1d || d == 0x38 || never_held(d) || d == 0xd2; }
-// Key-down events with a translated char (0xa51d5e != 0): printable keys, Esc/BS/Tab/Enter, keypad (NumLock on).
-// HYPOTHESIS: exact ToAscii set of 0x599240 not traced; only the WASD/arrow double tap depends on it.
-bool has_char(int d) { return (d >= 0x01 && d <= 0x1c) || (d >= 0x1e && d <= 0x29) || (d >= 0x2b && d <= 0x35) || d == 0x37 || d == 0x39 || (d >= 0x47 && d <= 0x53); }
+// Key-down events with a translated char (0xa51d5e != 0): Key_match_char 0x599240 (mask 0xe200: any modifiers) has a
+// non-zero char for exactly these DIKs: Esc..Enter, A..`, \..slash, keypad * and the keypad block, Space, F1..F12,
+// keypad = and Enter, the 0x91..0x93 / 0xb3 / 0xb5 keys and Home/arrows/PgUp/End/PgDn/Ins/Del (0x4800-style codes).
+// Only the double taps (WASD in mode 3, arrows in mode 0) depend on it.
+bool has_char(int d) {
+    return (d >= 0x01 && d <= 0x1c) || (d >= 0x1e && d <= 0x29) || (d >= 0x2b && d <= 0x35) || d == 0x37 || d == 0x39 ||
+           (d >= 0x3b && d <= 0x44) || (d >= 0x47 && d <= 0x53) || d == 0x57 || d == 0x58 || d == 0x8d || (d >= 0x91 && d <= 0x93) ||
+           d == 0x9c || d == 0xb3 || d == 0xb5 || d == 0xc7 || d == 0xc8 || d == 0xc9 || d == 0xcb || d == 0xcd || (d >= 0xcf && d <= 0xd3);
+}
 
 // Radial deadzone, rescaled so the edge of the deadzone is 0 and full deflection 1.
 float stick(float& x, float& y, float dz) {
@@ -30,6 +37,29 @@ float stick(float& x, float& y, float dz) {
 
 }  // namespace
 
+JoyStick joy_stick(float fx, float fy) {
+    constexpr int kMin = -32768, kMax = 32767, kMid = (kMin + kMax) / 2;
+    const auto raw = [](float v) { return int(std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f)); };
+    const int x = raw(fx), y = raw(fy);
+    JoyStick s;
+    const int m = std::max((std::abs(x - kMid) << 4) / (kMax - kMin), (std::abs(y - kMid) << 4) / (kMax - kMin));
+    s.level = m >= 5 ? 3 : m >= 3 ? 2 : m >= 2 ? 1 : 0;
+    const int dx = x - kMid, dy = y - kMid;
+    if (dx == 0) {
+        s.angle = dy < 0 ? 90.0f : dy > 0 ? 270.0f : -1.0f;
+    } else {
+        // 0x576da0: atan2 in double, stored as float; 0x576240: byte = ftol(rad * 256 / 2pi); 0x576300: byte * 1.40625.
+        const float r = float(std::atan2(double(float(-dy)), double(float(dx))));
+        s.angle = float(std::uint8_t(int(double(r) * 40.74366543152521))) * 1.40625f;
+    }
+    const auto dir = [](int v) {   // 0x597f70: MulDiv(min - mid, 13, 100) / MulDiv(max - mid, 13, 100)
+        return v < kMid + (kMin - kMid) * 13 / 100 ? -1 : v > kMid + (kMax - kMid) * 13 / 100 ? 1 : 0;
+    };
+    const int h = dir(x), v = dir(y);
+    s.move_code = h < 0 ? (v < 0 ? 10 : v > 0 ? 0xc : 0x1c) : h > 0 ? (v < 0 ? 0xb : v > 0 ? 0xd : 0x22) : (v < 0 ? 0x25 : v > 0 ? 0x14 : 0);
+    return s;
+}
+
 SDL_GamepadButton joypad_button(int n) {
     static constexpr SDL_GamepadButton b[12] = {
         SDL_GAMEPAD_BUTTON_SOUTH,         SDL_GAMEPAD_BUTTON_EAST,           SDL_GAMEPAD_BUTTON_WEST,     SDL_GAMEPAD_BUTTON_NORTH,
@@ -41,20 +71,26 @@ SDL_GamepadButton joypad_button(int n) {
 void GameInput::configure(const std::vector<KeyBindingRow>& rows, const GameOptions& opt, const PadSettings& pad, bool camera_fix) {
     opt_ = opt, pad_ = pad, camera_fix_ = camera_fix;
     std::fill(map_.begin(), map_.end(), Actions{});
-    const int scheme = key_scheme(opt.input_method), kc = scheme == 0 ? 0 : scheme == 1 ? 1 : 3;
+    // Point & click (scheme 2): PlayerCtrl_mouse_click 0x438b30 reads only actions 0x11 / 0x13 / 0x14 through
+    // Action_pressed(0, ..) (K_KEY); every other key handler asks the current scheme (Action_pressed(2, ..) = 0).
+    // Port deviation: 34 Main Game Menu stays live so the menu remains reachable.
+    const int scheme = key_scheme(opt.input_method), kc = scheme == 0 || scheme == 2 ? 0 : scheme == 1 ? 1 : 3;
     for (const KeyBindingRow& r : rows) {
         const int a = r.action;
         if (r.header || !valid(a)) continue;
+        if (scheme == 2 && a != game::IN_INTERACT && a != game::IN_HEAL_ITEM && a != game::IN_EP_ITEM && a != 34) continue;
         const int k = norm_dik(r.code[std::size_t(kc)]);
         if (k > 0 && k < 256 && !never_held(k)) map_[std::size_t(k)].set(std::size_t(a));
         const int m = r.code[4];  // FPS_MOUSE 1 L 2 R 3 M
         if (scheme == 3 && m >= 1 && m <= 3)
             map_[std::size_t(kMouse + (m == 1 ? SDL_BUTTON_LEFT : m == 2 ? SDL_BUTTON_RIGHT : SDL_BUTTON_MIDDLE))].set(std::size_t(a));
-        if (const SDL_GamepadButton b = joypad_button(r.code[2]); b != SDL_GAMEPAD_BUTTON_INVALID) map_[std::size_t(kPad + b)].set(std::size_t(a));
+        if (const SDL_GamepadButton b = joypad_button(r.code[2]); scheme != 2 && b != SDL_GAMEPAD_BUTTON_INVALID)
+            map_[std::size_t(kPad + b)].set(std::size_t(a));
     }
     // Fixed pad controls (no DEFAULTK column): Start = Main Game Menu, Back tap = RTS toggle, RT/LT = light/heavy
     // attack, left stick = move/strafe (partial tilt = walk), and the Back layer (game_input.hpp).
     map_[kPad + SDL_GAMEPAD_BUTTON_START].set(34);
+    if (scheme == 2) return reset();  // no pad controls in point & click
     map_[kBackTap].set(game::IN_RTS_TOGGLE);
     static constexpr std::pair<int, int> kLayer[] = {
         {SDL_GAMEPAD_BUTTON_SOUTH, 24},         {SDL_GAMEPAD_BUTTON_EAST, 43},       {SDL_GAMEPAD_BUTTON_WEST, 15},
@@ -80,7 +116,8 @@ GameInput::Actions GameInput::actions(const Inputs& in) const {
     return a;
 }
 
-void GameInput::feed(const RawInput& raw, float dt) {
+void GameInput::feed(const RawInput& raw, float dt, glm::vec2 pointer) {
+    pointer_ = pointer;
     Inputs now;
     for (std::size_t s = 0; s < raw.keys.size(); ++s)
         if (raw.keys[s])
@@ -99,6 +136,7 @@ void GameInput::feed(const RawInput& raw, float dt) {
     if (back && (lt || rt || (raw.pad_buttons.count() > 1))) chord_used_ = true;
     now.set(kBackTap, !back && back_down_ && !chord_used_);
     back_down_ = back;
+    joy_x_ = axis(SDL_GAMEPAD_AXIS_LEFTX), joy_y_ = axis(SDL_GAMEPAD_AXIS_LEFTY), joy_present_ = raw.pad_connected;
     float lx = axis(SDL_GAMEPAD_AXIS_LEFTX), ly = axis(SDL_GAMEPAD_AXIS_LEFTY);
     if (const float r = stick(lx, ly, pad_.deadzone); r > 0) {
         constexpr float s = 0.3827f;  // sin 22.5°: eight 45° sectors
@@ -117,7 +155,7 @@ void GameInput::feed(const RawInput& raw, float dt) {
     for (std::size_t i = 0; i < now.size(); ++i) {
         if (now[i] == down_[i]) continue;
         if (queued(i)) {
-            if (queue_.size() < 20) queue_.push_back({int(i), bool(now[i])});  // ring of 20 (+0x70d); full = dropped (HYPOTHESIS)
+            if (queue_.size() < 20) queue_.push_back({int(i), bool(now[i]), pointer_});  // ring of 20 (+0x70d); full = dropped (HYPOTHESIS)
         } else if (now[i]) {
             latched_.set(i);
         }
@@ -140,6 +178,11 @@ game::InputFrame GameInput::take() {
         if (e.down) {
             f.pressed = map_[std::size_t(e.id)];
             f.key_char_event = e.id < 256 && has_char(e.id);
+            // Point & click: the popped LMB / RMB down (Mouse_click_in_rect 0x5945d0 button 0 / 1) and its position.
+            if (key_scheme(opt_.input_method) == 2 && (e.id == kMouse + SDL_BUTTON_LEFT || e.id == kMouse + SDL_BUTTON_RIGHT)) {
+                (e.id == kMouse + SDL_BUTTON_LEFT ? f.click_left : f.click_right) = true;
+                click_pos_ = e.pos;
+            }
         }
     }
     f.pressed |= actions(latched_);
@@ -150,6 +193,11 @@ game::InputFrame GameInput::take() {
     f.alt_held = alt_;
     f.mouse_sensitivity = std::clamp(opt_.mouse_sensitivity, -1.0f, 1.0f);
     f.invert_mouse = opt_.invert_mouse;
+    // Joystick controller (mode 1) stick inputs; the other controllers ignore them.
+    if (joy_present_) {
+        const JoyStick s = joy_stick(joy_x_, joy_y_);
+        f.joy_present = true, f.joy_level = s.level, f.joy_angle = s.angle, f.joy_move_code = s.move_code;
+    }
     // Mouse yaw (docs/CAMERA_AND_WIDESCREEN.md "Native mouse yaw"): the controller turns int(mouse_dx * k) degrees
     // (0x431790, k below). Accumulate the exact float yaw here, hand the game a mouse_dx whose product truncates to
     // the whole degrees and keep the sub-degree remainder for the next tick.
@@ -159,6 +207,7 @@ game::InputFrame GameInput::take() {
     yaw_rem_deg_ -= deg;
     f.mouse_dx = deg == 0 ? 0.0f : (deg + std::copysign(0.5f, deg)) / (k * 0.2f);
     f.mouse_dy = dy_;
+    if (key_scheme(opt_.input_method) == 2) f.mouse_dx = f.mouse_dy = yaw_rem_deg_ = 0;  // the mouse is a pointer: no look
     dx_ = dy_ = pad_yaw_deg_ = 0;
     return f;
 }

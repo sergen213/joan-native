@@ -900,7 +900,7 @@ Inputs sampled: A=pressed(13), B=pressed(14), zoom (wheel/48/49), Z=pressed(18),
 * Shift (action 3) held + direction → 0x436190(1) (camera center) and 0x438110(...) = strafe/back-step states; Shift alone recentres camera.
 * Defend = pressed OR held; Down-attack/Block use it. Energy = S pressed only (no A+B).
 * Double tap: Up-Up → rush (no Shift needed); Shift+Down-Down → JUMP_B, Shift+Right-Right → JUMP_R (dt 7), Shift+Left-Left → JUMP_L (dt 6), same 300 ms window.
-* Jump call guarded by `held(Up)+held(Down)+held(Left)+held(Right) == 1` on the raw held values (asm 0x434a7b..0x434a87). Held values are 0x80 per key → sum is 0 or a multiple of 0x80, never 1 ⇒ **with default arrow-key bindings jump never fires in keyboard-only mode** [CONFIRMED arithmetic; INFERENCE: original bug]. Reimplementation should decide (probably `count == 0 or 1`).
+* Jump call guarded by `held(Up)+held(Down)+held(Left)+held(Right) == 1` on the raw held values (asm 0x434a7b..0x434a87). Held values are 0x80 per key → sum is 0 or a multiple of 0x80, never 1 ⇒ **with default arrow-key bindings jump never fires in keyboard-only mode** [CONFIRMED arithmetic; INFERENCE: original bug]. The port keeps it (`process_keyboard`).
 * Range mode: no movement allowed (manual), aim with keys.
 * Order: Defend/down/block → attacks (before energy) → energy → R mount/climb → jump → evades → movement.
 
@@ -1329,7 +1329,7 @@ if A is the player unit (A.id == PC.id):
     if A.critFlag(U+0x1b4): dmg = dmg + dmg                        // critical ×2
     dmg = (float)PC.chainLevel(+0x9d) * dmg                        // CHAIN multiplier (1,2,3…)
 FRIENDLY:  (only if player unit valid)
-    if gameType(0xa58fa7)==8:                                     // UNKNOWN mode (multiplayer?)
+    if gameType(0xa58fa7)==8:                                     // scenario no 8 (scenario_08.SCR = S6L1, last chapter)
         if A.side != player.side: dmg *= F_ATTACK/250.0f           // 130/250
         if D.side != player.side: dmg *= F_DEFEND/100.0f
     if A.side == player.side: dmg *= F_ATTACK/100.0f               // 1.30
@@ -1450,8 +1450,10 @@ counter++, return 2.
 * Morale (killer case): `M = rank(victim class) + rank'(killer class)` with rank: Ranking 0-2→1, 3→2, 4-5→3
   (0x527dd0; killer variant 0x527e60 gives Joan 4). For every unit u: if u in killer's side & troop (`U+0x31`≠0 equal):
   `u.morale = ftol(u.morale + max(1.0, M*MOR_CH_T))`; elif u in victim's side & troop: `ftol(u.morale − max(1.0, M*MOR_CH_T))`.
-  Killer-less (0x64f320): victim's side only, same troop `−= M*MOR_CH_T`, other troops of that side `−= M*MOR_CH_U(1.0)`
-  (no min 1).
+  Killer-less (0x64f320): victim's nation only (+0x02 ≠ 0), same troop (`U+0x31`≠0 equal) `−= M*MOR_CH_T`, every other unit
+  of that nation (other troops and troop-less units) `−= M*MOR_CH_U(1.0)`; `M = W1(victim)` only, no min 1 (CONFIRMED asm 0x64fa78..0x64fb64).
+  0x64f320 is reached only from the item-hit message 0x4000 (0x75e9fb) and its own crew/driver recursion; it has no killer
+  rewards, no Unit_stop on the crew, and pushes the corpse 3000/500 at angle 0.
   `SetMorale` 0x4fe8c0: when lowering a troop member (`U+0x31`≠0) whose leader has an inventory: if this unit's
   `Inv_bonus(0x13,leader)`==0 → no change (MORALE_DROP immunity); `base=Inv_bonus(0x12)`; if base < current → **no change**;
   else morale = base. Otherwise clamp 0..100. (CONFIRMED asm; with no items this means hero-led troops never lose morale.)
@@ -1558,7 +1560,7 @@ counter++, return 2.
 * Sign convention of RelAngle (+ = right) — HYPOTHESIS from LATTKED/RATTKED mapping.
 * Semantics of learned-skill record fields [1],[2] — HYPOTHESIS ([2]==[1] "fully learned").
 * Input action #0x15 (CHAIN key) name — see Part B.
-* gameType 0xa58fa7==8 meaning for F_ATTACK/250 branch — UNKNOWN.
+* gameType 0xa58fa7==8: RESOLVED — 0xa58fa7 is the Scenario object's scenario no (GAMEPLAY_AI_TROOPS.md §4.1), so 8 = the last campaign chapter (S6L1).
 
 ## 7. Part D — Ranged and siege
 
@@ -1957,7 +1959,7 @@ The per-part "Open items" lists above hold the details. Summary:
 - **RelAngle sign.** Whether a positive relative angle means right is a HYPOTHESIS (from the LATTKED/RATTKED mapping).
 - **Unidentified tick work.** Several Game_process_tick subsystems in §1.2 are only HYPOTHESIS-labelled. They do not affect combat, except that **they consume the shared RNG**.
 - **Siege crews.** Crew operation and siege AI appear to be scripted (Part D §7). Gate and wall damage rules are CONFIRMED.
-- **Game mode 8.** The meaning of `0xa58fa7 == 8` in the F_ATTACK/250 branch is UNKNOWN. HYPOTHESIS: multiplayer.
+- **Game mode 8.** RESOLVED: `0xa58fa7` = scenario no; the F_ATTACK/250 branch runs in campaign scenario 8 (S6L1). Same branch in 0x49d5f0 (keg) and 0x509e90; the only other `== 8` reads are UI (GameEndMenu 0x7226a0/0x720ca0, HUD text 0x6f9a60).
 - **No dynamic verification.** None of the above was checked in-game. The DynamicRef agent's captures can validate the HP regen period, the knockdown durations and the damage numbers.
 
 ---------------------------------------------------------------------------------------------------

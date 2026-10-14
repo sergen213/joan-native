@@ -9,6 +9,8 @@
 namespace joa::game {
 
 class GameData;
+class World;
+struct Unit;
 
 // Effect ids (itemres "DamageType"/"AdditionalEffectType" names, parser 0x4a45f0, CONFIRMED).
 enum Effect : int {
@@ -40,8 +42,9 @@ struct Inventory {
     // 0x4974f0: mode 0 -> null; mode 2 -> ranged; mode 1 -> melee[slot].
     const ItemInstance* slot(int s) const;
     // Inv_bonus 0x497e10 (integer math, C '/'): equipped slots 0,1 and ranged (mode 1 only),
-    // then ENHANCER-class bag items (duplicate ids: highest level only).
-    int bonus(const GameData& gd, int effect) const;
+    // then ENHANCER-class bag items (duplicate ids: highest level only) that pass the applicability
+    // test 0x4a42f0 on unit `req` (the recno argument; skipped without a world, e.g. bare inventories).
+    int bonus(const GameData& gd, int effect, const World* w = nullptr, const Unit* req = nullptr) const;
     template <class V> void visit(V& v) { v(weapon_mode), v(melee[0]), v(melee[1]), v(ranged), v(ammo), v(bag); }
 };
 

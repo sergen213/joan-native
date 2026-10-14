@@ -22,8 +22,10 @@ float wrap360(float d) {
     d = std::fmod(d, 360.0f);
     return d < 0 ? d + 360.0f : d;
 }
+// IDLE2/IDLE3 play once: 0x7c7ab0 ends them on Unit_animRemainingMs == 0, which a looping actor
+// (0x5045f0: elapsed % length) never reports.
 bool loops(int a) {
-    return a == IDLE || a == IDLE2 || a == IDLE3 || a == IDLE_BAT || a == IDLE_T || is_locomotion(a) || a == SHTIDLE ||
+    return a == IDLE || a == IDLE_BAT || a == IDLE_T || is_locomotion(a) || a == SHTIDLE ||
            a == SHTIDLEH || a == GUARD1 || a == H_IDLE || a == H_WALK || a == H_RUN || a == UP;
 }
 }  // namespace
@@ -206,12 +208,12 @@ void World::set_balance(Unit& u, int v) {
     }
 }
 void World::set_morale(Unit& u, int v) {
-    if (v < u.morale && u.team != 0) {
-        const Unit* l = unit(u.leader);
-        if (!l) l = &u;
-        (void)l;  // the aggregation runs on THIS unit's inventory (with the leader recno; applicability not modelled)
-        if (bonus(u, MORALE_DROP) == 0) return;
-        const int base = bonus(u, MORALE_BASE);
+    // 0x4fe8c0 (asm 0x4fe90a..0x4fe936): Inv_bonus runs on THIS unit's inventory with the recno of
+    // Unit_get_leader (self for a leader), so enhancer requirements are tested on the leader; no leader -> clamp.
+    const Unit* l = v < u.morale && u.team != 0 ? (u.leader ? unit(u.leader) : &u) : nullptr;
+    if (l) {
+        if (bonus(u, MORALE_DROP, l) == 0) return;
+        const int base = bonus(u, MORALE_BASE, l);
         if (base < u.morale) return;   // quirk: drop ignored whenever morale > MORALE_BASE
         if (v < base) { u.morale = base; return; }
     }
@@ -286,8 +288,16 @@ void World::set_yaw_now(Unit& u, float deg) {
     set_body_yaw(*this, u, deg);
 }
 
+// FUN_00429ec0 (CONFIRMED asm): one Misc_rand_unit_incl r (stored as float): r <= IDLE2_CH -> IDLE2,
+// r <= IDLE3_CH -> IDLE3, else IDLE. Only Unit_stop calls it, for horses. Cosmetic stream (deviation 3).
+void World::idle_pick(Unit& u) {
+    const float r = float(rand_unit_incl(cosmetic_));
+    set_action(u, r <= gd_.c.idle2_ch ? IDLE2 : r <= gd_.c.idle3_ch ? IDLE3 : IDLE);
+}
+
 // Unit_stop 0x508b90 (CONFIRMED): idle-class states are kept as they are. A rider stands H_IDLE and
-// its horse IDLE; a horse with a rider stops the rider (0x429ec0, HYPOTHESIS); a cart with a driver
+// its horse picks IDLE/IDLE2/IDLE3 (0x429ec0); a horse with a rider (+0x1e6) picks for itself (asm
+// 0x508c10..0x508c28: ECX = the horse); a cart with a driver
 // stands and the driver gets CA_IDLE; a cart driver CA_IDLE and the cart IDLE; a climber
 // C_IDLE_A/B by climb stage; UP lands as IDLEDN; units in ATTACK/ACTIVE mode stand IDLE_BAT, bound
 // prisoners IDLE_T, everyone else IDLE. Deviation: JATTACKB (excluded in the original, which ends it
@@ -297,10 +307,10 @@ void World::stop(Unit& u) {
     if (is_idle_class(a)) return;
     if (Unit* h = unit(u.mount); h && !h->deleted) {
         set_action(u, H_IDLE);
-        set_action(*h, IDLE);
+        idle_pick(*h);
         return;
     }
-    if (Unit* r = unit(u.m.rider); r && !r->deleted && r->mount == u.id) return stop(*r);
+    if (u.m.rider) return idle_pick(u);
     const int stand = a == UP ? IDLEDN : (u.mode == 1 || u.mode == 2) ? IDLE_BAT : (u.no_react && u.m.bound) ? IDLE_T : IDLE;
     if (Unit* d = unit(u.m.cart_driver); d && !d->deleted) {
         set_action(u, stand);
@@ -502,9 +512,13 @@ void World::emit(Ev type, int unit, int other, int value, std::string name) {
 // Tick
 
 void World::tick_units(const InputFrame& in) {
-    // Sys_process_frame_input: the controller runs before the clock advances (Part B §1.2). In RTS (mode 4)
-    // ViewCtrl_process_key 0x42e1a0 dispatches to PlayerCtrl_rts 0x440b30 (engine GameCamera) instead: the hero is AI.
-    if (unit(pc_.unit) && game_mode != 4) pc_.process(*this, in);
+    // Sys_process_frame_input: the controller runs before the clock advances (Part B §1.2). ViewCtrl_process_key
+    // 0x42e1a0 switches on +0x10 (= game_mode): 0 keyboard, 1 joystick, 2 point&click, 3 keyboard+mouse; in RTS
+    // (mode 4) it dispatches to PlayerCtrl_rts 0x440b30 (engine GameCamera) instead: the hero is AI. Pads keep mode 3.
+    if (unit(pc_.unit) && game_mode != 4) {
+        pc_.mode = game_mode;
+        pc_.process(*this, in);
+    }
     for (auto& [id, src] : pads_)
         if (Unit* u = unit(id)) {
             const InputFrame f = src(*this, *u);
@@ -567,6 +581,10 @@ void World::tick_units(const InputFrame& in) {
     process_projectiles();   // #9 ThrowItem manager
     process_triggers();      // #10 Trigger_process
     if (combo_hits && now_ - combo_hits_ts > 1999) combo_hits = 0;   // HUD 0x702740
+    // ViewCtrl_process 0x42f700 (camera manager 0x5634e0, after the tick's objects; skipped in cut scenes and range
+    // mode): the point & click update 0x439090. Leaving mode 2 (exit 0x438b00) drops its auto action.
+    if (game_mode != 2) pc_.auto_target = pc_.auto_kind = pc_.auto_state = pc_.auto_fury = 0;
+    else if (!pc_.range_mode) pc_.update_click(*this);
 }
 
 void World::tick_physics() {
@@ -666,8 +684,22 @@ void World::update_action(Unit& u) {
         }
         return;
     }
+    if (a == IDLE) {   // 0x7c7ab0 case 1, IDLE_CC (cosmetic stream, deviation 3); r drawn every update
+        float r = float(rand_unit_incl(cosmetic_));
+        if (cut_scene) r *= 4.0f;   // Game_is_cutscene: a quarter of the chance
+        const int len = anim_length(u);
+        const int left = len > 0 ? len - (now_ - u.anim_start) % len : 0;   // looping actor (0x5045f0)
+        if (left > 100 || !gd_.moves(u.cls) || u.posture != 0 || r > gd_.c.idle_cc) return;   // +0x2f1, +0x213
+        const float r2 = float(rand_unit_incl(cosmetic_));
+        const bool i2 = find_move(u, IDLE2) != nullptr;
+        const bool i3 = find_move(u, IDLE3) != nullptr && !u.m.rider;   // FUN_004f2170: ridden horses skip IDLE3
+        if (i2 && (r2 < 0.5f || !i3)) set_action(u, IDLE2);
+        else if (i3) set_action(u, IDLE3);
+        return;
+    }
     if (rem > 0) return;
     switch (a) {
+    case IDLE2: case IDLE3: set_action(u, IDLE); break;   // 0x7c7ab0 cases 2/3
     case ATTACK: case JATTACKB: case DOWNATK: case CHAIN: case RUSH: case ENGATK4: case H_ATTACK:
     finish:
         u.combo_idx = -1;

@@ -242,10 +242,12 @@ void GameCamera::before_tick(const game::Mission& cm, game::InputFrame& f) {
     const float t = (std::clamp(f.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f;  // 0x4322d0 curve
     const float inv = f.invert_mouse ? -1.0f : 1.0f;
     if (aiming_ && pc.range_mode) {
-        // Camera_mouse_aim 0x42bcd0, scheme 3: yaw free, pitch within AIM_HA (60) of the base pitch.
-        aim_yaw_ = wrap360(aim_yaw_ - f.mouse_dx * t * 0.08f);
+        // Camera_mouse_aim 0x42bcd0, scheme 3: yaw free, pitch within AIM_HA (60) of the base pitch. Other modes aim
+        // with keys / the stick in the controller (range_update); after_tick reads that back.
+        if (w.game_mode == 3) aim_yaw_ = wrap360(aim_yaw_ - f.mouse_dx * t * 0.08f);
         const float base = -pc.range_base_pitch;
-        aim_pitch_ = std::clamp(aim_pitch_ + f.mouse_dy * t * 0.08f * inv, std::max(-89.0f, base - 60.0f), std::min(89.0f, base + 60.0f));
+        if (w.game_mode == 3)
+            aim_pitch_ = std::clamp(aim_pitch_ + f.mouse_dy * t * 0.08f * inv, std::max(-89.0f, base - 60.0f), std::min(89.0f, base + 60.0f));
         f.camera_yaw_deg = aim_yaw_;
         f.camera_pitch_deg = -aim_pitch_;
     } else {
@@ -275,6 +277,7 @@ void GameCamera::after_tick(game::Mission& m, const GameInput& input) {  // keys
     game::PlayerController& pc = w.controller();
     game::MissionUi& ui = m.ui();
     yaw_ = wrap360(pc.camera_yaw_out);  // controller turns camera 0 with the hero (0x431790: camera yaw -= d)
+    if (aiming_ && pc.range_mode && w.game_mode != 3) aim_yaw_ = yaw_, aim_pitch_ = -pc.camera_pitch_out;  // modes 0/1 aim
     // Action mode keys (PlayerCtrl_process 0x42e1a0): Shift + 25..32 = Unit_toggle_hold of that commander; 24 / 25..28
     // = Ctrl_switch_commander 0 / 1..4 outside range mode (+0xac) when the scenario is > 1 or +0x79 (rts_unlocked),
     // the player neither climbing (Unit_get_busy_state) nor (dis)mounting (H_MNT_L..H_DMNT_R), unless dead. The RTS

@@ -42,7 +42,7 @@ struct GameOptions {
     int environment_volume = 39;  // 0x3C "Environmental Volume"
     bool sound_3d = true;         // 0x43
     // Input
-    int input_method = 1;         // 0x6B scheme {0,3,1}: 0 Keyboard, 1 Keyboard & Mouse, 2 Gamepad/Joystick
+    int input_method = 1;         // 0x6B scheme {0,3,1,2}: 0 Keyboard, 1 Keyboard & Mouse, 2 Gamepad/Joystick, 3 Point & Click
     float mouse_sensitivity = 0;  // 0x6F -1..1 (slider-10)/10
     bool invert_mouse = false;    // 0x73
     float riding_camera_angle = 90.0f;  // 0x76 degrees

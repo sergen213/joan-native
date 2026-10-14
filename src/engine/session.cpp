@@ -216,6 +216,21 @@ std::uint64_t Session::ticks() const { return mission() ? mission()->ticks() : 0
 
 bool Session::in_rts() const { return mission() && campaign_->mission()->world().game_mode == 4; }
 
+void Session::set_control_mode(int mode) {
+    control_mode = mode;
+    game::Mission* m = mission();
+    if (!m) return;
+    game::World& w = m->world();
+    game::PlayerController& pc = w.controller();
+    if (w.game_mode == 4) {
+        pc.prev_mode = mode;
+    } else if (w.game_mode != mode) {
+        if (const game::Unit* p = w.unit(pc.unit); p && p->m.climb) return;
+        pc.prev_mode = w.game_mode;
+        w.game_mode = mode;
+    }
+}
+
 bool Session::toggle_rts() {
     game::Mission* m = mission();
     if (!m || (m->scenario_no() < 5 && !rts_unlocked) || m->ui().game_cut_scene) return false;

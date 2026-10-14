@@ -49,9 +49,11 @@ private:
     struct Push { float x = 0, y = 0; int until = 0; };
     float ground(const World& w, float x, float y, float z) const;
     bool walkable(const World& w, float x, float y, float z) const;
+    bool wall_edge(float x0, float y0, float z, float x1, float y1, float& ex, float& ey) const;  // blocking edge dir
 
     const NavWorld* nav_;
     std::map<int, Push> push_;   // idle blockers being pushed aside (<= 4 frames)
+    std::map<int, Vec3> slide_;  // last accepted wall-slide direction x,y and its game ms (Phys_walk_step +0x10e)
 };
 
 }  // namespace joa::game

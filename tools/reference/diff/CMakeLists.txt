@@ -1,0 +1,5 @@
+if(TARGET joa_game)
+  add_executable(joa-port-trace port_trace.cpp)
+  target_link_libraries(joa-port-trace PRIVATE joa_game)
+  target_compile_options(joa-port-trace PRIVATE -Wall -Wextra)
+endif()

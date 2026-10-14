@@ -2521,7 +2521,7 @@ GAMEPLAY.RES: `[MAX_COM]2000 //MAX_COMMAND_POINT`, `[COM_LIM]200 //CHANGE_COMMAN
 - Exact semantics of 0x5ef400 (scene toggle on RTS enter/exit), player unit +0x102 / +0x23f flags.
 - `0x693580` destination validity test, `0x452830` terrain pick, `0x48dfb0` recruit filter, `0x4eef00` event ids 0x20/0x200 meanings — not opened.
 - How AI routines treat HOLD marker (task 0, p1 1) vs leader-task inheritance in get_curr_task — for TaskAI* agents.
-- Mode 2 (mouse-driven) control internals not analysed.
+- Mode 2 (mouse-driven) control: analysed in docs/GAMEPLAY_IMPLEMENTATION.md "Point & click" (0x438b30, 0x439090, 0x43acb0, 0x43b2d0).
 
 ---
 

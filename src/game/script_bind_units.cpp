@@ -37,49 +37,6 @@ int slot_mask(std::string_view s) { return s.empty() ? 0 : s[0] == 'M' ? 1 : s[0
 
 // ---- is_in_danger helpers ------------------------------------------------------------------
 
-// FUN_0050b4f0 (heal) / FUN_0050bcd0 (energy = heal + energy) with force = 1: heal u by the item
-// amount (+0x4e), then spread the rest over the team: a member gives the surplus to its leader's
-// lowest-HP members; a leader gives amount/2 to every live member (0x50bcd0 sets the member's EP
-// to its new HP: original bug, kept).
-void use_heal_item(World& w, AiSystem& ai, Unit& u, int item, bool energy) {
-    const int amount = w.data().items[size_t(item)].damage;
-    const int hp = std::min(w.max_hp(u), amount + u.hp);
-    int rest = amount - (hp - u.hp);
-    const int ep = std::min(w.max_ep(u), amount + u.ep);
-    w.set_hp(u, hp);
-    u.hp_trail = hp;
-    if (energy) w.set_ep(u, ep);
-    if (!ai.team_of_leader(u.id)) {
-        Unit* l = w.unit(ai.leader_of(u));
-        if (!l || l->deleted || !ai.team_of_leader(l->id)) return;
-        while (rest > 0) {
-            Unit* best = nullptr;
-            float best_r = 100.0f;
-            for (int i = int(l->members.size()) - 1; i >= 0; --i) {
-                Unit* t = w.unit(l->members[size_t(i)]);
-                if (!t || t->deleted || w.dead(*t) || t->hp >= w.max_hp(*t)) continue;
-                const float r = float(t->hp) / float(w.max_hp(*t));
-                if (!best || r < best_r) best = t, best_r = r;
-            }
-            if (!best) break;
-            const int h = std::min(w.max_hp(*best), rest + best->hp);
-            rest -= h - best->hp;
-            w.set_hp(*best, h);
-            best->hp_trail = h;
-        }
-    } else {
-        for (int i = int(u.members.size()) - 1; i >= 0; --i) {
-            Unit* t = w.unit(u.members[size_t(i)]);
-            if (!t || t->deleted || w.dead(*t)) continue;
-            const int h = std::min(w.max_hp(*t), amount / 2 + t->hp);
-            w.set_hp(*t, h);
-            t->hp_trail = h;
-            if (energy) w.set_ep(*t, h);
-        }
-    }
-    w.emit(Ev::Effect, u.id, item, amount, "spiritual.txt");
-}
-
 // Unit_is_in_danger 0x4fd980(0). HYPOTHESIS: the original keeps the healing items of generals in
 // two bag arrays (inventory +0x16 own, +0x1a troop supply); this port has one bag, scanned for both.
 // Item type 0x15 is preferred over 0x19; the closest amount to the missing HP wins, ties to the
@@ -105,7 +62,8 @@ int is_in_danger(Mission& m, Unit& u) {
             const int i = pick(src, type);
             if (i < 0) continue;
             ItemInstance& it = src.inv.bag[size_t(i)];
-            use_heal_item(w, m.ai(), u, it.item, type == 0x19);
+            w.recover(u, it.item, true);   // 0x50b4f0 / 0x50bcd0 with force = 1
+            w.emit(Ev::Effect, u.id, it.item, w.data().items[size_t(it.item)].damage, "spiritual.txt");
             if (--it.quantity == 0) src.inv.bag.erase(src.inv.bag.begin() + i);
             return true;
         }

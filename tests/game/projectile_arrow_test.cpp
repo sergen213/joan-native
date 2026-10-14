@@ -6,6 +6,41 @@
 
 using namespace joa::game;
 
+// Structure look-ahead sweep 0x693750 with a stand-in structure: the plane x = wall answered through
+// World::structure_ray as map item 5 (modify recno 3). Returns Joan's HP; fills what the item received.
+struct WallRun { int joan_hp = 0, casts = 0; bool item_hit = false, unit_hit = false; float last_x = -1; std::vector<Trigger> got; };
+WallRun wall_run(GameData& gd, float wall) {
+    FlatTerrain flat;
+    World w(gd, &flat, 0);
+    const int j = w.spawn_unit("JOAN_OF_ARC", gd.nation_id("FRENCH"), {250, 0, 0}, 180);
+    const int a = w.spawn_unit("ENGLISH_ARCHER", gd.nation_id("ENGLISH"), {0, 0, 0}, 0);
+    w.set_player(j);
+    WallRun r;
+    w.structure_ray = [&](int item, Vec3 from, Vec3 to) {
+        StructureHit h;
+        if (item) {
+            if (item == 5) h = {5, 1, 3, {wall, 0, 0}, 2};
+            return h;
+        }
+        ++r.casts;
+        if (from.x != to.x && (from.x - wall) * (to.x - wall) <= 0) h = {5, (wall - from.x) / (to.x - from.x), 3, {wall, 0, 0}, 2};
+        return h;
+    };
+    w.object_trigger = [&](const Trigger& t) { r.got.push_back(t); };
+    w.tick({});
+    CHECK(w.ai_shoot(*w.unit(a), j), "archer cannot shoot");
+    for (int t = 0; t < 120; ++t) {
+        w.tick({});
+        for (const auto& p : w.snapshot().projectiles) r.last_x = p.pos.x;
+        for (const auto& e : w.take_events())
+            if (e.type == Ev::ProjectileHit) (e.unit ? r.unit_hit : r.item_hit) = true;
+    }
+    CHECK(w.snapshot().projectiles.empty(), "projectile still flying");
+    r.joan_hp = w.unit(j)->hp;
+    for (const Trigger& t : r.got) CHECK(t.sender == a, "sender %d", t.sender);
+    return r;
+}
+
 int main() {
     auto gd = load_data_or_skip();
     CHECK(gd->throwi[1].av == 1800 && gd->throwi[1].gl == 0.5f && gd->throwi[0].fc == 200, "THROWI");
@@ -39,5 +74,20 @@ int main() {
     CHECK(w.unit(j)->hp == 57, "Joan hp %d (event %d)", w.unit(j)->hp, hit_value);
     CHECK(w.unit(j)->balance == 0 || w.unit(j)->balance < 20, "ARR_FALL not applied: %d", w.unit(j)->balance);
     CHECK(archer.inv.ammo.quantity == gd->items[size_t(archer.inv.ammo.item)].quantity, "AI consumed ammo");
+
+    // Wall between: the arrow stops at it (one look-ahead cast covers the flight; the hit frame starts
+    // before the plane), Joan is untouched, the item gets ARROW at its position (0x4fbc90 kinds 0/1).
+    const WallRun s = wall_run(*gd, 150);
+    std::printf("wall 150: casts %d, last x %.1f, %zu item events\n", s.casts, s.last_x, s.got.size());
+    CHECK(s.item_hit && !s.unit_hit && s.joan_hp == 60, "wall hit %d unit hit %d hp %d", int(s.item_hit), int(s.unit_hit), s.joan_hp);
+    CHECK(s.casts == 1, "look-ahead casts %d", s.casts);
+    CHECK(s.last_x > 40 && s.last_x <= 150, "stopped at x %.1f", s.last_x);
+    CHECK(s.got.size() == 1 && s.got[0].type == 2 && s.got[0].target_kind == 2 && s.got[0].target_id == 3 &&
+              s.got[0].pos.x == 150 && s.got[0].radius == gd->throwi[1].tr && s.got[0].param == 1,
+          "item event");
+    // Wall behind Joan: the closer body hit wins, the item gets nothing.
+    const WallRun b = wall_run(*gd, 400);
+    CHECK(b.unit_hit && !b.item_hit && b.joan_hp == 57 && b.got.empty(), "behind: unit %d item %d hp %d", int(b.unit_hit),
+          int(b.item_hit), b.joan_hp);
     return finish();
 }

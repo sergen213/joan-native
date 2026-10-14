@@ -1,8 +1,9 @@
 #pragma once
 // In-game input: RawInput (SDL state) -> game::InputFrame on the original DEFAULTK action ids (1..55).
 // Bindings = STD.SET DEFAULTK rows (remapped via remap_assign / options.ini), column by key_scheme(input_method):
-// 0 keyboard K_KEY, 3 keyboard+mouse FPS_KEY | FPS_MOUSE, 1 gamepad J_KEY. Gamepad buttons (J_JOYPAD) and sticks
-// are active in every scheme. Event model (GAMEPLAY_CHARACTER_COMBAT.md Part B §1.2, CONFIRMED 0x5932e0): key
+// 0 keyboard K_KEY, 3 keyboard+mouse FPS_KEY | FPS_MOUSE, 1 gamepad J_KEY, 2 point & click K_KEY of 17/19/20/34 only
+// (popped LMB / RMB downs -> InputFrame::click_*, no mouse look, pad Start only). Gamepad buttons (J_JOYPAD) and sticks are
+// active in the other schemes. Event model (GAMEPLAY_CHARACTER_COMBAT.md Part B §1.2, CONFIRMED 0x5932e0): key
 // and LMB/RMB down/up events go through a FIFO (ring of 20) and take() pops ONE per sim tick, as Input_get_event
 // pops one per frame; modifiers (Shift/Ctrl/Alt), Caps/Num/Scroll/Insert, MMB and every pad input are not queued
 // (original: modifier bits / joystick held-vs-prev edges) — their rising edges are latched across feeds and
@@ -80,19 +81,37 @@ struct PadRumble {
 };
 PadRumble pad_rumble(const std::vector<game::GameEvent>& events, int player);
 
+// Joystick input method (key_scheme 1, controller mode 1 = PlayerCtrl_joystick 0x432d30): the left stick as the
+// original reads its DirectInput axes, on SDL's int16 range [-32768, 32767] (centre (min + max) / 2 = 0):
+// level = Joy_stick_level 0x433930 (max over x/y of |axis - centre| * 16 / (max - min): < 2 -> 0, 2 -> 1, 3..4 -> 2,
+// >= 5 -> 3), angle = Joy_stick_angle 0x433af0 (atan2(-dy, dx) stored as a byte of 256 steps, 1.40625 deg each;
+// 90 / 270 straight up / down, -1 exactly centred), move_code = 0x598040 (per axis -1/0/1 past 13 % of the half
+// range, 0x597f70, as Input_move_code 0x431680). The POV-hat fallback of 0x598040 is not fed: the port maps the
+// D-pad to J_JOYPAD buttons 7, 8, 11, 12. Axes are normalised [-1, 1] (platform: int16 / 32767).
+struct JoyStick {
+    int level = 0;
+    float angle = -1;
+    int move_code = 0;
+};
+JoyStick joy_stick(float x, float y);
+
 class GameInput {
 public:
     static constexpr float kPadYawDegPerSec = 150.0f;    // right stick X at full deflection, sensitivity 1
     static constexpr float kPadPitchCountsPerSec = 600.0f;  // right stick Y -> mouse_dy counts
 
     void configure(const std::vector<KeyBindingRow>& rows, const GameOptions& opt, const PadSettings& pad, bool camera_fix);
-    void feed(const RawInput& raw, float dt);  // once per rendered frame
+    // Once per rendered frame. `pointer` = the window mouse position (pixels) that mouse events of this frame carry
+    // (point & click picks at the position of the popped click; -1 = unknown).
+    void feed(const RawInput& raw, float dt, glm::vec2 pointer = glm::vec2(-1.0f));
     game::InputFrame take();                   // once per 33 ms sim tick
     void reset();                              // drop queued events, motion and yaw remainder (pause/resume, load)
     bool pressed(int action) const { return valid(action) && frame_pressed_[std::size_t(action)]; }
     bool held(int action) const { return valid(action) && frame_held_[std::size_t(action)]; }
     float wheel() const { return wheel_; }
     bool shift_held() const { return shift_; }
+    // Point & click (scheme 2): position of the last take()'s popped LMB / RMB down event (InputFrame::click_*).
+    glm::vec2 click_pos() const { return click_pos_; }
 
 private:
     using Actions = std::bitset<game::IN_ACTION_COUNT>;
@@ -106,6 +125,7 @@ private:
     struct Event {
         int id;
         bool down;
+        glm::vec2 pos{-1.0f};  // pointer at the feed that queued it
     };
 
     static bool valid(int a) { return a > 0 && a < game::IN_ACTION_COUNT; }
@@ -118,8 +138,9 @@ private:
     Inputs down_, latched_;
     std::deque<Event> queue_;
     Actions frame_held_, frame_pressed_;
-    float wheel_ = 0, wheel_acc_ = 0, dx_ = 0, dy_ = 0, pad_yaw_deg_ = 0, yaw_rem_deg_ = 0;
-    bool alt_ = false, shift_ = false, back_down_ = false, chord_used_ = false;
+    float wheel_ = 0, wheel_acc_ = 0, dx_ = 0, dy_ = 0, pad_yaw_deg_ = 0, yaw_rem_deg_ = 0, joy_x_ = 0, joy_y_ = 0;
+    bool alt_ = false, shift_ = false, back_down_ = false, chord_used_ = false, joy_present_ = false;
+    glm::vec2 pointer_{-1.0f}, click_pos_{-1.0f};
 };
 
 }  // namespace joa::engine

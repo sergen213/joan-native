@@ -48,5 +48,27 @@ int main() {
     std::printf("min distance %.1f (radii %.1f), B moved %.1f sideways\n", min_d, rr, w.unit(b)->pos.y - b_y0);
     CHECK(min_d >= rr - 1.0f, "no overlap");
     CHECK(std::fabs(w.unit(b)->pos.y - b_y0) > 5.0f, "blocker pushed aside");
+
+    // Wall slide (Phys_walk_step 0x6a9570): running at 115 deg into the mission-1 battlefield edge (y ~ 14093)
+    // slides west along it faster than the 65-degree axis slide (|v| cos 65 = 127 u/s) and turns the runner
+    // toward the slide direction (+2 deg steps). Original: 115 -> 182 deg in ~0.7 s, ~270 u/s along the edge
+    // (docs/reverse-engineering/DIFFERENTIAL_VERIFICATION.md, boundary scenario).
+    const int c = w.spawn_unit("ENGLISH_LIGHT_INFANTRY", 1, {14400, 14060, 0}, 115);
+    CHECK(c, "spawn at the edge");
+    Unit* C = w.unit(c);
+    C->pos.z = env->terrain->height(C->pos.x, C->pos.y);
+    w.set_yaw_now(*C, 115);
+    const float x0 = C->pos.x;
+    for (int i = 0; i < 20; ++i) {
+        C = w.unit(c);
+        C->action = RUN;
+        C->root_vel = {300 * std::cos(C->yaw_rad()), 300 * std::sin(C->yaw_rad()), 0};
+        w.tick_physics();
+    }
+    C = w.unit(c);
+    std::printf("edge slide: %.1f units west in 20 ticks, yaw %.1f, y %.1f\n", x0 - C->pos.x, C->yaw_deg, C->pos.y);
+    CHECK(C->pos.y < 14095.0f, "stays inside the battlefield edge");
+    CHECK(x0 - C->pos.x > 100.0f, "slides along the edge faster than the axis slide");
+    CHECK(C->yaw_deg > 120.0f && C->yaw_deg < 200.0f, "turns toward the slide direction");
     return 0;
 }

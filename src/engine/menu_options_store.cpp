@@ -85,7 +85,7 @@ const std::vector<KeyBindingRow>& default_bindings(const formats::Vfs& vfs) { re
 const std::string* binding_name(const formats::Vfs& vfs, const KeyBindingRow& r, int input_method) {
     const KeyTables& t = tables(vfs);
     switch (input_method) {
-        case 0: return find_desc(t, 0, r.code[0]);
+        case 0: case 3: return find_desc(t, 0, r.code[0]);  // point & click reads the K_KEY column (0x438b30)
         case 2: return r.code[2] == 0 || r.code[2] == 0xff ? find_desc(t, 0, r.code[1]) : find_desc(t, 1, r.code[2]);
         default: return r.code[3] == 0 || r.code[3] == 0xffff ? find_desc(t, 2, r.code[4]) : find_desc(t, 0, r.code[3]);
     }
@@ -101,7 +101,8 @@ std::string action_key_name(const formats::Vfs& vfs, const MenuModel& m, int act
     return {};
 }
 
-int key_scheme(int input_method) { return input_method == 0 ? 0 : input_method == 2 ? 1 : 3; }
+// Options combo 0x73ca80 {Keyboard, Keyboard & Mouse, Gamepad} -> modes {0, 3, 1}; Point & Click (port entry) -> 2.
+int key_scheme(int input_method) { return input_method == 0 ? 0 : input_method == 2 ? 1 : input_method == 3 ? 2 : 3; }
 
 bool remap_assign(const formats::Vfs& vfs, std::vector<KeyBindingRow>& rows, int scheme, int action, int device, int code) {
     if (action == 0x22 || action < 1 || std::size_t(action) > rows.size()) return false;
@@ -177,7 +178,8 @@ void options_from_config(const formats::GameConfig& c, GameOptions& o, std::vect
     o.environment_volume = c.sfx_volume;   // 0x3C
     o.sound_volume = c.speech_volume;      // 0x41
     o.sound_3d = c.sound_3d != 0;
-    o.input_method = c.control_scheme == 0 ? 0 : c.control_scheme == 1 ? 2 : 1;  // 0x73ca80: {0,3,1}
+    // 0x73ca80: {0,3,1}; control_scheme 2 (mode 2, reachable only through CONFIG.DAT) -> Point & Click.
+    o.input_method = c.control_scheme == 0 ? 0 : c.control_scheme == 1 ? 2 : c.control_scheme == 2 ? 3 : 1;
     o.mouse_sensitivity = c.mouse_sensitivity;
     o.invert_mouse = c.control_73 != 0;
     o.riding_mode = c.control_74;

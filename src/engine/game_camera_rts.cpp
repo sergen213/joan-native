@@ -59,8 +59,8 @@ void pick_ray(const glm::mat4& vp_m, glm::ivec4 vp, glm::vec2 mouse, glm::vec3& 
 
 // Unit under the cursor (0x447ab0 / Rts_pick_target unit loop): the pick ray against the unit's collision cylinder
 // (actor +0x90 kind 3: class CylinderRadius / height; ponytail: radius at least 20 so thin units stay clickable),
-// nearest hit along the ray wins. `t_out` = distance along the ray.
-int pick_unit(const game::World& w, const glm::mat4& vp_m, glm::ivec4 vp, glm::vec2 mouse, float* t_out = nullptr) {
+// nearest hit along the ray wins. `t_out` = distance along the ray; `skip` = a unit never picked (point & click hero).
+int pick_unit(const game::World& w, const glm::mat4& vp_m, glm::ivec4 vp, glm::vec2 mouse, float* t_out = nullptr, int skip = 0) {
     glm::vec3 o, dir;
     float len;
     pick_ray(vp_m, vp, mouse, o, dir, len);
@@ -69,7 +69,7 @@ int pick_unit(const game::World& w, const glm::mat4& vp_m, glm::ivec4 vp, glm::v
     const glm::vec2 d2{dir.x, dir.y};
     const float a = glm::dot(d2, d2);
     for (const game::Unit& u : w.units()) {
-        if (u.deleted || w.dead(u) || a < 1e-8f) continue;
+        if (u.deleted || u.id == skip || w.dead(u) || a < 1e-8f) continue;
         const float r = std::max(20.0f, u.cls >= 0 ? w.data().units[std::size_t(u.cls)].cyl_radius : 15.0f), h = unit_height(w, u);
         const glm::vec2 oc = glm::vec2(o) - glm::vec2(u.pos.x, u.pos.y);
         const float b = 2.0f * glm::dot(oc, d2), c = glm::dot(oc, oc) - r * r, disc = b * b - 4.0f * a * c;
@@ -612,6 +612,33 @@ void GameCamera::rts_pick(game::Mission& m, glm::vec2 mouse, glm::ivec4 vp, cons
     if (!pick_ground(w, vp_m, vp, mouse, g)) return;
     hover_type_ = 0, hover_pos_ = g;
     if (const int f = pick_building(m, g, false)) hover_type_ = 10, hover_id_ = f;
+}
+
+// Point & click pick (PlayerCtrl_mouse_click 0x438b30): the RTS pick helpers on every map item (no RTS filter), the
+// hero skipped like 0x439110's `unit != player`; nearest of unit / map item / floor drop, else the terrain.
+void GameCamera::click_pick(game::Mission& m, game::InputFrame& f, glm::vec2 mouse, glm::ivec4 vp, const glm::mat4& vp_m) const {
+    f.pick_unit = f.pick_item = f.pick_drop = 0, f.pick_ground = false;
+    if (mouse.x < float(vp.x) || mouse.y < float(vp.y) || mouse.x >= float(vp.x + vp.z) || mouse.y >= float(vp.y + vp.w)) {
+        f.click_left = f.click_right = false;  // Mouse_click_in_rect: outside the 3-D view
+        return;
+    }
+    game::World& w = m.world();
+    glm::vec3 o, dir;
+    float len, best = 1e30f;
+    pick_ray(vp_m, vp, mouse, o, dir, len);
+    const int uid = pick_unit(w, vp_m, vp, mouse, &best, w.controller().unit);
+    const int iid = pick_item(m, assets, o, dir, false, 0, best);
+    int drop = 0;
+    for (const game::WorldItem& it : w.items())
+        if (!it.deleted) {
+            const float t = ray_sphere(o, dir, glm::vec3(it.pos.x, it.pos.y, it.pos.z + 15.0f), 30.0f);
+            if (t >= 0.0f && t < best) best = t, drop = it.id;
+        }
+    glm::vec3 g;
+    if (drop) f.pick_drop = drop;
+    else if (iid) f.pick_item = iid;
+    else if (uid) f.pick_unit = uid;
+    else if (pick_ground(w, vp_m, vp, mouse, g)) f.pick_ground = true, f.ground_x = g.x, f.ground_y = g.y, f.ground_z = g.z;
 }
 
 // Rts_pick_building 0x452610 (from the top, a recruit (3) / workshop (0x10) facility whose box holds the terrain point)

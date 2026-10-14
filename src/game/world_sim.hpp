@@ -58,6 +58,16 @@ struct Trigger {
     }
 };
 
+// Map item met by the structure look-ahead ray (Physics_sweep_structures 0x693750 narrowphase,
+// answered by the mission layer).
+struct StructureHit {
+    int item = 0;        // map item recno (+0x04), 0 = none
+    float t = 1;         // fraction along the ray
+    int modify = 0;      // item +0x06: event target id
+    Vec3 pos;            // item +0x56
+    int struction = 0;   // ItemRes +0x1c StructionType (1/2 -> CANNONHH)
+};
+
 // ThrowItem (0x6c bytes) + its rigid body. Physics in metres (46.1 units = 1 m).
 struct Projectile {
     int id = 0;
@@ -72,11 +82,13 @@ struct Projectile {
     float force_left_ms = 0;
     int tl = 0, dl = 0;
     float m = 1, tr = 0, gl = 0;
-    int hit_id = 0;
+    int hit_id = 0;          // +0x26 unit recno or map item recno
+    int sweep_next = 0, sweep_hit = 0, sweep_item = 0;   // +0x5a / +0x5e / +0x62 look-ahead (0x693750)
     bool collided = false, ground = false, destroyed = false, exploded = false;
     template <class V> void visit(V& v) {
         v(id), v(type), v(shooter), v(launch_ms), v(launch), v(pos_m), v(vel_m), v(force), v(force_start), v(force_left_ms),
-            v(tl), v(dl), v(m), v(tr), v(gl), v(hit_id), v(collided), v(ground), v(destroyed), v(exploded), v(item);
+            v(tl), v(dl), v(m), v(tr), v(gl), v(hit_id), v(collided), v(ground), v(destroyed), v(exploded), v(item),
+            v(sweep_next), v(sweep_hit), v(sweep_item);
     }
 };
 
@@ -155,7 +167,8 @@ public:
     int player_id() const { return player_; }
     void set_player(int id);                             // switch_controllable_unit
     int difficulty = 1;                                  // config 0xa57fc2: 0 easy .. 3 very difficult
-    int game_mode = 0;                                   // 0xa5b9f8 (4 = RTS)
+    int game_mode = 3;                                   // 0xa5b9f8 = controller +0x10 (0 kbd, 1 joy, 2 click, 3 kbd+mouse, 4 RTS); default input method 3
+    int scenario_no = 0;                                 // 0xa58fa7 scenario no (chapter 1..8, 0 stand-alone); mission layer, not serialized
     void set_hostile(int nation_a, int nation_b, bool hostile);
     bool hostile(int nation_a, int nation_b) const;      // Diplomacy_isHostile 0x4b6860
     bool hostile_to_player(const Unit& u) const;         // 0x5094d0
@@ -185,14 +198,21 @@ public:
     void set_physics(IUnitPhysics* p) { physics_ = p; }
     // Receiver for target_kind 2 (map object) triggers: gates, walls, kegs (mission layer).
     std::function<void(const Trigger&)> object_trigger;
+    // Owner nation (+0x08) of a map item, for the keg damage 0x49d5f0 (mission layer; 0 when absent).
+    std::function<int(int)> object_nation;
     // Ladder climbing (mission layer, map items): consumes the player's input while climbing / at the
     // 0x42d300 interact slot. Returns true when it handled the frame.
     std::function<bool(Unit&, const InputFrame&)> ladder_input;
     // Player interact key (R) handlers 0x43bef0, 0x43bd40, 0x43be40, 0x43c210, 0x43bc50, 0x43bfe0,
     // 0x43c080 in that order (mission layer: interact_player.cpp). True when one consumed the key.
     std::function<bool(Unit&)> interact;
+    // Point & click (mode 2) interact key: only the item handler 0x43bc50 (PlayerCtrl_mouse_click 0x438b30).
+    std::function<bool(Unit&)> interact_item;
     // Unit_auto_pickup 0x49da30 (unit phase 0): floor items walked over (mission layer: items_pickup.cpp).
     std::function<void(Unit&)> auto_pickup;
+    // Physics_sweep_structures 0x693750 mesh test (mission layer: MapObjects::structure_ray). item == 0:
+    // nearest map item on from->to (world units); item > 0: that item's event data (.item 0 if gone).
+    std::function<StructureHit(int item, Vec3 from, Vec3 to)> structure_ray;
 
     // --- output ----------------------------------------------------------------------------
     const std::vector<GameEvent>& events() const { return events_; }
@@ -224,7 +244,11 @@ public:
     int stat_dex(const Unit& u) const; // 0x523860
     int stat_def(const Unit& u) const; // 0x5238c0
     int stat_lead(const Unit& u) const;// 0x523920
-    int bonus(const Unit& u, int effect) const { return u.inv.bonus(gd_, effect); }
+    // Inv_bonus 0x497e10 over u's inventory; enhancer requirements 0x4a42f0 are tested on `req` (the recno
+    // argument: u itself everywhere except Unit_set_morale, which passes the leader).
+    int bonus(const Unit& u, int effect, const Unit* req = nullptr) const { return u.inv.bonus(gd_, effect, this, req ? req : &u); }
+    bool item_applies(const ItemDef& d, int level, const Unit& r) const;  // 0x4a42f0
+    int team_morale(const Unit& u) const;                                // 0x5103c0
     void set_hp(Unit& u, int v);       // 0x4fe510
     void set_ep(Unit& u, int v);       // 0x4fe5d0
     void set_balance(Unit& u, int v);  // 0x4fea80
@@ -237,6 +261,7 @@ public:
     bool combo_learned(const Unit& u, const MoveRecord& r) const;       // COMBOAVAIL 'Y' or NEW_COMBO learned (0x50d170)
     bool can_use_special(const Unit& u, int action) const;              // 0x500d40
     float apply_melee_damage(Unit& d, Unit& a, int def_ignore);         // 0x509950
+    float side_factors(float dmg, int att_nation, int def_nation) const; // F_ATTACK/F_DEFEND tail of 0x509950/0x509e90/0x49d5f0
     float try_melee_hit(Unit& d, Unit& a);                              // 0x5048b0
     void knockdown(Unit& u);                                            // 0x509000
     void unit_die(Unit& victim, int killer);                            // 0x7c6240
@@ -266,6 +291,7 @@ public:
 
     // items (items_inventory.cpp)
     bool use_recovery_item(Unit& u, bool energy);          // F3 0x43b490 / F4 0x43b990
+    bool recover(Unit& u, int item, bool force);           // potion effect 0x50b4f0 / 0x50ba00 / 0x50bcd0 (team share)
     bool give_item(Unit& u, std::string_view code, int level, int quantity);
     bool equip(Unit& u, int bag_index);                    // move a bag weapon/armour into its slot
     bool use_item(Unit& u, int bag_index);                 // inventory right-click 0x6d8ac0 (potions, armour)
@@ -291,6 +317,9 @@ private:
     void integrate_projectiles(float dt_ms);               // 0x6a8060
     void integrate_units(float dt_s);
     void projectile_hit_unit(Projectile& p, Unit& victim);
+    int sweep_structures(Projectile& p, Vec3 from, Vec3 vel_m, float dt_ms, float& t);   // 0x693750 look-ahead
+    void projectile_hit_object(Projectile& p, int item);  // ThrowItem_on_hit_object 0x4fbc90
+    void idle_pick(Unit& u);                               // FUN_00429ec0 (IDLE2_CH / IDLE3_CH)
     void projectile_ground(Projectile& p);
     void schedule_cues(Unit& u, const MoveRecord& r);
     void emit_cues(Unit& u);

@@ -75,6 +75,23 @@ float World::melee_attack_power(const Unit& a) const {
     return atk;
 }
 
+// Side factors shared by 0x509950, 0x509e90 and 0x49d5f0, applied only while the player unit exists. Scenario 8
+// (0xa58fa7 == 8: scenario_08.SCR, S6L1, the last campaign chapter) first scales a non-player-side attacker by
+// F_ATTACK/250 and a non-player-side victim by F_DEFEND/100; then, always, a player-side attacker by F_ATTACK/100
+// and a player-side victim by F_DEFEND/100.
+float World::side_factors(float dmg, int att_nation, int def_nation) const {
+    const Unit* pl = unit(player_);
+    if (!pl) return dmg;
+    const Consts& c = gd_.c;
+    if (scenario_no == 8) {
+        if (att_nation != pl->nation) dmg = float(c.f_attack) / 250.0f * dmg;
+        if (def_nation != pl->nation) dmg = float(c.f_defend) / 100.0f * dmg;
+    }
+    if (att_nation == pl->nation) dmg *= float(c.f_attack) / 100.0f;
+    if (def_nation == pl->nation) dmg *= float(c.f_defend) / 100.0f;
+    return dmg;
+}
+
 float World::apply_melee_damage(Unit& d, Unit& a, int def_ignore) {
     const Consts& c = gd_.c;
     float dmg;
@@ -96,10 +113,7 @@ float World::apply_melee_damage(Unit& d, Unit& a, int def_ignore) {
             dmg = float(pc_.chain) * dmg;
         }
     }
-    if (const Unit* pl = unit(player_)) {   // friendly bonuses (game type 8 branch not modelled)
-        if (a.nation == pl->nation) dmg *= float(c.f_attack) / 100.0f;
-        if (d.nation == pl->nation) dmg *= float(c.f_defend) / 100.0f;
-    }
+    dmg = side_factors(dmg, a.nation, d.nation);
     if (const Unit* l = unit(a.leader); l && l->id != a.id) dmg *= float(std::min(int(l->lead), 100) + 100) / 100.0f;
     set_hp(d, int(float(d.hp) - dmg));
     if (a.id == player_ && a.crit_flag) {
@@ -200,12 +214,14 @@ int World::on_attack_message(Unit& d, const Trigger& t) {
         const float def = float(d.morale + 100 - c.mor_nor) * (float(stat_def(d)) * 100.0f * float(c.def_rat) / 100.0f +
                                                               float(d.armor_level * c.amr_def)) / 100.0f;
         float dmg = (atk / 2.0f + std::max(0.0f, (atk - def) / 2.0f)) * float(100 - bonus(d, DAMAGE_SUSTAINED)) * 0.01f;
-        if (const Unit* pl = unit(player_); pl && d.nation == pl->nation) dmg *= float(c.f_defend) / 100.0f;
+        // 0x49d5f0: attacker side = the keg's owner nation (map item +0x08)
+        dmg = side_factors(dmg, object_nation ? object_nation(t.sender) : 0, d.nation);
         set_hp(d, int(float(d.hp) - dmg));
         d.threat = std::int16_t(d.threat + 10);
         emit(Ev::Hit, d.id, 0, int(dmg), "KEG");
         if (!d.mount) knockdown(d);   // HYPOTHESIS: same reaction as explosive arrows
-        if (dead(d)) unit_die(d, 0);
+        else set_action(d, H_DROP);   // 0x75d540 case 0x4000: mounted -> Unit_set_action(0x4e)
+        if (dead(d)) unit_die(d, 0);  // Unit_dieNoKiller 0x64f320
         return 1;
     }
     Unit* a = t.src_kind == 1 ? unit(t.sender) : nullptr;
@@ -291,7 +307,12 @@ int morale_w1(int rank) { return rank <= 2 ? 1 : rank == 3 ? 2 : rank <= 5 ? 3 :
 int morale_w2(int rank, bool joan) { return rank <= 2 ? 1 : rank == 3 ? 2 : rank == 4 ? (joan ? 4 : 3) : 0; }
 }  // namespace
 
-// Unit_die 0x7c6240 (victim, killer recno; 0 = environment).
+// Unit_die 0x7c6240 (killer recno) / Unit_dieNoKiller 0x64f320 (killer 0). The original reaches 0x64f320
+// only from the 0x4000 item hit (explosive keg, 0x75d540) and its own ram-crew / cart-driver recursion;
+// unit killers go to 0x7c6240. 0x64f320 = 0x7c6240 without the killer rewards (EP, medals, kills, XP,
+// troop counters, RTS_OTHER news), with victim-side-only morale, crew not stopped and a fixed death push.
+// Both also do nation +0x1389 -= maxHP * W1 (0x4b5520); not modelled: its only reader 0x4af5f0 is
+// unreachable (no call/jmp/pointer to it or its thunk 0x401fbe in joan.exe).
 void World::unit_die(Unit& v, int killer) {
     const Consts& c = gd_.c;
     if (v.retreat == 1) {   // mission-critical: survive with 1 HP, defeat event
@@ -338,14 +359,26 @@ void World::unit_die(Unit& v, int killer) {
             if (k->nation != 0 && u.nation == k->nation && k->team != 0 && u.team == k->team) set_morale(u, int(float(u.morale) + dlt));
             else if (v.nation != 0 && u.nation == v.nation && v.team != 0 && u.team == v.team) set_morale(u, int(float(u.morale) - dlt));
         }
+    } else if (v.nation != 0) {
+        // 0x64f320 (asm 0x64fa78..0x64fb64): every unit of the victim's nation, same troop (+0x31 != 0)
+        // -= W1 * MOR_CH_T, else -= W1 * MOR_CH_U; no minimum of 1.
+        const float w1 = float(morale_w1(gd_.units[v.cls].ranking));
+        for (Unit& u : units_)
+            if (!u.deleted && u.nation == v.nation)
+                set_morale(u, int(float(u.morale) - w1 * (v.team != 0 && u.team == v.team ? c.mor_ch_t : c.mor_ch_u)));
     }
     siege_on_death(*this, v, killer);   // crew / cart driver of a dying weapon or cart
-    if (v.action != THROWN) set_action(v, DIE);
-    if (const Unit* k = unit(killer)) {   // death impulse: killer's script force
-        const AnimScript* s = script_of(move(*k));
+    // Death push (body pulse, not for THROWN): killer's script force away from the killer; killer-less
+    // 3000/500 at angle 0 (0x5762c0(0.0), sin table 0x576ac0/0x5768d0 -> (1, 0) = +x). x3.0 when the
+    // victim was in H_DROP before DIE.
+    if (v.action != THROWN) {
+        const bool h_drop = v.action == H_DROP;
+        set_action(v, DIE);
+        const Unit* k = unit(killer);
+        const AnimScript* s = k ? script_of(move(*k)) : nullptr;
         const float h = float(s ? s->force_h : 3000), vv = float(s ? s->force_v : 500);
-        const float f = (v.action == H_DROP ? 3.0f : 1.0f) * kUnitsPerMetre / 1000.0f;
-        const float dir = std::atan2(v.pos.y - k->pos.y, v.pos.x - k->pos.x);
+        const float f = (h_drop ? 3.0f : 1.0f) * kUnitsPerMetre / 1000.0f;
+        const float dir = k ? std::atan2(v.pos.y - k->pos.y, v.pos.x - k->pos.x) : 0.0f;
         v.vel.x += std::cos(dir) * h * f, v.vel.y += std::sin(dir) * h * f;
         if (vv > 0) v.vel.z += vv * f, v.airborne = true;
     }

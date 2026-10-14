@@ -38,6 +38,12 @@ int main() {
     CHECK(r.input_method == 0 && r.invert_mouse && r.difficulty == 3 && r.riding_mode == 1 && !r.melee_auto_target);
     CHECK_NEAR(r.mouse_sensitivity, -0.3f, 1e-5);
     CHECK_NEAR(r.riding_camera_angle, 37.0f, 1e-5);
+    // Point & Click (input_method 3, mode 2) persists.
+    GameOptions pc;
+    pc.input_method = 3;
+    CHECK(save_options(ini, pc, {}));
+    load_options(empty, ini, r, rows);
+    CHECK(r.input_method == 3 && key_scheme(r.input_method) == 2);
 
     // Missing file = defaults.
     load_options(empty, dir / "absent.ini", r, rows);

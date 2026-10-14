@@ -27,7 +27,7 @@ std::string action_key_name(const formats::Vfs& vfs, const MenuModel& m, int act
 // (Main Game Menu) and codes absent from KEYDESC. The other action that held the same key/button gets its
 // DEFAULTK binding back, or the replaced binding (swap) when its default is taken. false = refused.
 bool remap_assign(const formats::Vfs& vfs, std::vector<KeyBindingRow>& rows, int scheme, int action, int device, int code);
-int key_scheme(int input_method);  // {0, 3, 1}[input_method] (0x73ca80)
+int key_scheme(int input_method);  // {0, 3, 1, 2}[input_method] (0x73ca80 + Point & Click -> mode 2)
 // SDL scancode -> DirectInput DIK code (the codes K_KEY/FPS_KEY store); 0 = no DIK equivalent.
 int sdl_to_dik(int sdl_scancode);
 

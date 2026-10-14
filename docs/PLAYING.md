@@ -50,12 +50,41 @@ dismiss its crew, own/neutral gate = open/close, interact box = open. Minimap: l
 click moves (Ctrl = attack move). Screen edges scroll, middle-drag / `,` `.` rotate, wheel zooms. Groups 1–9, the
 commander choice and the RTS camera are saved with the game (native save section `VIEW`).
 
+### Keyboard-only and joystick input methods
+
+Options → Input → Input Method switches the controller (also in a running mission; in RTS it applies when leaving
+RTS). Keyboard & Mouse is the default (table above). The others are the original's own controllers:
+
+| Keyboard (K_KEY column) | |
+|---|---|
+| Movement | ↑ run forward, ← / → turn to camera-left / -right and run (the camera swings after), ↓ turn and run toward the camera; Left Shift + arrows strafe / step back (Shift+↑ walks), Shift alone centres the camera |
+| Combat | Q light attack, W heavy attack, S energy attack, E defend (down attack on a downed enemy), R interact, Z range mode (arrows aim, Q shoots, Z leaves), F3 / F4 HP / EP item. Space is bound to Jump but never jumps in this mode (original quirk, kept) |
+| Double taps (< 300 ms) | ↑↑ rush, Shift+↓↓ / Shift+←← / Shift+→→ evade back / left / right |
+| Other | as Keyboard & Mouse (F2, `` ` ``, 1–4, Shift+1–7, Esc, F1, F7–F9, F12, M, Ctrl, F11, Tab, O, F5/F6/F10), NUMPAD+ / NUMPAD- zoom; no mouse turning |
+
+Gamepad/Joystick (listed only with a pad; nothing moves without one): the left stick direction is camera-relative and
+its tilt the speed (under ¼ stands, ¼–⅝ walks, beyond runs) and the jump length; North / RT light, West / LT heavy,
+both at once energy attack, South jump, East defend, D-pad down interact, LB / RB items; hold L3 for range mode
+(stick aims, North / RT shoots, release leaves); hold R3 to strafe with the stick and to centre the camera. Flick the
+stick to full tilt twice within 300 ms: up = rush, with R3 held left / back / right = evade. The right stick only
+pitches the camera (the original joystick mode has no camera stick); Start, Back and the Back layer as below.
+
+Point & Click (listed last; port label for the original's "mouse-driven control mode" 2, which its Options never
+offered — only CONFIG.DAT 0x6B = 2 reached it; such a CONFIG.DAT imports as Point & Click). The mouse is a pointer:
+
+| Point & Click | |
+|---|---|
+| Left click | ground: walk/run there; enemy (unit, or an enemy gate/wall): run to it and attack until it dies or you click elsewhere — a second click on it while attacking with ≥ 40 EP spends 40 EP on a fury round of random follow-ups; item lying on the floor: walk to it (picks it up); your own gate: walk to it and open it; your own units: nothing |
+| Right click | enemy: run to it, then one energy attack (light attack without 40 EP) |
+| Keys (K_KEY column) | F3 / F4 HP / EP item, R item interact only (boxes, levers, gates within 200), Esc menu. Every other key is dead in this mode, as in the original (no F2 RTS, no hero switch, no zoom, no quick save) |
+
 ### Gamepad
 
 SDL positional buttons, identical for Xbox and PlayStation layouts (tables in `src/engine/game_input.hpp`). The whole
 game is playable with a pad only; mouse/keyboard keep working and the last-used device wins.
 
-In game (J_JOYPAD column of DEFAULTK, remappable): left stick move (half tilt walks), right stick camera (yaw follows
+In game with Input Method Keyboard & Mouse (port extension; J_JOYPAD column of DEFAULTK, remappable; Gamepad/Joystick
+method: see above): left stick move (half tilt walks), right stick camera (yaw follows
 the in-game Mouse Sensitivity, pitch also Invert Mouse), South (A/Cross) jump, East defend, West heavy, North light
 attack, LB / RB HP / EP item, D-pad up character details, D-pad down interact, L3 range mode, R3 centre camera.
 Fixed: RT light / LT heavy attack (pull both together = the original's A+B energy attack), Start in-game menu (also

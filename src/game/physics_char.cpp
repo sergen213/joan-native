@@ -27,6 +27,32 @@ bool CharPhysics::walkable(const World& w, float x, float y, float z) const {
     return !w.terrain() || w.terrain()->walkable(x, y);
 }
 
+// The edge of the poly under (x0,y0) that the step to (x1,y1) crosses, as a unit direction.
+bool CharPhysics::wall_edge(float x0, float y0, float z, float x1, float y1, float& ex, float& ey) const {
+    if (!nav_) return false;
+    const int p = nav_->find_poly_xy(x0, y0, z);
+    if (p < 0) return false;
+    const NavLevel& l = nav_->levels()[std::size_t(nav_->level_of_poly(p))];
+    const int lp = p - l.base;
+    const float ax = x0 - l.ox, ay = y0 - l.oy, bx = x1 - l.ox, by = y1 - l.oy;
+    const auto& v = l.mesh.polys()[std::size_t(lp)].v;
+    for (int i = 0; i < int(v.size()); ++i) {
+        const auto& c = l.mesh.pt(lp, i);
+        const auto& d = l.mesh.pt(lp, i + 1);
+        const float cx = float(c.x), cy = float(c.y), dx = float(d.x) - cx, dy = float(d.y) - cy;
+        const float mx = bx - ax, my = by - ay, den = mx * dy - my * dx;
+        if (den == 0) continue;
+        const float t = ((cx - ax) * dy - (cy - ay) * dx) / den;  // along the step
+        const float s = ((cx - ax) * my - (cy - ay) * mx) / den;  // along the edge
+        if (t < 0 || t > 1 || s < 0 || s > 1) continue;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len <= 0) continue;
+        ex = dx / len, ey = dy / len;
+        return true;
+    }
+    return false;
+}
+
 void CharPhysics::integrate(World& w, float dt_s) {
     const int now = w.now();
     const int frame_ms = int(dt_s * 1000.0f + 0.5f);
@@ -100,7 +126,7 @@ void CharPhysics::integrate(World& w, float dt_s) {
                         }
                     }
             }
-            // Navmesh walls and the 80-unit step-up limit; blocked moves slide along x or y.
+            // Navmesh walls and the 80-unit step-up limit.
             const float g0 = ground(w, u.pos.x, u.pos.y, u.pos.z);
             auto ok = [&](float x, float y) {
                 if (!walkable(w, x, y, u.pos.z)) return false;
@@ -108,7 +134,45 @@ void CharPhysics::integrate(World& w, float dt_s) {
             };
             float tx = u.pos.x + vx * h, ty = u.pos.y + vy * h;
             if (!ok(tx, ty)) {
-                if (ok(tx, u.pos.y)) ty = u.pos.y, vy = 0;
+                // Phys_walk_step 0x6a9570 (asm 0x6a9fc5..0x6aa1b5): slide along the blocking edge, its
+                // direction flipped toward the motion, at |v|.|dot|; when that step is accepted
+                // (0x6ae610) and |dot| > 0.707 (0x9dd770) the unit turns toward the slide: +2.0 deg when
+                // the wrapped (slide - yaw) > 0, else -1.0 deg (Unit_set_yaw_deg); the player's camera 0
+                // target yaw follows (CamMan_set_target). No edge found (no poly under the unit):
+                // ponytail: axis slide, as before.
+                // The dot uses the attempted step, which after an accepted slide is the slide itself: the
+                // original stores the slide as the body velocity (+0x10e/+0x112/+0x116) and the next frame
+                // steps along it, so a hero running at 65 deg into the mission-1 edge keeps (nearly) full
+                // speed along it and turns 115 -> 182 deg in ~0.7 s (DIFFERENTIAL_VERIFICATION.md).
+                // The slide direction stays the step direction while the hero is in contact (set within the
+                // last 100 ms: unblocked substeps between blocked frames do not reset it).
+                // ponytail: the last slide direction is not saved (a save taken mid-slide resumes one
+                // step later with the request direction).
+                float ex = 0, ey = 0;
+                if (wall_edge(u.pos.x, u.pos.y, u.pos.z, tx, ty, ex, ey)) {
+                    const float sp = std::sqrt(vx * vx + vy * vy);
+                    auto prev = slide_.find(u.id);
+                    if (prev != slide_.end() && float(now) - prev->second.z > 100.0f) slide_.erase(prev), prev = slide_.end();
+                    const float mx = prev != slide_.end() ? prev->second.x : vx / sp;
+                    const float my = prev != slide_.end() ? prev->second.y : vy / sp;
+                    float dot = mx * ex + my * ey;
+                    if (dot < 0) ex = -ex, ey = -ey, dot = -dot;
+                    const float sx = ex * sp * dot, sy = ey * sp * dot;
+                    if (ok(u.pos.x + sx * h, u.pos.y + sy * h)) {
+                        tx = u.pos.x + sx * h, ty = u.pos.y + sy * h, vx = sx, vy = sy;
+                        slide_[u.id] = {ex, ey, float(now)};
+                        if (dot > 0.707f) {
+                            float diff = std::fmod(std::atan2(sy, sx) * 57.29578f - u.yaw_deg, 360.0f);
+                            if (diff > 180) diff -= 360;
+                            if (diff < -180) diff += 360;
+                            w.set_yaw(u, u.yaw_deg + (diff > 0 ? 2.0f : -1.0f));
+                            if (u.id == w.player_id()) w.controller().camera_yaw_out = u.yaw_goal;
+                        }
+                    } else {
+                        tx = u.pos.x, ty = u.pos.y, vx = vy = 0;
+                        slide_.erase(u.id);
+                    }
+                } else if (ok(tx, u.pos.y)) ty = u.pos.y, vy = 0;
                 else if (ok(u.pos.x, ty)) tx = u.pos.x, vx = 0;
                 else tx = u.pos.x, ty = u.pos.y, vx = vy = 0;
             }

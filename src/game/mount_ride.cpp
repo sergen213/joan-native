@@ -129,7 +129,9 @@ void mount_sync(World& w, Unit& u) {
 void rider_stop(World& w, Unit& r) {
     Unit* h = live(w, r.mount);
     if (!h) return;
-    const double roll = rand_unit_incl(w.rng());   // drawn even when the horse stands (CONFIRMED order)
+    // Drawn even when the horse stands (CONFIRMED order). Gameplay stream, not cosmetic: H_STOP/STOP and
+    // H_STOP_B/STOP_B are different clips (F_STOP / F_STOP_B), and neither state can act until it ends.
+    const float roll = float(rand_unit_incl(w.rng()));   // (float)Misc_rand_unit_incl, as compared at 0x4533e0
     r.gear_ts = 0;
     const int ha = h->action;
     if (ha != RUN && ha != TIPTOE && ha != WALK && ha != MOVE_B) return;
@@ -171,10 +173,14 @@ bool horse_gear(World& w, Unit& r, int gear) {
     return true;
 }
 
-// Ctrl_horse 0x43c5c0 (keyboard+mouse, horse mode A 0xa5802c == 0). F3/F4 ran in process().
-bool PlayerController::horse(World& w, Unit& u, const InputFrame& in, int move_code, int rel, int magnitude) {
+// Ctrl_horse 0x43c5c0 (keyboard+mouse, horse mode A 0xa5802c == 0; modes 0/1 differences below). F3/F4 ran in
+// process(). `shift` is Ctrl_horse's 4th argument: the walk key in mode 3, Shift (3) in mode 0, the pad's centre
+// camera button (2) in mode 1.
+bool PlayerController::horse(World& w, Unit& u, const InputFrame& in, int move_code, float rel, int magnitude) {
     Unit* h = live(w, u.mount);
     if (!h) return false;
+    const bool kbm = mode == 3;
+    const bool shift = kbm ? in.held[IN_WALK] : in.held[mode == 0 ? IN_SHIFT : IN_SHIFT_CAMERA];
     // R: interact handlers first, then dismount (0x43c920) while the rider idles on a standing horse.
     if (in.pressed[IN_INTERACT]) {
         if (w.interact && w.interact(u)) return true;
@@ -185,19 +191,33 @@ bool PlayerController::horse(World& w, Unit& u, const InputFrame& in, int move_c
             return true;
         }
     }
+    if (!kbm) center_camera(u, shift);   // 0x436190(mode != 3 ? shift : 0)
     horse_attack(w, u, in.pressed[IN_ATTACK_A], in.pressed[IN_ATTACK_B]);
-    // Ctrl_horse_turn 0x43dab0, mode A: A/D steer relative to the horse, <= TURN_ANG per frame, only
-    // while the horse moves (and not in STOP/STOP_B); S alone (270) is ignored.
+    // Ctrl_horse_turn 0x43dab0, only while the horse moves (and not in STOP/STOP_B), <= TURN_ANG per frame. Mode A
+    // (KBM): A/D steer relative to the horse, S alone (270) is ignored. Modes 0/1: like on foot, toward the
+    // camera-relative direction (Ctrl_world_dir, Down/stick back = toward the camera), not while `shift` is held;
+    // camera 0 follows a turn by frame ms * 0.002 deg/ms per degree of offset, clamped to +-TURN_ANG (0x590b00),
+    // unless centring (+0x74).
     const int ha = h->action;
     if (u.ride_ready && !mounting(u.action) && ha != STOP && ha != STOP_B && !(ha >= IDLE && ha <= IDLE3) &&
-        w.can_act(u) && magnitude && rel != -1 && rel != 270 && u.posture != 1) {
-        const float r = std::fmod(float(rel), 360.0f);
-        const float want = u.yaw_deg + (r <= 180 ? r - 90 : r - 270);
-        const float t = w.data().c.turn_ang, d = wrap180(want - u.yaw_deg);
+        w.can_act(u) && magnitude && rel != -1 && (kbm ? rel != 270 : !shift) && u.posture != 1) {
+        const float t = w.data().c.turn_ang;
+        float want;
+        if (kbm) {
+            const float r = std::fmod(rel, 360.0f);
+            want = u.yaw_deg + (r <= 180 ? r - 90 : r - 270);
+        } else {
+            want = float(int(in.camera_yaw_deg + rel - 90.0f) % 360);   // Ctrl_world_dir 0x42fe30
+        }
+        const float d = wrap180(want - u.yaw_deg), before = u.yaw_goal;
         w.set_yaw(u, u.yaw_deg + (d > t ? t : d < -t ? -t : d));
+        if (!kbm && cam_center == 0 && u.yaw_goal != before) {   // 0x43ef30: the heading changed
+            const float off = float(World::kTickMs) * 0.002f * (rel < 180.0f ? rel - 90.0f : 270.0f - rel);
+            camera_yaw_out += off > t ? t : off < -t ? -t : off;
+        }
     }
     // Ctrl_horse_gear 0x43d7a0 (asm-checked branch structure). HYPOTHESIS: param_2 = walk key.
-    const bool walk = in.held[IN_WALK];
+    const bool walk = shift;
     if (u.ride_ready && !mounting(u.action) && w.can_act(u)) {
         const bool back = move_code == 0x14 || move_code == 0xc || move_code == 0xd;
         if (move_code == 0 && u.action == H_ATTACK) {

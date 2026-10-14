@@ -43,6 +43,8 @@ struct AiItem {
     bool gate = false, wall = false, box = false;
     int gate_open = 0;                  // gates: 0 closed, 1 open
     int size = 0;                       // ItemRes +0x24 footprint size (approach stand-off uses size/2)
+    bool on_floor = false;              // +0xa2 floor (pickup) marker: point & click walks to it (0x43abd0)
+    float radius = 30;                  // actor bounding radius proxy (point & click reach, 0x5acc80)
 };
 
 // Per-unit AI / movement state (Unit fields +0x2a1..+0x490 of the original).

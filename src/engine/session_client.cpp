@@ -120,7 +120,7 @@ void Client::configure_options() {
     // settings.ini (launcher contract) volumes override the in-game option values at startup.
     PadSettings pad;
     if (o_.deadzone >= 0) pad.deadzone = std::clamp(o_.deadzone, 0.0f, 0.9f);
-    session_.control_mode = key_scheme(menu_.options.input_method);
+    session_.set_control_mode(key_scheme(menu_.options.input_method));  // 0x73ca80 in a running mission
     pad.sensitivity = o_.sensitivity;
     input_.configure(menu_.bindings, menu_.options, pad, o_.camera_fix);
     pad_settings_ = pad;
@@ -177,6 +177,9 @@ void Client::tick_world(double dt) {
     for (int n = clock_.advance(dt); n > 0 && !flow_.paused(); --n) {
         JOA_ZONE("sim.tick");
         game::InputFrame in = input_.take();
+        // Point & click (mode 2): resolve the popped click against the last drawn view (0x439110 / 0x43a3b0).
+        if ((in.click_left || in.click_right) && m->world().game_mode == 2)
+            camera_.click_pick(*m, in, input_.click_pos(), viewport_, frame_view_.projection * frame_view_.view);
         camera_.before_tick(*m, in);
         session_.tick(in);
         camera_.after_tick(*m, input_);
@@ -269,7 +272,8 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
     ui_menu(*ui_, menu_, commands_);
     if (loading_) bridge_.draw_loading(*ui_, flow_.loading_mission(), load_progress_);
     ui_->frame(Anchor::Center);
-    const bool pointer = flow_.paused() || session_.in_rts() || flow_.state() != FlowState::Playing;
+    // Point & click (mode 2) plays with the arrow pointer (its draw 0x4390f0 is empty: no own cursor).
+    const bool pointer = flow_.paused() || session_.in_rts() || flow_.state() != FlowState::Playing || (m && m->world().game_mode == 2);
     // RtsComplete: RTS overlay (portrait selection, drag box, RTSICON cursor) instead of the arrow while playing.
     if (mission_visible() && !camera_.free && session_.in_rts() && !flow_.paused() && menu_.screen == MenuScreen::None &&
         !hud_.show_mission_brief && !hud_.show_message_log && !bridge_.blocking(*m)) {
@@ -414,7 +418,15 @@ int Client::run() {
             if (!session_.mission() || !Autoplay::apply_item_hook(*session_.mission(), h))
                 std::fprintf(stderr, "joan-native: autoplay: %s %s failed\n", h.verb.c_str(), h.code.c_str());
         if (script.quit) break;
-        input_.feed(raw_, float(dt));
+        glm::vec2 pointer{-1.0f};  // window mouse in pixels: point & click events (GameInput) and the RTS cursor
+        if (script.pointer) {
+            const UiLayout l = ui_layout(viewport_);
+            pointer = l.safe_origin + *script.pointer * l.scale;
+        } else if (platform_) {
+            SDL_GetMouseState(&pointer.x, &pointer.y);
+            pointer *= SDL_GetWindowPixelDensity(platform_->window());
+        }
+        input_.feed(raw_, float(dt), pointer);
 
         for (const UiCommand& c : script.commands) flow_.command(c);
         const auto zoom = hud_.minimap_zoom;
@@ -440,14 +452,7 @@ int Client::run() {
         if (mission_visible() && !flow_.paused()) {
             if (camera_.free) camera_.free_move(input_, float(dt), {raw_.mouse_dx, raw_.mouse_dy}, menu_.options);
             else if (session_.in_rts()) {
-                glm::vec2 mouse{-1.0f};
-                if (script.pointer) {
-                    const UiLayout l = ui_layout(viewport_);
-                    mouse = l.safe_origin + *script.pointer * l.scale;
-                } else if (platform_) {
-                    SDL_GetMouseState(&mouse.x, &mouse.y);
-                    mouse *= SDL_GetWindowPixelDensity(platform_->window());
-                }
+                glm::vec2 mouse = pointer;
                 if (pad_pointer_.active) mouse = pad_pointer_.pos;
                 camera_.rts_input(*session_.mission(), ui_raw_, mouse, viewport_, frame_view_.projection * frame_view_.view);
                 if (camera_.rts_join_target() && hud_.rts_join_prompt.empty())  // RtsHero: the popup opens, the game pauses

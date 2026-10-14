@@ -76,10 +76,7 @@ float World::apply_ranged_damage(Unit& d, Unit& a, int type, int p) {
     }
     if (d.armor_level == 3 && (type == 0x40 || type == 0x2000)) dmg *= c.amrexdef;
     if (type == 0x40) dmg *= c.sie_udam;
-    if (const Unit* pl = unit(player_)) {
-        if (a.nation == pl->nation) dmg *= float(c.f_attack) / 100.0f;
-        if (d.nation == pl->nation) dmg *= float(c.f_defend) / 100.0f;
-    }
+    dmg = side_factors(dmg, a.nation, d.nation);
     if (const Unit* l = unit(a.leader); l && l->id != a.id) dmg *= float(std::min(l->lead, 100) + 100) / 100.0f;
     set_hp(d, int(float(d.hp) - dmg));
     return dmg;
@@ -219,7 +216,74 @@ void World::projectile_hit_unit(Projectile& p, Unit& v) {
     emit(Ev::ProjectileHit, v.id, p.id, p.type);
 }
 
-// 0x6ad660 -> 0x6a8060: fixed sub-steps, trapezoid integration, force pulse, swept unit test, terrain.
+// Physics_sweep_structures 0x693750, mesh colliders (HIGH): a straight look-ahead ray of T ms
+// (THROWI derived T/V0) from the substep start along (vx, vy, vz - V0), re-cast at most every T ms;
+// the hit fires on the frame whose (now - dt, now] holds the predicted time, t = 1 - (now - hit)/dt.
+// Kind 3 (STM) has no case in the T/V0 switch (stale locals in the original): never tested here.
+// Primitive colliders (sphere/box/cylinder) only stop a projectile whose +0x26 is already set, i.e.
+// never a flying one; the zero-velocity mesh branch never runs for a flying one either.
+int World::sweep_structures(Projectile& p, Vec3 from, Vec3 v, float dt_ms, float& t) {
+    if (!structure_ray || p.type == 3) return 0;
+    const int dt = int(dt_ms), start = now_ - dt;
+    if (p.sweep_item != 0 && start < p.sweep_hit && p.sweep_hit <= now_) {
+        t = 1.0f - float(now_ - p.sweep_hit) / float(dt);
+        return p.sweep_item;
+    }
+    if (now_ < p.sweep_next || (v.x == 0 && v.y == 0 && v.z == 0)) return 0;
+    const ThrowConsts& tc = gd_.throwi[p.type];
+    const int T = int(tc.ft);
+    p.sweep_next = start + T;
+    p.sweep_item = 0;
+    const float k = float(T) * kUnitsPerMetre * 0.001f;
+    const StructureHit h = structure_ray(0, from, {from.x + v.x * k, from.y + v.y * k, from.z + (v.z - tc.v0) * k});
+    if (h.item && h.t <= 0.001f) {   // immediate hit; the prediction is not stored
+        t = 0;
+        return h.item;
+    }
+    p.sweep_hit = start + int(float(T) * (h.item ? h.t : 1.0f));
+    p.sweep_item = h.item;
+    if (p.sweep_item == 0 || now_ <= p.sweep_hit) return 0;
+    t = 1.0f - float(now_ - p.sweep_hit) / float(dt);
+    return p.sweep_item;
+}
+
+// ThrowItem_on_hit_object 0x4fbc90 (CONFIRMED): +0x26 = item; with a live shooter: kinds 0/1 ARROW
+// (2) to the item at its position; kind 2 EXPLOSIVE_ARROW (0x2000) to the item, items around, units
+// around; kinds 3-5 STONE (0x40) to the item, units around, items around; radius TR, then kill. A
+// deleted item: nothing (the integrator keeps the projectile in place).
+void World::projectile_hit_object(Projectile& p, int item) {
+    const StructureHit h = structure_ray(item, {}, {});
+    if (!h.item) return;
+    p.hit_id = item;
+    p.collided = true;
+    const Unit* s = unit(p.shooter);
+    if (!s || s->deleted) return;
+    Trigger t;
+    t.sender = p.shooter;
+    t.start = t.end = now_;
+    t.radius = p.tr;
+    t.param = p.type;
+    t.pos = h.pos;
+    t.target_kind = 2;
+    t.target_id = h.modify;
+    t.type = p.type <= 1 ? 2 : p.type == 2 ? 0x2000 : 0x40;
+    triggers_.push_back(t);
+    if (p.type >= 2) {
+        Trigger area = t;
+        area.target_id = 0;
+        area.target_kind = p.type == 2 ? 2 : 1;
+        triggers_.push_back(area);
+        area.target_kind = p.type == 2 ? 1 : 2;
+        triggers_.push_back(area);
+        // EXPLOSIVEHIT1..3 is a Misc_random(3) particle in the original; picked by the audio side here.
+        emit(Ev::Sound, 0, p.id, 0, p.type == 2 ? "EXPLOSIVEHIT" : h.struction == 1 || h.struction == 2 ? "CANNONHH" : "CANNONHM");
+    }
+    emit(Ev::ProjectileHit, 0, p.id, p.type, "item");
+}
+
+// 0x6ad660 -> 0x6a8060: fixed sub-steps, trapezoid integration, force pulse, swept unit test, structure
+// sweep, terrain. The body hit wins when it is closer than the structure hit; a structure hit returns
+// before the new state is stored.
 void World::integrate_projectiles(float dt_ms) {
     for (Projectile& p : projectiles_) {
         if (p.destroyed || p.collided || (p.type != 0 && p.ground)) continue;
@@ -229,7 +293,8 @@ void World::integrate_projectiles(float dt_ms) {
         if (dt_ms > float(max_steps)) h = std::min(dt_ms * 0.001f / float(max_steps), 1.0f), n = max_steps;
         const Unit* shooter = unit(p.shooter);
         for (int i = 0; i < n && !p.collided && !p.ground; ++i) {
-            const Vec3 old = p.pos_m;
+            const Vec3 old = p.pos_m, old_v = p.vel_m;
+            const float old_force = p.force_left_ms;
             float rest = h;
             while (rest > 0) {
                 float hh = rest;
@@ -248,6 +313,9 @@ void World::integrate_projectiles(float dt_ms) {
             }
             // Swept segment vs unit cylinders (shape forced to cylinder for throw items).
             const Vec3 s0 = scale(old, kUnitsPerMetre), s1 = scale(p.pos_m, kUnitsPerMetre);
+            Unit* hit = nullptr;
+            float tu = 1;
+            Vec3 hit_at;
             for (Unit& v : units_) {
                 if (v.deleted || v.id == p.shooter || v.m.climb) continue;   // climbers have no body (0x4ac910)
                 if (shooter && !hostile(shooter->nation, v.nation)) continue;
@@ -260,11 +328,21 @@ void World::integrate_projectiles(float dt_ms) {
                 const Vec3 c{s0.x + d.x * u, s0.y + d.y * u, s0.z + d.z * u};
                 const float rx = c.x - v.pos.x, ry = c.y - v.pos.y;
                 if (rx * rx + ry * ry > vc.cyl_radius * vc.cyl_radius || c.z < v.pos.z || c.z > v.pos.z + vc.cyl_height) continue;
-                p.pos_m = scale(c, 1.0f / kUnitsPerMetre);
-                projectile_hit_unit(p, v);
+                hit = &v, tu = u, hit_at = c;
                 break;
             }
-            if (p.collided) break;
+            float tw = 1;
+            const int item = sweep_structures(p, s0, old_v, dt_ms, tw);
+            if (hit && (!item || tu < tw)) {
+                p.pos_m = scale(hit_at, 1.0f / kUnitsPerMetre);
+                projectile_hit_unit(p, *hit);
+                break;
+            }
+            if (item) {
+                p.pos_m = old, p.vel_m = old_v, p.force_left_ms = old_force;
+                projectile_hit_object(p, item);
+                break;
+            }
             if (terrain_ && terrain_->height(s1.x, s1.y) > s1.z) p.ground = true;
         }
     }

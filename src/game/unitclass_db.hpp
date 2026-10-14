@@ -55,6 +55,8 @@ struct Consts {
     int ep_nor = 6, ep_cap = 15, ep_gen = 30;
     float aim_r = 25, aim_mxd = 2500, aim_ha = 60, turn_ang = 6;
     float stop_cc = 0.3f;   // UNIT STOP_CC 0xa3cce4 (rider stop 0x4533e0)
+    float idle2_ch = 0.2f, idle3_ch = 0.4f;   // UNIT IDLE2_CH 0xa3cc94 / IDLE3_CH 0xa3cc30 (FUN_00429ec0)
+    float idle_cc = 0.01f;                    // UNIT IDLE_CC 0xa3ccf0 (Unit_updateAction 0x7c7ab0 case IDLE)
     int jumpmaxd = 100, chainpro = 200, cri_time = 10000;
     int crit_fade_in1 = 200, crit_fade_in2 = 200, crit_glow_in[3] = {200, 200, 200};   // {CRITICAL} FADE_IN1/2, GLOW_IN1..3 (Crit_drawHUD 0x45fae0)
     float diff_d[4] = {0.7f, 1.0f, 1.5f, 2.0f};   // EASY_D..VDIFF_D (damage of player-hostile units)
@@ -78,6 +80,10 @@ struct ItemDef {
     int primary_effect = 0;              // +0x4a DamageType (value = damage/inc_damage)
     struct Extra { int type, value, inc; };
     std::vector<Extra> extra;            // AdditionalEffectType/Value/IncValue
+    // EffectiveRequirementType/Value/IncValue/EffectiveWhen (+0x245 n, +0x249 16-byte recs: type, value, inc,
+    // BELOW 0 / OVER 1; ItemRes_parse 0x4a0160). Tested by World::item_applies (0x4a42f0) on enhancers only.
+    struct Requirement { int type, value, inc; bool over; };
+    std::vector<Requirement> require;
     int usable_unit = -1;                // UsableUnit unit class index, -1 any
     bool use_immediately = false;        // +0x23d UseImmediately (POTION)
     bool show_armory = false;            // +0x1e8 ShowArmoryInterface

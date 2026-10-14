@@ -19,7 +19,7 @@ namespace {
 
 constexpr int kTicks = 40000;      // per attempt (22 min of game time)
 constexpr int kRetries = 2;
-constexpr int kExpectedWins = 0;   // raise when the bot (or a port fix) wins more; see docs/SAVES_AND_CAMPAIGN.md
+constexpr int kExpectedWins = 1;   // mission 1 on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
 
 int fails = 0;
 

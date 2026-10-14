@@ -95,6 +95,11 @@ int main(int argc, char** argv) {
                 std::printf("%s\n", err.c_str());
                 break;
             }
+            if (!save_dir.empty()) {  // mission-start checkpoint: resume the chain with --load
+                const auto path = std::filesystem::path(save_dir) / ("bot-" + run.mission()->info().stem() + ".jsav");
+                if (!write_save_atomic(path, encode_save(run.save()), 3, &err)) return std::fprintf(stderr, "save: %s\n", err.c_str()), 1;
+                std::printf("saved %s\n", path.c_str());
+            }
         }
         return 0;
     }

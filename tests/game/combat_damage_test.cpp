@@ -132,5 +132,31 @@ int main() {
         CHECK(d.w.try_melee_hit(d.J(), d.E()) == 0, "hit through invulnerability");
         CHECK(d.E().invuln_ms == 0, "soldier invuln %d", d.E().invuln_ms);
     }
+    {   // 6. Scenario 8 (0xa58fa7 == 8) side factors in 0x509950 / 0x509e90 / 0x49d5f0: a non-player-side attacker
+        // x F_ATTACK/250 and a non-player-side victim x F_DEFEND/100, before the usual player-side factors.
+        Duo d(gd);
+        const int fr = d.J().nation, en = d.E().nation;
+        CHECK(NEAR(d.w.side_factors(10.0f, 0, en), 10.0, 1e-5) && NEAR(d.w.side_factors(10.0f, fr, en), 13.0, 1e-5), "scenario 0 sides");
+        d.w.scenario_no = 8;
+        CHECK(NEAR(d.w.side_factors(10.0f, 0, en), 3.64, 1e-4), "s8 keg (nation 0) on English %f", d.w.side_factors(10.0f, 0, en));
+        CHECK(NEAR(d.w.side_factors(10.0f, fr, fr), 9.1, 1e-4), "s8 French on French %f", d.w.side_factors(10.0f, fr, fr));
+        // Joan A: 2.688 x F_DEFEND 0.7 (English victim) x F_ATTACK 1.3 = 2.44608.
+        CHECK(d.w.set_action(d.J(), ATTACK, 'A'), "Joan ATTACK A");
+        float dmg = d.w.apply_melee_damage(d.E(), d.J(), 0);
+        CHECK(NEAR(dmg, 2.44608, 1e-4), "s8 Joan A dmg %f", dmg);
+        // English A on Joan: 4.872 x F_ATTACK/250 0.52 x F_DEFEND 0.7 = 1.773408.
+        CHECK(d.w.set_action(d.E(), ATTACK, 'A'), "English ATTACK A");
+        dmg = d.w.apply_melee_damage(d.J(), d.E(), 0);
+        CHECK(NEAR(dmg, 1.773408, 1e-4), "s8 English A dmg %f", dmg);
+    }
+    {   // 7. EffectiveRequirement records (ItemRes_parse 0x4a0160) of the shipped rings.
+        const ItemDef& holy = gd->items[std::size_t(gd->item_index("Holy"))];
+        CHECK(holy.require.size() == 1 && holy.require[0].type == MAX_HIT_POINT && holy.require[0].value == 50 &&
+                  holy.require[0].inc == 0 && !holy.require[0].over, "Holy requirement");
+        const ItemDef& gry = gd->items[std::size_t(gd->item_index("Gryphon"))];
+        CHECK(gry.require.size() == 2 && gry.require[1].type == MAX_ENERGY_POINT && gry.require[1].over, "Gryphon requirements");
+        const ItemDef& emp = gd->items[std::size_t(gd->item_index("Empire"))];
+        CHECK(emp.require.size() == 1 && emp.require[0].type == LEADERSHIP && emp.require[0].value == 50 && emp.require[0].over, "Empire requirement");
+    }
     return finish();
 }
