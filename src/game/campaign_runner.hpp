@@ -26,8 +26,9 @@ public:
     Mission* mission() { return mission_.get(); }
 
     // Game-end menu CONTINUE after a win (finish == 1): store heroes/lists/gold/time into the
-    // profile (DAT_00a58f95 = 1), then start scenario no + 1. After scenario 8 the ending plays
-    // instead (MissionEvent::Ending) and false is returned with *err = "campaign complete".
+    // profile (DAT_00a58f95 = 1), then start scenario no + 1 (5 -> 6 keeps scenario 5's world:
+    // Mission::continue_in_world). After scenario 8 the ending plays instead
+    // (MissionEvent::Ending) and false is returned with *err = "campaign complete".
     bool continue_after_win(std::string* err = nullptr);
     // RETRY (game-over box / end menu): start_scenario(no, step, 0); the profile is unchanged.
     bool retry(std::string* err = nullptr);

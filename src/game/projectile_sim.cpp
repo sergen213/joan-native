@@ -105,7 +105,8 @@ float World::try_ranged_hit(Unit& d, Unit& a, int type, bool ignore_down) {
 
 bool World::ai_shoot(Unit& u, int target) {
     Unit* t = unit(target);
-    if (!t || !can_act(u) || !u.inv.ranged.item || !find_move(u, SHTLOAD)) return false;
+    // Siege weapons carry only their SRangeWeaponId ammo (CANNONBALL / stone), no launcher item.
+    if (!t || !can_act(u) || (!u.inv.ranged.item && !u.inv.ammo.item) || !find_move(u, SHTLOAD)) return false;
     u.target = u.range_target = target;
     u.aim_dir = norm(sub(t->pos, u.pos));
     return set_action(u, SHTLOAD);

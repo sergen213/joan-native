@@ -305,6 +305,14 @@ bool AudioSystem::play_env(int slot, std::string_view key, bool loop) {
 void AudioSystem::fade_out_env(int slot, float seconds) {
     if (slot >= 0 && slot < kEnvSlots) mixer_.fade_out(channels_[1 + slot].voice, seconds);
 }
+void AudioSystem::stop_env(int slot) {
+    if (slot < 0 || slot >= kEnvSlots) return;
+    mixer_.stop(channels_[1 + slot].voice);
+    channels_[1 + slot] = {};
+}
+bool AudioSystem::env_playing(int slot) const {
+    return slot >= 0 && slot < kEnvSlots && channels_[1 + slot].voice && mixer_.playing(channels_[1 + slot].voice);
+}
 
 void AudioSystem::update() {
     for (Channel& c : channels_) refill(c);

@@ -5,7 +5,7 @@
 #include <cstdlib>
 
 #include "game/ai_routines.hpp"
-#include "game/nav_mesh.hpp"
+#include "game/multimap_nav.hpp"
 
 namespace joa::game {
 

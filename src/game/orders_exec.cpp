@@ -9,7 +9,6 @@ namespace {
 constexpr float kDegToRad = 0.017453292f;
 
 bool lock(int a) { return a == KNOCKDN || a == KNOCKDN2 || a == KNOCKDN3 || a == STANDUP || a == DNATKED || a == H_DROP; }
-bool idle_class(int a) { return (a >= IDLE && a <= IDLEDN) || a == JATTBI || a == H_IDLE || a == 0x59 || a == 0x5a; }
 bool engatk(int a) { return a >= ENGATK && a <= ENGATK4; }
 bool shoot_state(int a) { return a == SHTLOAD || a == SHTLOAD2 || a == SHTOUT || a == SHTIDLE || a == SHTOUTH || a == SHTIDLEH; }
 float xy_d2(Vec3 a, Vec3 b) { return (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y); }
@@ -150,7 +149,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
             done();
         } else if (u.posture == 1 || expired) {
             if (expired) done();
-        } else if (idle_class(u.action)) {
+        } else if (is_idle_class(u.action)) {
             u.combo.clear();
             u.combo_idx = 0;
             const char first = key(0);
@@ -164,8 +163,8 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
     }
     case order::SHOOT: {  // 0x4bd090
         if (locked) { done(); break; }
-        if (c.p[2] == 1) { if (idle_class(u.action)) done(); break; }
-        if (!idle_class(u.action)) {
+        if (c.p[2] == 1) { if (is_idle_class(u.action)) done(); break; }
+        if (!is_idle_class(u.action)) {
             if (u.action == DIE || w_.dead(u)) { done(); break; }
             if (shoot_state(u.action)) break;
             if (expired) done();
@@ -246,7 +245,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
                            : Vec3{c.p[0] + U.x, c.p[1] + U.y, c.p[2] + U.z};
         if (locked) { done(); u.m.track = 0; break; }
         if (expired) { fin(); break; }
-        if (!idle_class(u.action)) break;
+        if (!is_idle_class(u.action)) break;
         const float dd = xy_d2(U, g);
         const float R = float(reach(u));
         if (dd <= R * R) { fin(); break; }
@@ -269,17 +268,17 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
         if (locked || busy_attacking(u)) { done(); break; }
         const auto& t = w_.data().units[std::size_t(u.cls)];
         if (t.unit_class == 8 && t.special != 6 && t.special != 10 && !all_attached(u, 'F')) { done(); break; }
-        if (w_.anim_remaining(u) == 0 && !idle_class(u.action)) w_.stop(u);
+        if (w_.anim_remaining(u) == 0 && !is_idle_class(u.action)) w_.stop(u);
         double diff = std::fmod(double(c.p[0]) - double(u.yaw_deg), 360.0);
         if (diff < 0) diff += 360.0;
         const int rd = int(std::floor(diff + 0.5));
         if (rd <= 1 || rd >= 359) done();
-        else w_.set_yaw(u, float(c.p[0]));  // ponytail: +0x1e desired heading applied at once (turn rate not modelled)
+        else w_.set_yaw(u, float(c.p[0]));  // +0x1e; the body turns in World::turn_step (0x4f2190)
         break;
     }
     case order::IDLE:  // 0x4c25a0
         if (locked) { done(); break; }
-        if (!idle_class(u.action)) w_.stop(u);
+        if (!is_idle_class(u.action)) w_.stop(u);
         else if (w_.anim_remaining(u) == 0) w_.stop(u);
         else if (expired) done();
         break;
@@ -316,7 +315,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
         if (locked) { done(); break; }
         auto it = item ? item(c.p[0]) : std::nullopt;
         if (!it || expired) { fin(); break; }
-        if (busy_attacking(u) || !idle_class(u.action)) break;
+        if (busy_attacking(u) || !is_idle_class(u.action)) break;
         const int extra = rand(c.p[2]);
         const float R = float(c.p[1] + extra);
         if (d2_3(U, it->pos) <= R * R) { fin(); break; }
@@ -330,7 +329,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
         if (locked) { done(); break; }
         auto pit = places.find(c.p[0]);
         if (pit == places.end() || expired) { fin(); break; }
-        if (!((u.m.track == 0 || s.path.empty()) && !busy_attacking(u) && idle_class(u.action))) break;
+        if (!((u.m.track == 0 || s.path.empty()) && !busy_attacking(u) && is_idle_class(u.action))) break;
         AiPlace& P = pit->second;
         Vec3 G = P.centre;
         auto zit = zones.find(c.p[1]);
@@ -389,7 +388,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
     case order::FOLLOW_FORMATION: {  // 0x4be770
         if (locked) { done(); break; }
         if (expired) { fin(); break; }
-        if (busy_attacking(u) || !idle_class(u.action)) break;
+        if (busy_attacking(u) || !is_idle_class(u.action)) break;
         Vec3 G;
         if (c.p[2] == 1) {
             G = {float(c.p[0]), float(c.p[1]), U.z};
@@ -419,7 +418,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
         if (expired) { fin(); break; }
         const Unit* F = w_.unit(c.p[0]);
         if (!F) { fin(); break; }
-        if (busy_attacking(u) || !idle_class(u.action)) break;
+        if (busy_attacking(u) || !is_idle_class(u.action)) break;
         const float a = F->yaw_rad() + float(c.p[1]) * kDegToRad;
         const Vec3 G{F->pos.x + float(c.p[2]) * std::cos(a), F->pos.y + float(c.p[2]) * std::sin(a), F->pos.z};
         const float dd = xy_d2(U, G);
@@ -504,7 +503,7 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
                 if (c.p[2] < 1) { u.combo.clear(); u.combo_idx = 0; w_.stop(u); done(); }
                 else { w_.set_action(u, A); --c.p[2]; }
             }
-        } else if (idle_class(u.action) && c.p[2] > 0) {
+        } else if (is_idle_class(u.action) && c.p[2] > 0) {
             if (w_.set_action(u, A)) --c.p[2];
             else --c.p[2];  // no EXTRA clip for this class: the repeat is consumed anyway
         }

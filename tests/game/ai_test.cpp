@@ -43,9 +43,9 @@ int main() {
 
     // View cone: facing away (yaw 180) the enemy at +x is 180 deg off.
     w.unit(me)->target = 0;
-    w.set_yaw(*w.unit(me), 180);
+    w.set_yaw_now(*w.unit(me), 180);
     CHECK(ai.search_for_unit(*w.unit(me), "E", 1000, false, 0, 90, 0) == 0, "outside 90 deg cone");
-    w.set_yaw(*w.unit(me), 0);
+    w.set_yaw_now(*w.unit(me), 0);
     CHECK(ai.search_for_unit(*w.unit(me), "E", 1000, false, 0, 90, 0) == e1, "inside cone");
 
     // NEAREST_HIGH_PRIORITY: for a light-infantry searcher an archer (prio 5) beats a nearer light

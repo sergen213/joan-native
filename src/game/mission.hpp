@@ -37,6 +37,7 @@ struct ScriptText;
 struct WorldNode {
     std::string name;      // NodeName, e.g. "S3L1_2" (file stem of the node's map files)
     float ox = 0, oy = 0;  // node origin in world units (FUN_0047ad40: rotated box min, X/Y in 32-unit steps)
+    float x1 = 0, y1 = 0;  // node box max (Level +0x08); 0 for the implicit node of a world without .wor
 };
 std::vector<WorldNode> world_nodes(const formats::Vfs& vfs, const std::string& map_dir, const formats::ScenarioStep& step);
 
@@ -52,6 +53,10 @@ public:
     // Battle::start_scenario(no, 1) + Battle::load_world: terrain, World, map objects, places,
     // units (.uni), scripts (main + _des once), profile gold / play time / lists, init pass.
     bool start(const CampaignMission& cm, std::uint32_t seed, std::string* err = nullptr);
+    // Battle_start_scenario(no, 1, keep = 1) after scenario 5 (CONTINUE 5 -> 6): Battle_deinit
+    // 0x41c780 / Game_deinit 0x471010 keep the world, units, places and objects, and
+    // Battle_load_world 0x41c810 skips world creation for scenario 6; only the scripts restart.
+    bool continue_in_world(const CampaignMission& cm, std::string* err = nullptr);
     void tick(const InputFrame& in = {});
 
     // --- components -------------------------------------------------------------------------
@@ -62,7 +67,7 @@ public:
     Places& places() { return places_; }
     MapObjects& objects() { return objects_; }
     AiSystem& ai() { return *ai_; }
-    NavMesh* nav() { return nav_.get(); }  // null for multi-node worlds
+    NavWorld* nav() { return nav_.get(); }  // every level's .pfd + the world mesh; null without a .pfd
     MissionUi& ui() { return ui_; }
     MissionHost& host() { return *host_; }
     GameData& data() { return gd_; }
@@ -83,6 +88,10 @@ public:
     // Hero restore for load_unit (FUNC 86 -> FUN_004c91c0): 0 unless the profile was written by
     // a CONTINUE and holds the class code. Returns the new unit recno.
     int load_hero(std::string_view code, std::string_view nation);
+    // UnitArray_add 0x51dfc0: a unit of class `code` at the origin (nation 0). Once a CONTINUE wrote
+    // the profile, a stored hero of that class is restored instead (FUN_004c91c0) with full hp/ep
+    // and zeroed troop counters. Used by add_unit (FUNC 85) and the .uni loader.
+    int add_unit(std::string_view code);
     // FUN_0051ff00 + store_generals + lists/gold/time/command points -> profile (game-end CONTINUE).
     void store_profile();
 
@@ -108,7 +117,7 @@ private:
     std::uint32_t seed_ = 0;
     std::unique_ptr<ITerrainQuery> terrain_;
     std::unique_ptr<World> world_;
-    std::unique_ptr<NavMesh> nav_;
+    std::unique_ptr<NavWorld> nav_;
     std::unique_ptr<AiSystem> ai_;
     std::unique_ptr<CharPhysics> phys_;  // destroyed before world_
     std::unique_ptr<MissionHost> host_;
@@ -119,6 +128,7 @@ private:
     MissionUi ui_;
     std::uint8_t last_finish_ = 0;
     bool force_objectives_ = false;
+    void restore_profile();  // Battle_load_world: lists, gold, play time, command points
 };
 
 }  // namespace joa::game

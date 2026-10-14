@@ -71,7 +71,9 @@ void markup_line(Ui& ui, const UiFont* f, std::string_view line, glm::vec2 pos, 
     }
 }
 
-int markup_block(Ui& ui, const UiFont* f, std::string_view s, glm::vec4 r, glm::vec4 c, int max_lines = 99) {
+}  // namespace
+
+int ui_markup_block(Ui& ui, const UiFont* f, std::string_view s, glm::vec4 r, glm::vec4 c, int max_lines) {
     if (!f) return 0;
     const std::vector<std::string> lines = markup_wrap(f->metrics, s, int(r.z));
     const int first = std::max(0, int(lines.size()) - max_lines);  // FUN_004d8c10 scrolls to the last lines
@@ -82,6 +84,10 @@ int markup_block(Ui& ui, const UiFont* f, std::string_view s, glm::vec4 r, glm::
         markup_line(ui, f, lines[k], {r.x, r.y + float((int(k) - first) * (f->metrics.line_height() + 2))}, c, hi);  // 0x626320 gap 2
     return int(lines.size());
 }
+
+int ui_markup_lines(const UiFontMetrics& m, std::string_view s, int width) { return int(markup_wrap(m, s, width).size()); }
+
+namespace {
 
 // Sprite rotated by `angle` (radians, clockwise on screen) about its centre `c`.
 // ponytail: one 1-unit quad per texel (UiQuad has no rotation); add a rotated UiQuad if more sprites need it.
@@ -260,9 +266,9 @@ void attention(Ui& ui, const HudMessage& msg) {
     const UiSprite* icon = ui.sprite("MESSAGE", msg.icon);
     if (icon) ui.sprite(icon, glm::vec2(28, 564) + (glm::vec2(72) - icon->size) / 2.0f);  // M000x icons are 48x48
     ui.sprite("MESSAGE", "icon_2", {28, 564});
-    // ponytail: reveal rate 40 chars/s is a guess (original advances by its own timer); tune when measured.
+    // 40 chars/s = FUN_004ace90 typed += dt * 0.04 (GameUiBridge fills age = typed / 40).
     const std::string shown = msg.text.substr(0, std::size_t(std::max(0.0f, msg.age * 40.0f)));
-    markup_block(ui, ui.font("Goudy14(22) white"), shown, {0x68, 768 - 0xcc, 1024 - 0x1c - 0x68, 0xcc - 0x84}, kUiWhite, 3);
+    ui_markup_block(ui, ui.font("Goudy14(22) white"), shown, {0x68, 768 - 0xcc, 1024 - 0x1c - 0x68, 0xcc - 0x84}, kUiWhite, 3);
 }
 
 // ---- message log (FUN_006e1570 / FUN_006e22e0): MSGLOG book over the in-game backdrop ----
@@ -313,7 +319,7 @@ void message_log(Ui& ui, HudModel& m) {
                                                                   [](char a, char b) { return std::tolower(a) == b; });
             ui.sprite("MESSAGE", msg.icon, {x + (small ? 10.0f : 0.0f), y + (small ? 10.0f : 0.0f)});
             ui.sprite("MESSAGE", "icon_2", {x, y});
-            markup_block(ui, body, msg.text, {x + 0x50, y, 0x15e - 0x50, 100}, ink);
+            ui_markup_block(ui, body, msg.text, {x + 0x50, y, 0x15e - 0x50, 100}, ink);
         }
     }
     // Page arrows (COMMELE2 aw_l/aw_r buttons at (0x78, 0x28c) / (0x364, 0x28c)).

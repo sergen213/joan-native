@@ -42,6 +42,7 @@ struct Paths {
     fs::path current() const { return game_root / "current"; }
     fs::path settings() const { return config_dir / "settings.ini"; }
     fs::path logs() const { return state_dir / "logs"; }
+    fs::path hd_root() const { return game_root.parent_path() / "hd"; }  // engine `hd_packs` names live here
 };
 
 using Progress = std::function<void(int percent, const std::string& message)>;
@@ -77,4 +78,10 @@ fs::path write_desktop_entry(const Paths& paths, const fs::path& launcher_exec);
 
 // Dev helper: manifest JSON object for the original files found under dir.
 std::string generate_manifest(const fs::path& dir, const std::string& id, const std::string& label);
+
+// Copies texture/** .dds/.png files of an extracted HD pack (e.g. the community HD Update) into
+// hd_root()/<name> via a staging dir, skipping files byte-identical to the current install. Never
+// copies executables, CONFIG.DAT, models or int8x6/ (docs/HD_ASSETS.md). <name> must not exist yet.
+struct HdImport { fs::path pack; std::size_t copied = 0, identical = 0; };
+HdImport import_hd_pack(const fs::path& source, const std::string& name, const Paths& paths, const Options& options = {});
 } // namespace joa::install

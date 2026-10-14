@@ -462,4 +462,50 @@ std::string generate_manifest(const fs::path& dir, const std::string& id, const 
         out += json::array({files[i].generic_string(), fs::file_size(dir / files[i]), sha256_file(dir / files[i])}).dump() + (i + 1 < files.size() ? ",\n" : "\n");
     return out + "]}\n]}\n";
 }
+
+HdImport import_hd_pack(const fs::path& source, const std::string& name, const Paths& paths, const Options& opt) {
+    if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos) fail("bad pack name '" + name + "'");
+    // Case-insensitive `texture` child of a directory, empty if absent.
+    const auto texture_dir = [](const fs::path& dir) {
+        std::error_code ec;
+        for (const auto& e : fs::directory_iterator(dir, ec))
+            if (e.is_directory() && lower(e.path().filename().string()) == "texture") return e.path();
+        return fs::path{};
+    };
+    const fs::path src = texture_dir(source);
+    if (src.empty()) fail(source.string() + " has no texture/ directory (extract the pack first, e.g. `bsdtar -xf HDUpdate.rar`)");
+    HdImport r{paths.hd_root() / name};
+    if (fs::exists(r.pack)) fail(r.pack.string() + " already exists; remove it or pick another --name");
+    check_disjoint(source, r.pack);
+
+    std::unordered_map<std::string, fs::path> originals;  // lowercase path below texture/ -> installed file
+    if (const fs::path orig = texture_dir(paths.current()); !orig.empty())
+        for (const auto& e : fs::recursive_directory_iterator(orig))
+            if (e.is_regular_file()) originals.emplace(lower(e.path().lexically_relative(orig).generic_string()), e.path());
+    std::vector<fs::path> files;
+    for (const auto& e : fs::recursive_directory_iterator(src)) {
+        const auto ext = lower(e.path().extension().string());
+        if (e.is_regular_file() && (ext == ".dds" || ext == ".png")) files.push_back(e.path());
+    }
+
+    fs::create_directories(paths.hd_root());
+    TempDir staging{paths.hd_root() / ("." + name + ".staging")};
+    fs::remove_all(staging.path);
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        report(opt.progress, i, files.size(), "importing HD textures");
+        const fs::path rel = files[i].lexically_relative(src);
+        const auto it = originals.find(lower(rel.generic_string()));
+        if (it != originals.end() && fs::file_size(it->second) == fs::file_size(files[i]) && sha256_file(it->second) == sha256_file(files[i])) {
+            ++r.identical;
+            continue;
+        }
+        clone_file(files[i], staging.path / "texture" / rel);
+        ++r.copied;
+    }
+    fs::create_directories(staging.path);
+    fs::rename(staging.path, r.pack);
+    staging.path.clear();
+    report(opt.progress, 1, 1, "HD pack imported");
+    return r;
+}
 } // namespace joa::install

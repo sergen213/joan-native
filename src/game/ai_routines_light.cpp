@@ -602,10 +602,7 @@ void attach_unit(AiSystem& s, Unit& u, int wid, char side, int tol) {
     Unit* w = live(s, wid);
     if (!w) return;
     const int mask = side == 'M' ? 1 : 2;
-    switch (u.action) {  // Unit_anim_is_idle_class 0x508ab0
-        case 1: case 2: case 3: case 4: case 5: case 6: case 8: case 0x43: case 0x59: case 0x5a: break;
-        default: return;
-    }
+    if (!is_idle_class(u.action)) return;  // Unit_anim_is_idle_class 0x508ab0
     World& world = s.world();
     const auto& pts = world.data().units[std::size_t(w->cls)].attach_points;
     for (int i = 0; i < int(pts.size()); ++i) {

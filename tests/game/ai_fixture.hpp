@@ -9,7 +9,7 @@
 
 #include "formats/pfd_mesh.hpp"
 #include "formats/vfs_fs.hpp"
-#include "game/nav_mesh.hpp"
+#include "game/multimap_nav.hpp"
 #include "game/physics_char.hpp"
 #include "game/unitclass_db.hpp"
 
@@ -21,7 +21,7 @@ namespace fs = std::filesystem;
 
 struct Env {
     std::unique_ptr<GameData> gd;
-    std::unique_ptr<NavMesh> nav;
+    std::unique_ptr<NavWorld> nav;
     std::unique_ptr<NavTerrain> terrain;
 };
 
@@ -34,16 +34,17 @@ inline std::unique_ptr<Env> load() {
     e->gd = GameData::load(dir, &err);
     if (!e->gd) { std::fprintf(stderr, "GameData: %s\n", err.c_str()); return nullptr; }
     auto pfd = joa::formats::parse_pfd(*joa::formats::read_file(fs::path(dir) / "map/scenario1/S1L1.pfd"));
-    e->nav = std::make_unique<NavMesh>(*pfd);
+    NavMesh mesh(*pfd);
     auto por = joa::formats::read_file(fs::path(dir) / "map/scenario1/S1L1.por");
-    e->nav->add_los_quads_from_por(std::string(por->begin(), por->end()));
+    mesh.add_los_quads_from_por(std::string(por->begin(), por->end()));
+    e->nav = std::make_unique<NavWorld>(std::move(mesh));
     e->terrain = std::make_unique<NavTerrain>(*e->nav);
     return e;
 }
 
 // Centre of the first w x h rectangle (axis aligned, sampled every 50 units) that is entirely walkable
 // and at most 300 units of height variation; scanned row-major on a 256 grid (deterministic).
-inline bool open_area(const NavMesh& m, float w, float h, float& cx, float& cy) {
+inline bool open_area(const NavWorld& m, float w, float h, float& cx, float& cy) {
     for (float y = 1024; y < 15360; y += 256)
         for (float x = 1024; x < 15360; x += 256) {
             bool ok = true;
@@ -52,7 +53,7 @@ inline bool open_area(const NavMesh& m, float w, float h, float& cx, float& cy) 
                 for (float dx = -w / 2; dx <= w / 2 && ok; dx += 50) {
                     const float g = m.grid_height(x + dx, y + dy);
                     const int p = m.find_poly_xy(x + dx, y + dy, g);
-                    ok = p >= 0 && m.polys()[std::size_t(p)].type == 0;
+                    ok = p >= 0 && m.poly(p).type == 0;
                     lo = std::min(lo, g), hi = std::max(hi, g);
                 }
             if (ok && hi - lo < 300) { cx = x, cy = y; return true; }

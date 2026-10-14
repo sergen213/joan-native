@@ -1,88 +1,112 @@
 #pragma once
-// Client-side glue for an original scenario: world, Joan, follow/free camera. The fixed-step
-// simulation keeps running in metres (sim.hpp); this maps it into original world units.
+// Client-side view of a running mission: every world node of the map (terrain, objects, lights, water,
+// grass, ambient particles), the sky, and one animated Character per game::Snapshot unit, interpolated
+// between the last two 33 ms ticks. Gameplay state is read only from the snapshots / World.
 #include "engine/attach_items.hpp"
 #include "engine/camera.hpp"
 #include "engine/character_actor.hpp"
-#include "engine/cli.hpp"
-#include "engine/input.hpp"
 #include "engine/grass_field.hpp"
 #include "engine/particles.hpp"
-#include "engine/sim.hpp"
 #include "engine/sky_dome.hpp"
-#include "engine/world_scene.hpp"
 #include "engine/water.hpp"
+#include "engine/world_scene.hpp"
+#include "game/mission.hpp"
 
+#include <array>
+#include <filesystem>
+#include <map>
 #include <memory>
-#include <optional>
+#include <unordered_map>
 
 namespace joa::engine {
 
-// HYPOTHESIS: Joan's mesh is 78.7 units tall, taken as 1.75 m.
-inline constexpr float kUnitsPerMetre = 45.0f;
-
 class WorldView {
 public:
-    // o.game_dir (default "."), o.scenario, o.free_camera, o.camera_pose, o.anim. Throws on load failure.
-    WorldView(IRenderer& renderer, const Options& o);
+    // Loads every world node of the mission map (game::world_nodes) and the world .day lighting.
+    // Throws on load failure.
+    WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::Mission& mission,
+              std::vector<std::filesystem::path> hd_packs = {});
     ~WorldView();
 
-    // Third-person framing of the original start capture (s04_04_mission1_hud.png: Joan about half
-    // the screen height, eye slightly above her shoulders, nearly level). HYPOTHESIS values.
-    void setup_camera(FollowCamera& camera) const;
-    // After each simulation step: picks Joan's clip from the movement and advances all clips one tick.
-    void tick(const World& current);
-    // Updates the camera, poses Joan and appends the frame's draws. Fills view.view/camera_position.
-    void frame(const World& shown, float alpha, FollowCamera& camera, const ActionState& actions, float dt,
-               const glm::mat4& projection, FrameView& view, std::vector<DrawItem>& draws);
+    // After each tick: spawns an actor per new snapshot unit id, drops actors of units that left it,
+    // takes position/yaw/clip/clip time of prev -> cur and re-attaches equipment when it changed.
+    void sync(const game::World& world, const game::Snapshot& prev, const game::Snapshot& cur);
+    // Attack-script / effect particles of the tick's events (animscr.res emitter slots, .txt effects).
+    void on_events(const std::vector<game::GameEvent>& events, const game::Snapshot& cur);
+    // Poses units at alpha in [0, 1] between the last two syncs and appends the frame's draws. Fills
+    // view.view/camera_position and the in-game depth range of view.projection.
+    void frame(float alpha, const CameraPose& pose, float dt, FrameView& view, std::vector<DrawItem>& draws);
 
+    float ground_height(glm::vec3 engine_pos) const { return scene_->ground_height(engine_pos); }
     // Stage lighting with the fog/clear colour of the current view direction (refreshed by frame()).
     Lighting lighting() const { return lighting_; }
-    const WorldScene& scene() const { return *scene_; }
-    const GrassField& grass() const { return *grass_; }
-    const ParticleSystem& particles() const { return *particles_; }
-    const WaterField& water() const { return *water_; }
-    glm::vec3 joan_position() const { return joan_pos_; }
-    struct UnitStats {
-        int placed = 0, missing = 0;        // start units other than Joan
-        int items = 0, items_missing = 0;   // equipment meshes attached / not (all units incl. Joan)
-    };
-    const UnitStats& unit_stats() const { return unit_stats_; }
     // CONFIG.DAT 0x9C shadow mode (GameOptions::shadow): 0 none, 1 ShadowModel blobs only, 2 a stencil
     // volume for the player's hero only, 3 volumes for every unit (Scene::draw_shadow actor loop 0x5f1cc0).
     int shadow_mode = 3;
+
+    // --- stats / tests ---------------------------------------------------------------------------
+    const WorldScene& scene() const { return *scene_; }
+    std::size_t node_count() const { return nodes_.size(); }
+    const GrassField& grass(std::size_t node = 0) const { return *nodes_[node].grass; }
+    const ParticleSystem& particles(std::size_t node = 0) const { return *nodes_[node].particles; }
+    const WaterField& water(std::size_t node = 0) const { return *nodes_[node].water; }
+    const ParticleSystem& effects() const { return *effects_; }  // event emitters
+    struct UnitStats {
+        int actors = 0, missing = 0;        // live actors / snapshot units without a loadable look
+        int items = 0, items_missing = 0;   // equipment meshes attached / not (cumulative)
+    };
+    const UnitStats& unit_stats() const { return unit_stats_; }
+    const Character* actor(int unit_id) const;  // null if absent (or its look failed to load)
     struct ShadowStats {
         int volumes = 0, models = 0;  // units drawn with a volume / with their ShadowModel, last frame()
     };
     const ShadowStats& shadow_stats() const { return shadow_stats_; }
 
 private:
-    glm::vec3 to_world(glm::vec3 sim) const;
-    std::unique_ptr<Character> spawn(const UnitLook& look);
+    struct Actor {
+        std::unique_ptr<Character> character;  // null: look missing (not retried)
+        std::string anim_file, clip;           // current clip
+        glm::vec3 p0{0.0f}, p1{0.0f};          // original world units
+        float yaw0 = 0, yaw1 = 0;              // degrees
+        float t0 = 0, t1 = 0;                  // clip ms; t1 may exceed the length after a loop wrap
+        bool wrap = false;                     // t0 -> t1 crosses the loop end
+        std::array<int, 3> items{-1, -1, -1};  // attached item ids (melee x2, ranged)
+    };
+    void equip(Actor& a, const game::World& world, const game::Unit& u);
+    struct Node {
+        std::unique_ptr<GrassField> grass;
+        std::unique_ptr<ParticleSystem> particles;
+        std::unique_ptr<WaterField> water;
+        glm::vec3 offset{0.0f};  // engine-space origin
+    };
+    struct SlotEmitter {  // animscr.res emitter slot (AnimScript_parse 0x419320, record +0x77..)
+        std::string name;
+        float start = 0, end = 0;  // ms after the trigger
+        glm::vec3 offset{0.0f};    // unit frame, original axes
+        int lock = 0;
+    };
+    struct ScriptEmitters {
+        bool terrain = false;  // TerrainEmitterFlag: ground-type emitters (not reproduced)
+        std::vector<SlotEmitter> slots;
+    };
+    void spawn_slot(const std::string& script, std::size_t slot, const game::UnitView& at);
 
     formats::Vfs vfs_;
     std::unique_ptr<AssetCache> assets_;
     std::unique_ptr<WorldScene> scene_;
+    std::vector<Node> nodes_;
     std::unique_ptr<SkyDome> sky_;
-    std::unique_ptr<GrassField> grass_;
-    std::unique_ptr<ParticleSystem> particles_;
-    std::unique_ptr<WaterField> water_;
-    float time_s_ = 0;  // rendered time, drives sky drift
+    std::unique_ptr<ParticleSystem> effects_;
+    UnitDb db_;
+    std::map<std::string, ScriptEmitters> scripts_;  // lower-case animscr Code
+    const game::World* world_ = nullptr;             // last sync()
+    std::unordered_map<int, Actor> actors_;
+    std::unordered_map<int, glm::mat4> frames_;      // unit model matrices of the last frame()
+    int player_ = 0;
+    float time_s_ = 0;  // rendered time, drives sky drift and water
     Lighting lighting_;
-    ShadowStats shadow_stats_;
-    std::unique_ptr<Character> joan_;
-    struct Npc {
-        std::unique_ptr<Character> character;
-        glm::mat4 transform{1.0f};
-    };
-    std::vector<Npc> npcs_;  // other start units (S1L1: Jean de Metz + 71 .uni soldiers), idling
     UnitStats unit_stats_;
-    std::string forced_clip_;
-    float frame_yaw_ = 0;  // sim -> world rotation about +Y
-    glm::vec3 joan_pos_{0.0f};
-    bool free_ = false;
-    glm::vec3 free_pos_{0.0f};
-    float free_yaw_ = 0, free_pitch_ = 0;  // engine: yaw about +Y (0 looks -Z), pitch up+
+    ShadowStats shadow_stats_;
 };
 
 }  // namespace joa::engine

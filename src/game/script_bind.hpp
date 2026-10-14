@@ -21,6 +21,7 @@ namespace joa::game {
 
 class Mission;
 struct GameEvent;
+struct Unit;
 
 using BuiltinFn = Value (*)(Mission&, const BuiltinCall&);
 using PollFn = bool (*)(Mission&, const BuiltinCall&);
@@ -51,6 +52,7 @@ void process_world_events(Mission& m, const std::vector<GameEvent>& events);
 // Helpers shared by the slices.
 float deg_to_rad(float d);
 std::string upper(std::string_view s);
+void free_prisoner(Mission& m, Unit& u);  // Unit_free_prisoner 0x5199b0 (script_bind_troops.cpp)
 
 class MissionHost final : public IScriptHost {
 public:

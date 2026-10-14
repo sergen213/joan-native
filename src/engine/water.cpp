@@ -102,7 +102,7 @@ std::optional<TextureData> read_tga(const formats::Vfs& vfs, const std::string& 
 
 }  // namespace
 
-WaterField::WaterField(AssetCache& assets, std::string_view scenario) : assets_(assets) {
+WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 origin) : assets_(assets) {
     const auto& vfs = assets.vfs();
     const auto paths = find_scenario(vfs, scenario);
     const auto bytes = paths ? vfs.read(paths->dir + "/" + paths->name + ".stg") : std::nullopt;
@@ -121,7 +121,7 @@ WaterField::WaterField(AssetCache& assets, std::string_view scenario) : assets_(
         const float tw = std::max(float(b.number("TextureWidth", 150.0)), 1.0f);
         const int dir = int(b.number("TextureDirection"));
         Surface s;
-        s.centre = {float(b.number("X")), float(b.number("Y")), float(b.number("Z"))};
+        s.centre = {float(b.number("X")) + origin.x, float(b.number("Y")) + origin.y, float(b.number("Z"))};
 
         // Material (FUN_004f5210 with config+0x9d = 1, +0x9e = 1): WaterName "ice" -> icelake + texteff
         // "ice"; a Reflection texture + a texteff material named WaterName -> that material with the

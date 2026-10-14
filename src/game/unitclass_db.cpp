@@ -145,6 +145,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         I("UNIT", "RECOV_T", c.recov_t); I("UNIT", "CLB_IDLE", c.clb_idle); I("UNIT", "MAX_COM", c.max_com);
         I("UNIT", "CRI_DIFF", c.cri_diff); F("UNIT", "CRITEXP", c.critexp); I("UNIT", "LEVELARR", c.levelarr);
         F("UNIT", "AI_MOVE", c.ai_move); I("UNIT", "MINDEXS", c.mindexs); I("UNIT", "MAXDEXS", c.maxdexs);
+        F("UNIT", "STOP_CC", c.stop_cc);
         I("UNIT", "MOR_NOR", c.mor_nor); F("UNIT", "MOR_CH_U", c.mor_ch_u); F("UNIT", "MOR_CH_T", c.mor_ch_t);
         I("UNIT", "WP_DAMG", c.wp_damg); I("UNIT", "AMR_DEF", c.amr_def); F("UNIT", "AMREXDEF", c.amrexdef);
         F("UNIT", "SIE_UDAM", c.sie_udam); I("UNIT", "F_ATTACK", c.f_attack); I("UNIT", "F_DEFEND", c.f_defend);
@@ -157,7 +158,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         I("UNIT", "HP_PER", c.hp_per); I("UNIT", "EP_PER", c.ep_per); I("UNIT", "STR_PER", c.str_per);
         I("UNIT", "DEF_PER", c.def_per); I("UNIT", "DEX_PER", c.dex_per); I("UNIT", "LDS_PER", c.lds_per);
         I("UNIT", "STR_DAM", c.str_dam); I("UNIT", "DEX_DAM", c.dex_dam); I("UNIT", "DEF_RAT", c.def_rat);
-        I("UNIT", "UPG_TIME", c.upg_time); F("DANGER", "INDANGER", c.indanger); I("MINIMAP", "VISION_R", c.vision_r);
+        I("UNIT", "UPG_TIME", c.upg_time); I("UNIT", "BRI_COMM", c.bri_comm); I("UNIT", "BRI_CAPT", c.bri_capt); F("DANGER", "INDANGER", c.indanger); I("MINIMAP", "VISION_R", c.vision_r);
         F("EXP", "MEM_EXP", c.mem_exp); F("EXP", "LD_EXP", c.ld_exp); I("R_ATT", "FALL_S", c.fall_s);
         I("R_ATT", "FALL_E", c.fall_e); F("R_ATT", "DIST_P", c.dist_p); I("C_BOUNS", "C_BONUSL", c.c_bonusl);
         I("C_BOUNS", "E_BONUSL", c.e_bonusl); I("C_BOUNS", "M_BONUSL", c.m_bonusl); I("KILL", "EP_NOR", c.ep_nor);
@@ -263,6 +264,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         usable.push_back(kv.str("UsableUnit"));
         it.use_immediately = kv.i("UseImmediately") != 0;
         it.show_armory = kv.i("ShowArmoryInterface") != 0;
+        it.width = kv.i("Width", 1), it.height = kv.i("Height", 1);
         gd->items.push_back(std::move(it));
     }
     if (gd->items.size() <= 1) return nullptr;
@@ -297,6 +299,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         u.code = kv.str("Code").empty() ? rec : kv.str("Code");
         u.name = kv.str("Name"); u.short_name = kv.str("ShortName"); u.title = kv.str("Title");
         u.model = kv.str("Model"); u.animation = kv.str("Animation"); u.script_file = tok(kv.str("ScriptFile"));
+        u.cfile = tok(kv.str("CFileName"));
         u.unit_class = index_of(kv.str("UnitClass"), {"CITIZEN", "LIGHT_INFANTRY", "HEAVY_INFANTRY", "POLEMAN", "MACEMAN",
                                                       "ARCHER", "CROSSBOW_MAN", "CAVALRY", "SIEGE_WEAPON", "CART"}, 1);
         u.special = index_of(kv.str("Special"), {"NORMAL", "MAIN", "HORSE", "ELEPHANT", "CANNON", "FAUCONNEAU", "CROSSBOW",

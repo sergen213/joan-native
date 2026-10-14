@@ -118,6 +118,8 @@ public:
 
     bool play_env(int slot, std::string_view code_or_file, bool loop);
     void fade_out_env(int slot, float seconds = 5.0f);
+    void stop_env(int slot);
+    bool env_playing(int slot) const;  // false once its track ended or a fade finished
     const MusicTrack* current_env(int slot) const { return channels_[1 + slot].track; }
 
     void update();  // refills music/env streams; call once per frame

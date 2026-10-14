@@ -33,10 +33,12 @@ struct Allocation {
 // ponytail: blocks are never returned to the driver until destroy() except dedicated (oversized) ones.
 class GpuAllocator {
 public:
-    void init(const Api& api, VkDevice device, const VkPhysicalDeviceMemoryProperties& props) {
+    // device_address: every block gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT (ray tracing: AS inputs, buffer references).
+    void init(const Api& api, VkDevice device, const VkPhysicalDeviceMemoryProperties& props, bool device_address = false) {
         api_ = &api;
         device_ = device;
         props_ = props;
+        device_address_ = device_address;
     }
     // `linear` separates buffers from optimal-tiling images (bufferImageGranularity). Throws on failure.
     Allocation allocate(const VkMemoryRequirements& req, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred,
@@ -57,6 +59,7 @@ private:
     const Api* api_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties props_{};
+    bool device_address_ = false;
     std::vector<std::unique_ptr<Block>> blocks_;
 };
 

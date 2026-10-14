@@ -5,7 +5,8 @@
 
 namespace joa::game {
 namespace {
-// AnimName_to_id 0x415820 strcmp chain order (CONFIRMED; 0x59..0x6a siege-crew/cart names HIGH).
+// AnimName_to_id 0x415820 strcmp chain order (CONFIRMED; 0x59..0x6a ladder-climb/cart names CONFIRMED,
+// the chain tests "C_UP_BC" twice and 0x65 is "C_UP_CS").
 const char* const kNames[] = {
     "DEFAULT", "IDLE", "IDLE2", "IDLE3", "IDLE_BAT", "IDLEUP", "IDLEDN", "IDLE_T", "JATTBI", "TIPTOE", "WALK", "RUN",
     "T_LEFT", "T_RIGHT", "MOVE_L", "MOVE_R", "MOVE_B", "MOVE_FL", "MOVE_FR", "MOVE_BL", "MOVE_BR", "JUMP_B", "JUMP_R",
@@ -15,7 +16,9 @@ const char* const kNames[] = {
     "SHTIDLE", "SHTIDLEC", "SHTOUTH", "SHTIDLEH", "THROW", "THROWN", "STANDUP", "DIZZY", "STOP", "STOP_B",
     "KNOCKDN", "KNOCKDN2", "KNOCKDN3", "H_IDLE", "H_WALK", "H_BACK", "H_RUN", "H_STOP_B", "H_STOP", "H_ATTACK",
     "H_HITED", "H_BHITED", "H_LHITED", "H_RHITED", "H_DROP", "H_MNT_L", "H_MNT_R", "H_DMNT_L", "H_DMNT_R", "RUSH",
-    "PUSH", "PUSH2", "PUSH_L", "PUSH_R", "BATTER_C", "C_IDLE_A", "C_IDLE_B", "C_DN_AB"};
+    "PUSH", "PUSH2", "PUSH_L", "PUSH_R", "BATTER_C", "C_IDLE_A", "C_IDLE_B", "C_DN_AB", "C_DN_AS", "C_DN_BA",
+    "C_DN_CA", "C_DN_CB", "C_DN_SC", "C_UP_AB", "C_UP_AC", "C_UP_BA", "C_UP_BC", "C_UP_CS", "C_UP_SA", "C_DROP",
+    "CA_IDLE", "CA_RUN", "CA_WALK"};
 constexpr int kCount = int(sizeof(kNames) / sizeof(kNames[0]));
 }  // namespace
 
@@ -49,6 +52,7 @@ bool is_knocked(int a) { return a >= KNOCKDN && a <= KNOCKDN3; }
 bool is_knocked_ext(int a) { return is_knocked(a) || a == H_DROP || a == DNATKED; }
 bool is_flinch(int a) { return a >= ATTACKED && a <= RATTKED; }
 bool is_locomotion(int a) { return a == TIPTOE || a == WALK || a == RUN || (a >= MOVE_L && a <= MOVE_BR); }
+bool is_idle_class(int a) { return (a >= IDLE && a <= IDLEDN) || a == JATTBI || a == H_IDLE || a == 0x59 || a == 0x5a; }
 bool can_act_state(int a) {
     return a == -1 || (a >= 0 && a <= 6) || (a >= 9 && a <= 0x14) || (a >= 0x2b && a <= 0x2d) || a == 0x36 || a == 0x37 ||
            a == 0x39 || (a >= 0x43 && a <= 0x46) || (a >= 0x54 && a <= 0x57) || a == 0x59 || a == 0x5a;

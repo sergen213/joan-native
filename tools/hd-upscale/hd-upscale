@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Build a user-local HD texture pack from the user's own original Joan of Arc textures.
+
+Decodes the original DDS files, upscales colour and alpha separately with realesrgan-ncnn-vulkan,
+rounds to power-of-two sizes and writes PNG (or DXT DDS through an installed encoder) into a pack
+directory mirroring the original relative paths (docs/HD_ASSETS.md). Never touches the game files,
+never uses the network. Without the upscaler (or with --dry-run) it only lists what it would do.
+Python 3 stdlib; Pillow is used for resizing when installed (faster, Lanczos).
+"""
+import argparse
+import fnmatch
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+
+try:
+    from PIL import Image  # optional
+except ImportError:
+    Image = None
+
+# Native scale of the realesrgan-ncnn-vulkan models; others run with -s <scale>.
+MODEL_SCALE = {"realesrgan-x4plus": 4, "realesrgan-x4plus-anime": 4}
+
+
+# ---------------------------------------------------------------- DDS (top level only)
+def _rgb565(c):
+    return ((c >> 11 & 31) * 255 // 31, (c >> 5 & 63) * 255 // 63, (c & 31) * 255 // 31)
+
+
+def _colour_block(b, dxt1):
+    c0, c1, bits = struct.unpack_from("<HHI", b)
+    p0, p1 = _rgb565(c0), _rgb565(c1)
+    if c0 > c1 or not dxt1:
+        pal = [p0 + (255,), p1 + (255,),
+               tuple((2 * a + b_) // 3 for a, b_ in zip(p0, p1)) + (255,),
+               tuple((a + 2 * b_) // 3 for a, b_ in zip(p0, p1)) + (255,)]
+    else:
+        pal = [p0 + (255,), p1 + (255,), tuple((a + b_) // 2 for a, b_ in zip(p0, p1)) + (255,), (0, 0, 0, 0)]
+    return [pal[bits >> (2 * i) & 3] for i in range(16)]
+
+
+def _alpha_dxt5(b):
+    a0, a1 = b[0], b[1]
+    bits = int.from_bytes(b[2:8], "little")
+    if a0 > a1:
+        pal = [a0, a1] + [((7 - i) * a0 + i * a1) // 7 for i in range(1, 7)]
+    else:
+        pal = [a0, a1] + [((5 - i) * a0 + i * a1) // 5 for i in range(1, 5)] + [0, 255]
+    return [pal[bits >> (3 * i) & 7] for i in range(16)]
+
+
+def _channel(v, mask):
+    if not mask:
+        return None
+    shift = (mask & -mask).bit_length() - 1
+    m = mask >> shift
+    return ((v >> shift) & m) * 255 // m
+
+
+def decode_dds(data):
+    """Returns (width, height, rgba bytearray) of the top level. DXT1-5, bit-mask RGB(A)/luminance/alpha."""
+    if len(data) < 128 or data[:4] != b"DDS ":
+        raise ValueError("not a DDS file")
+    h = struct.unpack_from("<31I", data, 4)
+    height, width, pf_flags, fourcc, bits = h[2], h[3], h[19], h[20], h[21]
+    rm, gm, bm, am = h[22:26]
+    if h[0] != 124 or not width or not height:
+        raise ValueError("bad DDS header")
+    if bits == 16 and rm == 0xF000 and am == 0xF000 and gm == 0xF0 and bm == 0xF:
+        rm = 0x0F00  # shipped A4R4G4B4 files with a bogus red mask (same fix as src/formats/dds.cpp)
+    out = bytearray(width * height * 4)
+    src = data[128:]
+    if pf_flags & 0x4:
+        cc = struct.pack("<I", fourcc)
+        kind = {b"DXT1": 1, b"DXT2": 3, b"DXT3": 3, b"DXT4": 5, b"DXT5": 5}.get(cc)
+        if not kind:
+            raise ValueError("unsupported FourCC %r" % cc)
+        bsize = 8 if kind == 1 else 16
+        bw, bh = (width + 3) // 4, (height + 3) // 4
+        if len(src) < bw * bh * bsize:
+            raise ValueError("truncated DDS")
+        o = 0
+        for by in range(bh):
+            for bx in range(bw):
+                blk = src[o:o + bsize]
+                o += bsize
+                if kind == 1:
+                    px = _colour_block(blk, True)
+                else:
+                    px = _colour_block(blk[8:], False)
+                    if kind == 3:
+                        al = [(int.from_bytes(blk[:8], "little") >> (4 * i) & 15) * 17 for i in range(16)]
+                    else:
+                        al = _alpha_dxt5(blk[:8])
+                    px = [p[:3] + (a,) for p, a in zip(px, al)]
+                for i, p in enumerate(px):
+                    x, y = bx * 4 + i % 4, by * 4 + i // 4
+                    if x < width and y < height:
+                        j = (y * width + x) * 4
+                        out[j:j + 4] = bytes(p)
+        return width, height, out
+    if not (pf_flags & (0x40 | 0x20000 | 0x2)) or not bits or bits > 32 or bits % 8:
+        raise ValueError("unsupported DDS pixel format")
+    bpp = bits // 8
+    if len(src) < width * height * bpp:
+        raise ValueError("truncated DDS")
+    lum = (pf_flags & 0x20000) and not (pf_flags & 0x40)
+    amask = am if pf_flags & (0x1 | 0x2) else 0
+    for i in range(width * height):
+        v = int.from_bytes(src[i * bpp:(i + 1) * bpp], "little")
+        if lum:
+            r = g = b = _channel(v, rm)
+        elif pf_flags & 0x40:
+            r, g, b = _channel(v, rm), _channel(v, gm), _channel(v, bm)
+        else:
+            r = g = b = 255
+        a = _channel(v, amask)
+        out[i * 4:i * 4 + 4] = bytes((r or 0, g or 0, b or 0, 255 if a is None else a))
+    return width, height, out
+
+
+# ---------------------------------------------------------------- PNG (8-bit, non-interlaced)
+def write_png(path, width, height, pixels, channels=4):
+    stride = width * channels
+    raw = b"".join(b"\0" + bytes(pixels[y * stride:(y + 1) * stride]) for y in range(height))
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+    ctype = {1: 0, 3: 2, 4: 6}[channels]
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, ctype, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def read_png(path):
+    """(width, height, rgba bytearray) for 8-bit grey/RGB/grey-alpha/RGBA PNGs (what upscalers write)."""
+    if Image:
+        with Image.open(path) as im:
+            im = im.convert("RGBA")
+            return im.width, im.height, bytearray(im.tobytes())
+    d = open(path, "rb").read()
+    if d[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG: %s" % path)
+    p, z = 8, b""
+    while p + 8 <= len(d):
+        n, t = struct.unpack_from(">I4s", d, p)
+        c = d[p + 8:p + 8 + n]
+        if t == b"IHDR":
+            w, h, depth, ctype, _, _, lace = struct.unpack(">IIBBBBB", c)
+            if depth != 8 or ctype not in (0, 2, 4, 6) or lace:
+                raise ValueError("unsupported PNG (need 8-bit, non-interlaced): %s" % path)
+        elif t == b"IDAT":
+            z += c
+        elif t == b"IEND":
+            break
+        p += 12 + n
+    ch = {0: 1, 2: 3, 4: 2, 6: 4}[ctype]
+    stride = w * ch
+    raw = zlib.decompress(z)
+    rows, prev = [], bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = row[i - ch] if i >= ch else 0
+            b, c = prev[i], prev[i - ch] if i >= ch else 0
+            if f == 1:
+                row[i] = (row[i] + a) & 255
+            elif f == 2:
+                row[i] = (row[i] + b) & 255
+            elif f == 3:
+                row[i] = (row[i] + (a + b) // 2) & 255
+            elif f == 4:
+                pp = a + b - c
+                pa, pb, pc = abs(pp - a), abs(pp - b), abs(pp - c)
+                row[i] = (row[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(row)
+        prev = row
+    out = bytearray(w * h * 4)
+    for y, row in enumerate(rows):
+        for x in range(w):
+            s = row[x * ch:(x + 1) * ch]
+            rgba = (s[0], s[0], s[0], 255) if ch == 1 else (s[0], s[0], s[0], s[1]) if ch == 2 else \
+                (s[0], s[1], s[2], 255) if ch == 3 else tuple(s)
+            out[(y * w + x) * 4:(y * w + x) * 4 + 4] = bytes(rgba)
+    return w, h, out
+
+
+def resize(w, h, rgba, tw, th):
+    if (w, h) == (tw, th):
+        return rgba
+    if Image:
+        im = Image.frombytes("RGBA", (w, h), bytes(rgba)).resize((tw, th), Image.LANCZOS)
+        return bytearray(im.tobytes())
+    # ponytail: pure-Python bilinear, slow on 4096^2; install Pillow for speed and Lanczos.
+    out = bytearray(tw * th * 4)
+    for y in range(th):
+        fy = max(0.0, (y + 0.5) * h / th - 0.5)
+        y0 = min(int(fy), h - 1)
+        y1, wy = min(y0 + 1, h - 1), fy - int(fy)
+        for x in range(tw):
+            fx = max(0.0, (x + 0.5) * w / tw - 0.5)
+            x0 = min(int(fx), w - 1)
+            x1, wx = min(x0 + 1, w - 1), fx - int(fx)
+            for c in range(4):
+                p = lambda xx, yy: rgba[(yy * w + xx) * 4 + c]
+                v = (p(x0, y0) * (1 - wx) + p(x1, y0) * wx) * (1 - wy) + (p(x0, y1) * (1 - wx) + p(x1, y1) * wx) * wy
+                out[(y * tw + x) * 4 + c] = int(v + 0.5)
+    return out
+
+
+def pow2(n):
+    """Nearest power of two (ties up)."""
+    lo = 1 << (max(1, n).bit_length() - 1)
+    return lo if n - lo < lo * 2 - n else lo * 2
+
+
+# ---------------------------------------------------------------- planning / running
+def xdg_data():
+    v = os.environ.get("XDG_DATA_HOME", "")
+    return v if v.startswith("/") else os.path.join(os.path.expanduser("~"), ".local/share")
+
+
+def dds_size(path):
+    with open(path, "rb") as f:
+        head = f.read(20)
+    if len(head) < 20 or head[:4] != b"DDS ":
+        return None
+    height, width = struct.unpack_from("<II", head, 12)
+    return width, height
+
+
+def plan(args):
+    jobs = []
+    for dirpath, dirnames, files in os.walk(args.game_dir):
+        rel_dir = os.path.relpath(dirpath, args.game_dir)
+        if rel_dir == ".":
+            dirnames[:] = [d for d in dirnames if d.lower() in ("texture", "int8x6", "save")]
+        dirnames.sort()
+        for name in sorted(files):
+            rel = os.path.normpath(os.path.join(rel_dir, name))
+            key = rel.replace(os.sep, "/").lower()
+            if not key.endswith(".dds") or not any(fnmatch.fnmatchcase(key, g.lower()) for g in args.include):
+                continue
+            if any(fnmatch.fnmatchcase(key, g.lower()) for g in args.exclude):
+                continue
+            size = dds_size(os.path.join(dirpath, name))
+            if not size:
+                continue
+            w, h = size
+            tw, th = min(pow2(w * args.scale), args.max_size), min(pow2(h * args.scale), args.max_size)
+            if tw <= w and th <= h:
+                continue  # already at --max-size
+            out = os.path.join(args.out, os.path.splitext(rel)[0] + "." + args.format)
+            jobs.append((rel, (w, h), (tw, th), out))
+    return jobs
+
+
+def find_encoder():
+    for tool in ("compressonatorcli", "nvcompress", "crunch"):
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def encode_dds(encoder, png, dds, alpha):
+    with_alpha, opaque = {"compressonatorcli": ("BC3", "BC1"), "nvcompress": ("-bc3", "-bc1")}.get(encoder, ("-DXT5", "-DXT1"))
+    fmt = with_alpha if alpha else opaque
+    if encoder == "compressonatorcli":
+        cmd = [encoder, "-fd", fmt, "-miplevels", "16", png, dds]
+    elif encoder == "nvcompress":
+        cmd = [encoder, "-silent", fmt, png, dds]
+    else:
+        cmd = [encoder, "-file", png, "-out", dds, fmt, "-fileformat", "dds"]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+
+
+def upscale(tool, model, scale, src_png, dst_png):
+    native = MODEL_SCALE.get(model, scale)
+    subprocess.run([tool, "-i", src_png, "-o", dst_png, "-n", model, "-s", str(native), "-f", "png"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_job(args, tool, encoder, job, tmp):
+    rel, (w, h), (tw, th), out = job
+    with open(os.path.join(args.game_dir, rel), "rb") as f:
+        _, _, rgba = decode_dds(f.read())
+    has_alpha = any(rgba[i] != 255 for i in range(3, len(rgba), 4))
+    rgb = bytearray(w * h * 3)
+    for i in range(w * h):
+        rgb[i * 3:i * 3 + 3] = rgba[i * 4:i * 4 + 3]
+    write_png(os.path.join(tmp, "c.png"), w, h, rgb, 3)
+    upscale(tool, args.model, args.scale, os.path.join(tmp, "c.png"), os.path.join(tmp, "c_up.png"))
+    uw, uh, up = read_png(os.path.join(tmp, "c_up.png"))
+    result = resize(uw, uh, up, tw, th)
+    if has_alpha:  # alpha as its own grey image so the model never sees premultiplied/keyed colour
+        grey = bytearray(w * h * 3)
+        for i in range(w * h):
+            grey[i * 3:i * 3 + 3] = bytes((rgba[i * 4 + 3],) * 3)
+        write_png(os.path.join(tmp, "a.png"), w, h, grey, 3)
+        upscale(tool, args.model, args.scale, os.path.join(tmp, "a.png"), os.path.join(tmp, "a_up.png"))
+        aw, ah, aup = read_png(os.path.join(tmp, "a_up.png"))
+        alpha = resize(aw, ah, aup, tw, th)
+        result[3::4] = alpha[0::4]
+    else:
+        result[3::4] = b"\xff" * (tw * th)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    if args.format == "dds" and encoder:
+        png = os.path.join(tmp, "final.png")
+        write_png(png, tw, th, result)
+        encode_dds(encoder, png, out, has_alpha)
+        return out
+    if args.format == "dds":
+        out = os.path.splitext(out)[0] + ".png"
+    write_png(out, tw, th, result)
+    return out
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--game-dir", default=os.path.join(xdg_data(), "joan-native/game/current"), help="original game (read only)")
+    p.add_argument("--out", default=os.path.join(xdg_data(), "joan-native/hd/upscaled"), help="pack directory to write")
+    p.add_argument("--scale", type=int, choices=(2, 4), default=4)
+    p.add_argument("--model", default="realesrgan-x4plus", help="realesrgan-ncnn-vulkan model name (-n)")
+    p.add_argument("--format", choices=("png", "dds"), default="png")
+    p.add_argument("--include", action="append", help="glob on the lowercase relative path (repeatable; default texture/*)")
+    p.add_argument("--exclude", action="append", help="glob to skip (default: *_scene_sector* lightmaps)")
+    p.add_argument("--max-size", type=int, default=4096, help="largest output edge")
+    p.add_argument("--tool", default=None, help="realesrgan-ncnn-vulkan executable (default: from PATH)")
+    p.add_argument("--force", action="store_true", help="redo textures whose output already exists")
+    p.add_argument("--dry-run", action="store_true", help="list planned operations, write nothing")
+    args = p.parse_args(argv)
+    args.include = args.include or ["texture/*"]
+    args.exclude = args.exclude or ["*_scene_sector*"]
+    if not os.path.isdir(args.game_dir):
+        print("hd-upscale: no game directory %s (use --game-dir)" % args.game_dir, file=sys.stderr)
+        return 2
+
+    jobs = plan(args)
+    tool = args.tool or shutil.which("realesrgan-ncnn-vulkan")
+    dry = args.dry_run
+    if not dry and not (tool and os.access(tool, os.X_OK)):
+        print("hd-upscale: realesrgan-ncnn-vulkan not found (install it or pass --tool); dry run only", file=sys.stderr)
+        dry = True
+    encoder = find_encoder() if args.format == "dds" else None
+    if args.format == "dds" and not encoder:
+        print("hd-upscale: no DDS encoder (compressonatorcli/nvcompress/crunch) on PATH; writing PNG instead", file=sys.stderr)
+    for rel, (w, h), (tw, th), out in jobs:
+        print("%s %dx%d -> %dx%d %s" % (rel, w, h, tw, th, out))
+    print("hd-upscale: %d textures, %s" % (len(jobs), "dry run, nothing written" if dry else "upscaling into " + args.out),
+          file=sys.stderr)
+    if dry:
+        return 0
+    done = failed = 0
+    with tempfile.TemporaryDirectory(prefix="hd-upscale-") as tmp:
+        for job in jobs:
+            if not args.force and any(os.path.exists(os.path.splitext(job[3])[0] + e) for e in (".png", ".dds")):
+                continue
+            try:
+                run_job(args, tool, encoder, job, tmp)
+                done += 1
+            except (OSError, ValueError, subprocess.CalledProcessError) as e:
+                failed += 1
+                print("hd-upscale: %s: %s" % (job[0], e), file=sys.stderr)
+    print("hd-upscale: %d written, %d failed" % (done, failed), file=sys.stderr)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

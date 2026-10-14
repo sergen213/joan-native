@@ -164,11 +164,11 @@ int NavMesh::find_poly(float x, float y, float z, float radius) const {
     return best;
 }
 
-int NavMesh::find_poly_xy(float x, float y, float z) const {
+int NavMesh::find_poly_xy(float x, float y, float z, bool ignore_blocked) const {
     int best = -1;
     float bestd = 0;
     for_candidates(x, y, [&](int i) {
-        if (!contains(i, x, y)) return;
+        if (!contains(i, x, y, 0, ignore_blocked)) return;
         const float d = std::fabs(poly_height(i, x, y) - z);
         if (best < 0 || d < bestd) { best = i; bestd = d; }
     });

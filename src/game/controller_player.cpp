@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "game/mount_ride.hpp"
 #include "game/world_sim.hpp"
 
 namespace joa::game {
@@ -60,11 +61,29 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     if (range_mode || in.pressed[IN_RANGE_MODE]) {
         if (range_input(w, u, in)) return true;
     }
+    // Riding (+0xc4): horse controller 0x43c5c0. Climbing / vehicle (+0xcd): 0x42d270.
+    if (ride_mode && w.unit(u.mount)) return horse(w, u, in, move_code, rel, magnitude);
+    if (u.m.climb && w.ladder_input && w.ladder_input(u, in)) return true;
+    // On foot, step 1: interact handlers (R).
+    if (in.pressed[IN_INTERACT] && w.interact && w.interact(u)) return true;
     if (down_attack(w, u, def)) return true;
     if (block(w, u, def)) return true;
     if (energy_attack(w, u, C || (A && B))) return true;
     if (attack_input(w, u, A, B, dt == 4)) return true;
-    if (!(u.action >= MOVE_L && u.action <= MOVE_BR) && jump(w, u, jfire, magnitude, rel, hold, in.camera_yaw_deg)) return true;
+    if (!(u.action >= MOVE_L && u.action <= MOVE_BR)) {
+        // 0x43c7d0: R mounts a free horse within 70. Deviation: ride mode (+0xc4) is set only when
+        // the mount succeeded (the original sets it regardless and leaves a refused rider stuck).
+        if (in.pressed[IN_INTERACT] && w.can_act(u) && u.posture != 1 && !u.mount) {
+            const int h = find_mount(w, u, 2);
+            if (const Unit* hu = w.unit(h); hu && hu->m.rider == 0) {
+                if (ride_horse(w, u, h) == 1) ride_mode = 1;
+                jump_hold = 0;
+                return true;
+            }
+        }
+        if (w.ladder_input && w.ladder_input(u, in)) return true;   // 0x42d300
+        if (jump(w, u, jfire, magnitude, rel, hold, in.camera_yaw_deg)) return true;
+    }
     if (const int ev = dt == 5 ? JUMP_B : dt == 7 ? JUMP_R : dt == 6 ? JUMP_L : 0) {
         if (w.can_act(u) && u.posture != 1 && u.action != IDLEUP && u.action != IDLEDN && w.find_move(u, ev)) w.set_action(u, ev);
         return true;
@@ -76,18 +95,15 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     else if (Sh && !Wh) strafe(w, u, false, true, false, false);
     else if (u.action >= MOVE_L && u.action <= MOVE_BR) w.stop(u);
     const bool forward_only = !Ah && !Dh && !Sh;
-    if (forward_only && magnitude > 0 && !guarding(u.action) && w.can_act(u)) {   // Face_move_dir 0x4352f0
-        const int wd = int(in.camera_yaw_deg + float(rel) - 90.0f) % 360;
-        w.set_yaw(u, float(wd));
-    }
+    if (forward_only) face_move_dir(w, u, rel, magnitude, in.camera_yaw_deg);
     // Mouse yaw 0x431790.
     if ((w.can_act(u) || u.action == H_ATTACK || u.action == ATTACK || u.action == JATTACKB) && u.posture != 1 && in.mouse_dx != 0) {
         const float s = std::clamp(in.mouse_sensitivity, -1.0f, 1.0f);
         int d = int(in.mouse_dx * ((s + 1.0f) * 0.7f + 0.2f) * 0.2f);
         if (u.action == ATTACK) d = std::clamp(d, -45, 45);
-        int f = int(u.yaw_deg - float(d)) % 360;
+        int f = int(u.yaw_goal - float(d)) % 360;   // Unit_get_yaw_deg, then both setters (instant)
         if (f < 0) f += 360;
-        u.yaw_deg = float(f);
+        w.set_yaw_now(u, float(f));
         camera_yaw_out -= float(d);
     }
     if (forward_only) locomotion(w, u, move_code, in.held[IN_WALK]);
@@ -301,6 +317,53 @@ bool PlayerController::jump(World& w, Unit& u, bool fire, int magnitude, int rel
     return true;
 }
 
+// Ctrl_face_move_dir 0x4352f0 (no A/D/S held; rel -1 = no input). Skipped while guarding or mounting.
+// Landing DOWN and take-off UP face the input; during UP with > 180 ms left the jump's horizontal
+// push is re-aimed to dir * magnitude * 1400 (zero without input). Airborne: first frame with
+// vz <= 0 after rising (+0xa6 == 1) and canAct -> combo cleared, IDLEDN, +0xa6 = 2; then one air-steer
+// step: the heading turns <= 30 deg toward the input and the horizontal velocity is rotated onto it
+// keeping its magnitude (+0xa6 = 0). On the ground the heading is set to the input direction.
+// Deviation: the ATTACK re-aim (+-45 deg steps from the last direction +0x126a) is not modelled; the
+// heading is left alone during ATTACK.
+void PlayerController::face_move_dir(World& w, Unit& u, int rel, int magnitude, float cam_yaw) {
+    const int a = u.action;
+    if (guarding(a) || (a >= H_MNT_L && a <= H_DMNT_R)) return;
+    const bool input = magnitude != 0 && rel != -1;
+    const float wd = float(int(cam_yaw + float(rel) - 90.0f) % 360);   // Ctrl_world_dir 0x42fe30
+    if (a == DOWN && input) w.set_yaw(u, wd);
+    if (a == UP && w.anim_remaining(u) > 180) {
+        if (input) w.set_yaw(u, wd);
+        const float ang = (input ? wd : u.yaw_goal) * 0.017453292f, f = float(magnitude * 1400) * World::kUnitsPerMetre / 1000.0f;
+        u.vel.x = std::cos(ang) * f, u.vel.y = std::sin(ang) * f;
+    }
+    if (u.posture == 1) {
+        if (u.vel.z <= 0) {
+            if (air_state == 1 && w.can_act(u)) {
+                u.combo.clear();
+                if (u.combo_idx != -1) u.combo_idx = 0;
+                u.follow_queued = false;
+                w.set_action(u, IDLEDN);
+                run_ts = 0;
+                air_state = 2;
+            }
+        } else {
+            air_state = 1;
+        }
+    }
+    if (!input) return;
+    if (u.posture == 1) {
+        if (air_state != 2) return;
+        float d = std::fmod(wd - u.yaw_goal + 540.0f, 360.0f) - 180.0f;
+        d = std::clamp(d, -30.0f, 30.0f);
+        w.set_yaw(u, u.yaw_goal + d);
+        const float sp = std::hypot(u.vel.x, u.vel.y), g = u.yaw_goal * 0.017453292f;
+        u.vel.x = std::cos(g) * sp, u.vel.y = std::sin(g) * sp;
+        air_state = 0;
+    } else if (a != ATTACK && a != DOWN && a != UP) {
+        w.set_yaw(u, wd);
+    }
+}
+
 // Player_chain 0x438820.
 bool PlayerController::chain_input(World& w, Unit& u, bool go) {
     if (!go) return false;
@@ -336,7 +399,7 @@ bool PlayerController::range_input(World& w, Unit& u, const InputFrame& in) {
         w.stop(u);
         return true;
     }
-    w.set_yaw(u, in.camera_yaw_deg);
+    w.set_yaw_now(u, in.camera_yaw_deg);   // Camera_mouse_aim 0x42222f sets both headings
     if (u.action == SHTLOAD) {
         const int need = w.anim_length(u) * 100 / (w.bonus(u, RATE_OF_FIRE) + 100);
         if (now - attack_ts >= need) w.set_action(u, SHTIDLE);

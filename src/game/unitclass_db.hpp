@@ -45,6 +45,7 @@ struct Consts {
     int hp_per = 4, ep_per = 3, str_per = 1, def_per = 1, dex_per = 1, lds_per = 1;
     int str_dam = 3, dex_dam = 1, def_rat = 0;
     int upg_time = 600000;
+    int bri_comm = 5, bri_capt = 10;   // UNIT BRI_COMM 0xa3cd10 / BRI_CAPT 0xa3cc54 (Unit_bribe 0x4e8500)
     float indanger = 0.2f;
     int vision_r = 2000;
     float mem_exp = 0.4f, ld_exp = 0.4f;
@@ -53,6 +54,7 @@ struct Consts {
     int c_bonusl = 50, e_bonusl = 100, m_bonusl = 3;
     int ep_nor = 6, ep_cap = 15, ep_gen = 30;
     float aim_r = 25, aim_mxd = 2500, aim_ha = 60, turn_ang = 6;
+    float stop_cc = 0.3f;   // UNIT STOP_CC 0xa3cce4 (rider stop 0x4533e0)
     int jumpmaxd = 100, chainpro = 200, cri_time = 10000;
     float diff_d[4] = {0.7f, 1.0f, 1.5f, 2.0f};   // EASY_D..VDIFF_D (damage of player-hostile units)
     float diff_a[4] = {0.5f, 1.0f, 1.5f, 2.0f};   // EASY_A..VDIFF_A (BLOCKPER / guard chance)
@@ -78,6 +80,7 @@ struct ItemDef {
     int usable_unit = -1;                // UsableUnit unit class index, -1 any
     bool use_immediately = false;        // +0x23d UseImmediately (POTION)
     bool show_armory = false;            // +0x1e8 ShowArmoryInterface
+    int width = 1, height = 1;           // +0x24 / +0x26 Width / Height: bag-grid footprint (0x4577a0)
     // 0x4a4200: value of `effect` for an instance of `level` (nullopt if the item lacks it).
     std::optional<int> effect_value(int effect, int level) const;
     int base_damage(int level) const { return damage + (level - min_level) * inc_damage; }  // 0x4a41c0
@@ -118,6 +121,7 @@ struct MoveTable {
 
 struct UnitClass {
     std::string code, name, short_name, title, model, animation, script_file;
+    std::string cfile;           // +0x100 CFileName: HUD portrait stem (MAINGAME "<cfile>1", party "JOANC2"...)
     int unit_class = 1;          // +0x002 CITIZEN0 LIGHT_INFANTRY1 HEAVY_INFANTRY2 POLEMAN3 MACEMAN4 ARCHER5 CROSSBOW_MAN6 CAVALRY7 SIEGE_WEAPON8 CART9
     int special = 0;             // +0x118 NORMAL0 MAIN1 HORSE2 ... AUTOBOW12 CART13 SPECIAL14
     char sex = 'M';              // +0x117 Sex

@@ -10,10 +10,6 @@
 
 namespace joa::engine {
 
-// Save/*.SAV, newest first (GameFile_enum_saves 0x4770a0 sorted by comparator 0x477bd0: saved FILETIME
-// descending). date/time formatted as the info panel shows them (DATE|1 "October 13, 2026", "8:43 PM").
-std::vector<SaveSlot> scan_saves(const formats::Vfs& vfs);
-
 // font::text_in_rect 0x626130: centred horizontally (clamped to x1) and vertically on the line height in
 // the inclusive rect (x1, y1)-(x2, y2); RGB = colour, alpha = glyph alpha (TextOp::Diffuse).
 void ui_text_in_rect(Ui& ui, const UiFont* f, std::string_view s, glm::ivec4 r, glm::vec4 color);

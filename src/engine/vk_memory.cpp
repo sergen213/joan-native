@@ -38,7 +38,8 @@ void RangeAllocator::free(std::uint64_t offset, std::uint64_t size) {
 }
 
 GpuAllocator::Block* GpuAllocator::new_block(std::uint32_t type, VkDeviceSize size, bool linear, bool dedicated) {
-    VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, size, type};
+    const VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, nullptr, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, 0};
+    VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, device_address_ ? &flags : nullptr, size, type};
     VkDeviceMemory memory = VK_NULL_HANDLE;
     if (api_->vkAllocateMemory(device_, &info, nullptr, &memory) != VK_SUCCESS) return nullptr;
     void* mapped = nullptr;

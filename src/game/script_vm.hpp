@@ -171,6 +171,9 @@ public:
     // Compile and runtime diagnostics ("file:line: message"). Runtime errors are conditions
     // that are undefined or a crash in the original (they never occur in shipped scripts).
     const std::vector<std::string>& errors() const { return errors_; }
+    // Scenario restart in a kept world (Battle_start_scenario keep path, Mission::continue_in_world):
+    // the game clock and the engine RNG run on from the previous scenario's Vm.
+    void continue_from(const Vm& prev) { game_ms_ = prev.game_ms_, ticks_ = prev.ticks_, rng_ = prev.rng_; }
 
     // Complete runtime state (node cursors, init/WAIT flags, every node value and variable of
     // the main script and the SCRIPT cache, pause wake time, clock, ScenarioState, RNG,

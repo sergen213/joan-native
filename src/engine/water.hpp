@@ -12,8 +12,9 @@ namespace joa::engine {
 
 class WaterField {
 public:
-    // Reads the scenario's .stg CreateWater blocks (see find_scenario). Throws if the .stg is missing.
-    WaterField(AssetCache& assets, std::string_view scenario);
+    // Reads the scenario's .stg CreateWater blocks (see find_scenario), placed at the map node `origin`
+    // (original X/Y). Throws if the .stg is missing.
+    WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 origin = glm::vec2(0.0f));
     ~WaterField();
     WaterField(const WaterField&) = delete;
     WaterField& operator=(const WaterField&) = delete;

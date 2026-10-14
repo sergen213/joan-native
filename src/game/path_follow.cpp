@@ -3,8 +3,7 @@
 #include <cmath>
 
 #include "game/ai_system.hpp"
-#include "game/nav_mesh.hpp"
-#include "game/path_find.hpp"
+#include "game/multimap_nav.hpp"
 
 namespace joa::game {
 
@@ -50,7 +49,8 @@ int AiSystem::move_to(Unit& u, Vec3 goal, int /*budget: see doc, A* always gets 
         const auto& t = w_.data().units[std::size_t(u.cls)];
         // BODY_R*2; cavalry/siege/horse-like units use 10 x their shape radius.
         q.radius = (t.unit_class == 8 || t.special == 2 || u.mount) ? 10.0f * t.cyl_radius : 2.0f * float(w_.data().c.body_r);
-        auto r = find_path(*nav_, q);
+        q.body_r = float(w_.data().c.body_r);
+        auto r = nav_->find_path(q);
         s.path.clear();
         for (auto& p : r.points) s.path.push_back({p.x, p.y, p.z});
     }
@@ -63,6 +63,9 @@ int AiSystem::move_to(Unit& u, Vec3 goal, int /*budget: see doc, A* always gets 
 
 void AiSystem::update_movement(Unit& u) {  // 0x52daa0
     AiUnit& s = st(u);
+    // Unit_process phase 1 runs movement only for units with a body actor (+0x2f5): inactive units
+    // (+0x2ed == 0, e.g. in a streamed-out level) keep their path but stand still.
+    if (!u.m.active) return;
     if (s.path.empty()) { s.stuck_since = -1; s.last_pos = u.pos; return; }
     const int a = u.action;
     if (is_knocked_ext(a) || is_flinch(a) || is_attacking(a) || a == DIE || a == STANDUP || u.airborne) {

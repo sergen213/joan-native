@@ -1,7 +1,7 @@
 // Unit state setters (SCRIPT_VM.md §8 "unit-state" ids owned by the units_state slice). Each handler
 // follows its executor case (VA in the comment): same validity checks and failure values. "live" =
 // UnitArray_is_deleted(recno) == 0. Unit+0x33 Team* exists only on a leader (team_of_leader), its
-// member list is the leader's Unit::members. Unit+0x1e (desired heading, degrees) is AiUnit::desired_yaw;
+// member list is the leader's Unit::members. Unit+0x1e (desired heading, degrees) is Unit::yaw_goal;
 // Unit+0x1a (facing) is Unit::yaw_deg.
 //
 // Not modelled (render/physics only, no gameplay state in the port): hand-held weapon item instances
@@ -13,6 +13,7 @@
 
 #include "formats/vfs_fs.hpp"
 #include "game/mission.hpp"
+#include "game/mount_ride.hpp"
 
 namespace joa::game {
 namespace {
@@ -33,14 +34,8 @@ const std::vector<int>* team(Mission& m, const Unit& u) {
 }
 
 // Unit_set_yaw_deg 0x50abd0 (+0x1e) / Unit_set_yaw_rad 0x4ff870 (+0x1a).
-void set_desired(Mission& m, Unit& u, float deg) { m.ai().st(u).desired_yaw = deg; }
-void set_heading(Mission& m, Unit& u, float rad) {
-    m.world().set_yaw(u, rad / kDeg);
-    set_desired(m, u, rad / kDeg);
-}
-
-// IDLE_CLASS FUN_00508ab0 = {1..6, 8, 0x43, 0x59, 0x5a} (Unit_anim_is_idle_class).
-bool idle_class(int a) { return (a >= IDLE && a <= IDLEDN) || a == JATTBI || a == H_IDLE || a == 0x59 || a == 0x5a; }
+void set_desired(Mission& m, Unit& u, float deg) { m.world().set_yaw(u, deg); }
+void set_heading(Mission& m, Unit& u, float rad) { m.world().set_yaw_now(u, rad / kDeg); }
 
 // AnimVariant_from_name 0x416aa0 (strcmp, -1 if unknown).
 int anim_variant(std::string_view s) {
@@ -86,27 +81,6 @@ void set_training_mode(World& w, Unit& u, int mode) {
 // Free-space probe FUN_00693170 (physics overlap of the actor at a candidate position) is not
 // modelled: candidate positions always count as free (HYPOTHESIS).
 
-// FUN_00482930 on a horse: link / unlink the rider (+0x1e6). 1 ok, 0 refused.
-int horse_set_rider(Mission& m, Unit& h, int rider) {
-    World& w = m.world();
-    if (rider == 0 && h.m.rider != 0) {
-        h.m.rider = 0;
-        if (h.m.active) {
-            w.stop(h);
-            h.m.bounding = 1;
-        }
-        h.ai_controlled = true;
-        return 1;
-    }
-    Unit* r = live(m, rider);
-    if (!r || h.m.rider != 0 || !h.m.active) return 0;
-    h.m.rider = rider;
-    h.m.bounding = 1;
-    w.stop(h);
-    h.ai_controlled = r->ai_controlled;
-    return 1;
-}
-
 // FUN_0051a8a0 on a cart: link / unlink the driver (+0x1f9). 1 ok, 0 refused.
 int cart_set_driver(Mission& m, Unit& c, int driver) {
     World& w = m.world();
@@ -124,51 +98,6 @@ int cart_set_driver(Mission& m, Unit& c, int driver) {
     c.m.cart_driver = driver;
     w.stop(c);
     c.ai_controlled = d->ai_controlled;
-    return 1;
-}
-
-// FUN_004fc220 (ECX = rider): mount `horse`, or dismount when 0. Returns 0 refused, 1 ok, 2 bad horse.
-// HIGH; the position/heading reads inside the mount branch use the horse (ECX not visible in the decomp).
-int ride_horse(Mission& m, Unit& r, int horse) {
-    World& w = m.world();
-    if (horse == r.id) return 0;
-    const std::string& code = m.data().units[r.cls].code;
-    const float d = code == "LAHIRE" || code == "ALENCON" ? 45.0f : 30.0f;  // JEAN_DE_METZ 30 = default
-    if (horse == 0 && r.mount != 0) {
-        if (!r.m.active) return 0;
-        // Left side (pos + side*d) probed first; always free here -> dismount left, position unchanged.
-        r.m.bounding = 0;
-        set_desired(m, r, r.yaw_deg);
-        if (Unit* h = live(m, r.mount)) {
-            horse_set_rider(m, *h, 0);
-            set_desired(m, *h, h->yaw_deg);
-        }
-        w.set_action(r, H_DMNT_L);
-        r.mount = 0;
-        return 1;
-    }
-    Unit* h = live(m, horse);
-    if (!h) return 2;
-    if (!r.m.active) return 0;
-    // FUN_0042a4d0(horse class special) on the rider: alive and able to ride that mount.
-    const int special = m.data().units[h->cls].special;
-    if (w.dead(r) || !((special == 2 && r.horse_riding) || (special == 3 && r.elephant_riding))) return 0;
-    if (!horse_set_rider(m, *h, r.id)) return 0;
-    if (r.mount != 0) return 0;  // original quirk: the horse keeps the rider link set above
-    const float yaw = h->yaw_rad();
-    const float fx = std::cos(yaw), fy = std::sin(yaw);  // row 0 (forward)
-    const float sx = -fy, sy = fx;                       // row 1 (left)
-    const float heading = std::atan2(fy, fx);
-    if (w.rel_angle(*h, r.pos) >= 0) {  // rider on the horse's right
-        r.pos = {h->pos.x - sx * d + fx * 30, h->pos.y - sy * d + fy * 30, h->pos.z};
-        set_heading(m, r, heading + kHalfPi);
-        w.set_action(r, H_MNT_R);
-    } else {
-        r.pos = {h->pos.x + sx * d + fx * 30, h->pos.y + sy * d + fy * 30, h->pos.z};
-        set_heading(m, r, heading - kHalfPi);
-        w.set_action(r, H_MNT_L);
-    }
-    r.mount = horse;
     return 1;
 }
 
@@ -213,7 +142,7 @@ int attach(Mission& m, int rider, int vehicle, std::string_view kind, int radius
     if (!r || !v) return -1;
     const int mask = !kind.empty() && kind[0] == 'M' ? 1 : !kind.empty() && kind[0] == 'F' ? 2 : 0;
     if (!mask) return -1;
-    if (!idle_class(r->action)) return 0;  // HYPOTHESIS: idle-class test is on the rider
+    if (!is_idle_class(r->action)) return 0;  // HYPOTHESIS: idle-class test is on the rider
     const UnitClass& vc = m.data().units[v->cls];
     const size_t n = vc.attach_points.size();
     if (v->m.crew.size() < n) v->m.crew.resize(n), v->m.reserved.resize(n);
@@ -470,7 +399,7 @@ Value set_unit_target_unit_recno(Mission& m, const BuiltinCall& c) {
 Value set_unit_ride_horse(Mission& m, const BuiltinCall& c) {
     Unit* u = live(m, c.i(0));
     if (!u) return Value::integer(0);
-    ride_horse(m, *u, short(c.i(1)));
+    ride_horse(m.world(), *u, short(c.i(1)));
     return Value::integer(short(c.i(0)));
 }
 

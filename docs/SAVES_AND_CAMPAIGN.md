@@ -154,7 +154,8 @@ conditions, "The Arrival".
 resumes from flags/stage), but it does restore the whole world; the import does not decode units'
 positions/deaths, items, places, AI, triggers or inventories (heap pointers, per-class virtual
 save layouts), nor the item-hint lists when non-empty, nor saves made while scenario generals are
-listed. `Player.dat` profiles with entries (N > 0) are not decoded (`formats::parse_player_dat`).
+listed. `Player.dat` profiles (any N) parse and write byte-exact (`formats/save_sav`), and
+`to_player_dat` / `from_player_dat` (campaign.cpp) convert them to/from `CampaignProfile`.
 
 ## 7. Builtins
 

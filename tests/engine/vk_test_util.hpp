@@ -29,6 +29,7 @@ inline Image render_demo(Options o, int frames, const FrameHook& hook = {}) {
     Platform platform(o, true);
     std::unique_ptr<IRenderer> r =
         o.renderer == RendererKind::Vulkan ? create_vk_renderer(platform.window(), o) : create_gl_renderer(platform.window());
+    if (o.graphics.preset != GraphicsPreset::Original) r->set_graphics(o.graphics.resolve());  // remaster tests
     Image img;
     {
         DemoScene scene(*r);

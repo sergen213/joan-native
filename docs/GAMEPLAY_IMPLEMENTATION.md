@@ -154,18 +154,49 @@ Rendering never feeds gameplay. The renderer reads `World::snapshot()` and `Worl
 5. Knock-back, jump and force units are converted at force/1000 = m/s; ground friction is ×0.5 per tick.
 6. Projectile launch point at 0.75·cylinder height; range-mode camera eye at the class height.
 7. DIE is accepted during flinch and knocked locks.
-8. Only keyboard+mouse control (mode 3) is implemented.
+8. Only keyboard+mouse control (mode 3) is implemented; horse mode A only (0xa5802c = 0).
+9. Horse body motion: the ridden horse's WALK reaches the gear cap (+0x2a4: 5 m/s, 10 m/s after 1 s of run gear) at once; the accelerating body model of 0x6a45a0 is not reproduced. Seated riders take the horse position (actor attach). H_DROP unlinks rider and horse.
+10. Player mount (0x43c7d0) sets ride mode only when the mount succeeded (the original sets it regardless).
+11. Face_move_dir's ATTACK re-aim (±45° steps from +0x126a) is not modelled; the heading is left alone during ATTACK. IDLEDN ends in IDLE and JATTACKB is stopped by Unit_stop (both kept by the original Unit_stop, which ends them elsewhere).
 
 ## Gaps
 
-- Horse riding, horse controller, carts, siege crews, ladders and climbing, interact handlers, throw (0x10). Fields exist for the mission layer; there is no simulation.
-- Air steering during jumps, the landing-detection details of 0x4352f0 and evade-jump displacement (root motion unknown).
+- Evade-jump displacement (JUMP_B/R/L): set_action disables the body for these actions (0x6ad980 in 0x501190), so the motion is the clip's root track; the root delta of the AM2 clips is not applied (they stay in place).
+- Mounted AI: AI riders are not driven (orders' mounted branches end; S6L1's scripted Charlie ride). The throw action (THROW 0x3a → TRIGGER_THROW 0x10, victim THROWN, 0x75d540 case 0x10) has no setter in the shipped data or code paths found; the THROWN anim end is handled, the trigger is not created.
 - Keyboard-only, joystick, point-and-click and RTS controller modes; camera auto-rotation is left to the camera system.
 - Idle-variant changes (IDLE2_CH, IDLE_CC, STOP_CC); grass and wind RNG consumers.
 - Structures: gates, walls and kegs are the mission layer's, via `object_trigger`. The structure look-ahead sweep 0x693750 is not done here.
 - Armour items' effect on armour level, and the Inv_bonus applicability check 0x4a42f0.
 - Morale effects of killer-less deaths (0x64f320), nation-strength update, game type 8.
 - No dynamic verification against the running original yet (DynamicRef observations match the initial Joan stats: L1, HP 60, EP 30, STR 9, DEF 8, DEX 10, LEAD 15).
+
+## Turning, horses, interact (GameplayGaps)
+
+| rule | code | RE | conf |
+|---|---|---|---|
+| Two headings: `yaw_goal` (+0x1e, Unit_set_yaw_deg 0x50abd0, written by executors, controller, reactions) and the body `yaw_deg` (+0x1a, Unit_set_yaw_rad 0x4ff870, read by movement and rel_angle). `set_yaw` writes the goal; `set_yaw_now` both (mouse yaw, range aim, mount). | `World::set_yaw`, `set_yaw_now` | decomp 0x50abd0/0x4ff870, 0x40437c, 0x42222f | CONFIRMED |
+| Turn 0x4f2190 (phase 1 after Unit_updateAction): ≤ rate·dt/33 per tick toward the goal; rate by Special: 4/8/9/10/11/13 → 1°, 5 → 2°, 6 → 5°, else 20°; cap 25° (LOD < 2) / 90°. Hit states (0x23–0x26, DIE, H_HITED..H_RHITED) reset the goal. Attached units (+0x384) never turn. Siege weapons turn only fully manned (usage bit 1, or any slot for Special 6/10) and carry their crew to the rotated attach points (pushers PUSH / PUSH_L for cannons, others WALK, stop when < 1° left); carts play T_LEFT/T_RIGHT. While turning (step ≤ remaining) an AI unit does not move and every turning body loses its velocity. | `World::turn_step`, `unit_process` | decomp + asm (ftol on diff/360−diff) | CONFIRMED |
+| Unit_move: DEX bonus from the raw DEX (+0x157) of the team leader (own for leaders/loners); LOD tier 2 ×1.4 (speed < 20), tier ≥ 3 ×1.8 when not mounted. | `unit_move` | 0x4f0b50 | CONFIRMED |
+| Unit_stop 0x508b90: idle-class states unchanged; rider H_IDLE + horse IDLE; cart/driver CA_IDLE; climber C_IDLE_A/B; UP → IDLEDN; mode 1/2 → IDLE_BAT; bound prisoner IDLE_T; else IDLE. | `World::stop` | decomp | CONFIRMED |
+| Horses: mount/dismount 0x4fc220 (side by rel_angle, 30/45 offset, H_MNT_L/R, H_DMNT_L), rider link 0x482930, mount search 0x44f0b0 (radius 70, last-to-first, +0x3c0), sync 0x5174e0 (dead rider/horse → H_DROP + −10000 pulse; horse follows the seated rider's heading), anim ends 0x7c7ab0 0x47–0x52 (seat → +0x1ea, H_IDLE; dismount steps 30 sideways, heading −90/−270), rider stop 0x4533e0 (STOP_CC roll always drawn). Player horse controller 0x43c5c0: R → interact handlers, then dismount on a standing horse; H_ATTACK A/B (B needs a free "B" record or HORSE_ATTACK_B); turn mode A ≤ TURN_ANG per frame relative to the horse, only while moving, S ignored; gear: W → run gear, W+walk → walk, S/S+A/S+D → back (MOVE_B), A/D alone or no key → rider stop (asm 0x43d9b9). | `mount_ride.{hpp,cpp}` | decomp | CONFIRMED / gear unit HYPOTHESIS |
+| Face_move_dir 0x4352f0: DOWN/UP face the input; UP with > 180 ms left re-aims the jump push to dir·mag·1400 (zero without input); airborne apex (+0xa6 1→2, canAct) → combo cleared, IDLEDN; air steer: one ≤ 30° heading step toward the input with the horizontal velocity rotated onto it. | `PlayerController::face_move_dir` | decomp | CONFIRMED |
+| Interact key: `World::interact` runs before every on-foot step and inside the horse controller; ladders via `World::ladder_input` at the 0x42d300 slot and while climbing (+0x1fd, installed by MapObjects). GAP: no mission-side `interact` handler is installed yet; the handlers are RE'd (0x43bef0 free prisoner ≤100 ±90°, 0x43bd40 TRIGGER_INTERACT 0x200 r 100 to a can_interact unit whose class mask has 0x200 → receiver sets the sender's +0x2e3, 0x43be40 bribe ≤200 \|dz\|≤100, 0x43c210 recruit = `AiSystem::recruit_nearby`, 0x43bc50 0x200 to a map item r 200, 0x43bfe0 pickup screen, 0x43c080 facility screen). | `controller_player.cpp` | Part B §3.2, decomp | CONFIRMED order |
+| Balance audit (`game.balance_units`): unit.res/item.res == GameData == Unit_init for E/F light infantry (HP 65/100/32/50, STR 4/5/4/5, DEX 1/2/5/5, swords Damage 40 Range 45). Per hit 1.2·P − 0.6; reach = animscr Range + weapon Range: English A 83 / AA 87, French A 74 / AA 132; the AI stops 60–120 away and swings within 150 (0x534090), so French AA lands where English swings miss. The ~20:1 `game.ai_battle` outcome is original data, not a port bug. | `tests/game/balance_units_test.cpp` | decomp + data | HIGH |
+| Save/Player.dat fully decoded (0x48 profile image: +0x38 gold, +0x3c play ms, +0x40 command points; name block; N entry heads + bodies: 0x432 Unit image, +0x16f block, upgrades, inventory 4 slots + 3 grids; two hint lists; trailing command points); `to_player_dat`/`from_player_dat`. | `formats/save_sav.cpp`, `campaign.cpp` | FUN_004c8810/4c8bb0/4c93e0/4c9460/4c9880 | CONFIRMED |
+
+### Siege crews, carts, ladders (siege_crew.cpp, ladder_climb.cpp)
+- Crew mirror (Unit_set_action 0x501190 head, CONFIRMED): weapon special 4/5/6/9/10 SHTLOAD/SHTIDLE(H)/SHTOUT(H) → 'F' crew SHTLOADC/SHTIDLEC/SHTOUTC, IDLE..IDLE_BAT → crew stop; ram ATTACK → 'F' crew BATTER_C. Crew hit/knocked/dizzy/DIE → slot +0x378/+0x37c freed, weapon stopped.
+- Movement gate (0x52daa0 head, CONFIRMED): WALK/RUN stops unless every 'M' slot is manned (0x50d550 mask 1); bombard never moves; crew PUSH_L(cannon)/PUSH/WALK, ram 'F' crew IDLE.
+- Crew placement (Unit_update_location 0x4fee60, CONFIRMED): after physics, crew at the rotated attach point. Cart driver (0x6b1350 + 0x454b20): cart pos − fwd·80, cart yaw; cart WALK/RUN/T_*/IDLE → driver CA_WALK/CA_RUN/CA_IDLE (0x459970).
+- Weapon death (Unit_die 0x7c6240, CONFIRMED): crew unlinked + stopped; ram 'F' crew and cart driver die with it. `ai_shoot` fires with ammo only (siege weapons have no launcher item).
+- Ladders (0x42d300/0x5183d0/0x4fab10/0x4ac910/0x518890/0x445000/0x7c7ab0, CONFIRMED; facing axis HIGH): interact within 100 of a LADDER foot/top, C_UP_SA/C_DN_SC mount, W/S step one rung (per-hero constants), C_UP_CS exits top, C_DN_AS exits at the foot. Climbers have no body.
+- Deviations: ladder states run at the start of the tick (MapObjects::tick); only W/S step on ladders; no fall-off when hit while climbing; the AI's reserved slot (+0x380) is not reset when crew are unseated; mount_siege_tower_to_wall (351) unimplemented (no campaign script calls it); the S1L1 Castle Gate has no poly at its centre, so its nav block is a no-op.
+- Test: `game.siege_crew` (manned cannon turns/fires/kills, unmanned refuses; ram breaks the S1L1 gate 1500 → 0 in 24 hits; cart + driver; ladder climb 187 u; determinism).
+
+### Campaign chain (campaign_runner.cpp, mission.cpp)
+- Campaign 5→6 keeps the world (CONFIRMED Battle_deinit 0x41c780 / Game_deinit 0x471010 / Battle_load_world 0x41c810): S9L1 runs in S5L1's world, only the scripts restart (`Mission::continue_in_world`): finished objectives dropped, per-unit kill/troop counters cleared, UI/win delay/cut scene reset, clock and RNG continue (`Vm::continue_from`), profile restored. Gap: RETRY of mission 6 starts without a player (HYPOTHESIS: same in the original).
+- `.uni` heroes and the `add_unit` builtin go through `Mission::add_unit` = UnitArray_add 0x51dfc0 (restores a stored hero of that class; CONFIRMED via Uni_load_create_unit 0x558a60).
+- Tests: `game.campaign_full_run` (missions 1–8 × 9000 ticks with a deterministic autopilot, twice: equal hashes, no unimplemented builtins, no script errors); `game.campaign_full_chain` (forced wins 1→8, transitions, gold and the four heroes carried, Ending after 8, save/load in mission 4 reproduces the hash); `game.campaign_full_playerdat`.
 
 ## AI and troops
 
@@ -195,12 +226,20 @@ Performance (this machine, -O2): 20 v 20 ≈ 0.03 ms/tick while fighting; 100 v 
 
 Deviations:
 1. Every unit runs phases 2/3 every tick (no CPU-budgeted passes); target search scans units in recno order instead of scene sectors, so tie-breaking rand rolls see candidates in a different order.
-2. Turning is instant (TURN executor, path steering, arrival facing); the original turns at a rate through +0x1e.
+2. (resolved) Executors write the desired heading +0x1e; the body turns at the 0x4f2190 rate (`World::turn_step`, see "Turning, horses, interact").
 3. `get_rotation` returns the absolute heading toward the target (what the TURN executor compares with), see `rotation_to`.
 4. A* re-opens improved closed nodes instead of propagating g through the subtree (0x66ddb0); BVH replaced by a bucket grid; overlapping polys are resolved by the surface closest to z.
 5. Path search always gets 100 expansions; the 500/1000/… "budget" argument of `path_to` is ignored (meaning unknown). Formation lateral/width offsets in the funnel are not modelled.
 6. Push-aside speed 100 u/s (magnitude unknown); push state is transient and not serialized.
-7. Horses are not simulated: mounted branches of executors end the order; "u or horse" positions use the unit.
+7. AI riders are not driven: mounted branches of executors end the order; "u or horse" positions use the unit (the player's horse controller is implemented).
 8. RECRUIT_TROOP matches the recruit type by class kingdom (race +0x14d is not loaded); news-log entries of set_task are not generated.
 
-Gaps: hierarchical cross-map paths over `<scenario>w.pfd` (world meshes load and path, but no splice into local paths) and level origins for multi-map scenarios; gates toggling poly state need the mission layer to call `NavMesh::set_blocked`; `search_for_item` is a simplified reading of 0x503680; can_energy_attack ignores the energy-cost item effect.
+Gaps: `search_for_item` is a simplified reading of 0x503680; can_energy_attack ignores the energy-cost item effect; `.por` anti-portals are not loaded.
+
+### Multi-node worlds (missions 2–8) — src/game/multimap_nav.{hpp,cpp}
+- NavWorld = one NavMesh per level (`<node>.pfd` at the node origin, box = node rect from .wor) + world mesh `<world>.pfd` (S9L1 uses S5L1w). World coords in, global poly ids (level base + local). `Mission::nav()` is non-null for every mission.
+- find_path = Unit_path_to 0x505dd0: local path if the target is in the start's loaded level, else world mesh (/32, radius BODY_R/32, back ×32 +16) with the leading run inside the level replanned locally and spliced (CONFIRMED).
+- find_poly_xy searches every level whose box holds (x,y), closest height (006aae70, simplified). Gates toggle their poly via find_poly_xy(..., ignore_blocked) so re-opening / reloading finds the same poly.
+- Level streaming (World_draw 0x44c800): loaded = inside player±8000 || (loaded && inside ±16000); a level change sets `u.m.active` (Unit_activate/deactivate). Inactive units: no phase-1 action/turn/movement, no physics body (CONFIRMED 0x52c490 gates on +0x2f5), ignored by hit tests. Paths from unloaded levels are world-mesh only. Saved in the optional "NAVL" section.
+- Deviations: camera = player position (no player → all loaded); A* budget stays 100.
+- Test: `game.multimap_nav` (all 7 missions: load, cross-node path, AI border crossing, gate in a non-first node, determinism + save round trip).

@@ -41,7 +41,8 @@ struct PlayerController {
     int mode = 3;            // +0x10 input scheme (only 3 = keyboard+mouse is implemented); RTS = World::game_mode
     int unit2 = 0;           // +0x04 (set_main_character mode 2)
     int prev_mode = 3;       // +0x14 mode before RTS
-    int ride_mode = 0;       // +0xc4 riding (horse controller not implemented)
+    int ride_mode = 0;       // +0xc4 riding: the horse controller (Ctrl_horse 0x43c5c0) runs
+    float horse_heading = 0; // +0xc9 heading at the last gear change
     int dtap_action = 0;     // +0x82
     int dtap_time = 0;       // +0x86
     int ph_a = 0, ph_b = 0, ph_ab = 0;          // +0x8e/+0x8f/+0x90 button phase 0 idle 1 down 2 up 3 re-pressed
@@ -62,9 +63,9 @@ struct PlayerController {
     bool process(World& w, const InputFrame& in);
 
     template <class V> void visit(V& v) {
-        v(unit), v(mode), v(unit2), v(prev_mode), v(ride_mode), v(dtap_action), v(dtap_time), v(ph_a), v(ph_b), v(ph_ab), v(fresh_a), v(fresh_b),
-            v(fresh_ab), v(follow), v(attack_ts), v(queued), v(chain), v(jump_hold), v(air_state), v(run_ts),
-            v(range_mode), v(range_base_yaw), v(range_base_pitch), v(range_ts), v(camera_yaw_out);
+        v(unit), v(mode), v(unit2), v(prev_mode), v(ride_mode), v(horse_heading), v(dtap_action), v(dtap_time), v(ph_a), v(ph_b),
+            v(ph_ab), v(fresh_a), v(fresh_b), v(fresh_ab), v(follow), v(attack_ts), v(queued), v(chain), v(jump_hold), v(air_state),
+            v(run_ts), v(range_mode), v(range_base_yaw), v(range_base_pitch), v(range_ts), v(camera_yaw_out);
     }
 
 private:
@@ -77,6 +78,9 @@ private:
     bool range_input(World& w, Unit& u, const InputFrame& in);
     void locomotion(World& w, Unit& u, int move_code, bool walk);
     void strafe(World& w, Unit& u, bool f, bool b, bool l, bool r);
+    void face_move_dir(World& w, Unit& u, int rel, int magnitude, float cam_yaw);   // 0x4352f0
+    bool horse(World& w, Unit& u, const InputFrame& in, int move_code, int rel, int magnitude);  // mount_ride.cpp
+    void horse_attack(World& w, Unit& u, bool a, bool b);                                     // 0x43ca90
 };
 
 // Stand-in melee opponent for duels/tests: produces the InputFrames a player would (approach, combo

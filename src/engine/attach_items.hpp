@@ -27,8 +27,11 @@ struct UnitLook {
 class UnitDb {
 public:
     explicit UnitDb(const formats::Vfs& vfs);
-    // `code` is the unit.res record (== upper-case .uni UnitFile / script unit code).
+    // `code` is the unit.res record (== upper-case .uni UnitFile / script unit code). `items` = the
+    // class default equipment (PWeaponId/SWeaponId, else PRangeWeaponId).
     std::optional<UnitLook> look(std::string_view code) const;
+    // Carried mesh of an item.res record (first ModelName, else Model) and its AttachBoneName.
+    std::optional<UnitLook::Item> item(std::string_view code) const;
 
 private:
     std::optional<formats::ResArchive> units_, items_, std_set_;

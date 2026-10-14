@@ -406,9 +406,12 @@ Value f385(Mission& m, const BuiltinCall&) {
 }
 bool p385(Mission& m, const BuiltinCall&) { return !m.ui().brief_open; }
 
-// 386 turn_camera 0x65eee0 (H): synchronous turn of the camera to the player's heading.
+// 386 turn_camera 0x65eee0 (H): synchronous turn of the camera to the player's heading (camera 0 yaw =
+// controller camera_yaw_out, read back by the engine camera).
 Value f386(Mission& m, const BuiltinCall&) {
-    m.emit(K::Camera, m.world().controller().unit, 0, "turn");
+    PlayerController& pc = m.world().controller();
+    if (const Unit* u = m.world().unit(pc.unit)) pc.camera_yaw_out = u->yaw_goal;
+    m.emit(K::Camera, pc.unit, 0, "turn");
     return I(1);
 }
 

@@ -33,7 +33,10 @@ The launcher looks for `joan-native`, `joa-updater` (and the updater swaps `joa-
 | Section | Key | Values | Default |
 |---|---|---|---|
 | `renderer` | `backend` | `opengl` \| `vulkan` | `opengl` (engine Vulkan backend not available yet) |
-| `renderer` | `preset` | `original` \| `enhanced` \| `ultra` \| `custom` | `enhanced` |
+| `renderer` | `preset` | `original` \| `enhanced` \| `ultra` \| `custom` | `enhanced` (launcher); the engine without a settings file uses `original` |
+| `graphics` | `hd_packs` | comma list of pack names / absolute dirs, first wins ([HD_ASSETS.md](HD_ASSETS.md)); works with every preset | empty |
+| `graphics` | `pbr`, `normal_maps`, `ibl`, `hdr`, `ssao`, `volumetric_fog`, `particle_lighting` | bool; read only when `preset=custom` (unset keys = Enhanced values) | Enhanced |
+| `graphics` | `exposure` 0.05–16, `shadow_map_size` 0\|1024\|2048\|4096\|8192 (0 = original stencil volumes), `shadow_softness` 0–8, `shadow_distance` 200–8192, `ssao_radius` 1–500, `ssao_intensity` 0–4, `aa` none\|taa, `fog_density` 0–10, `upscale` none\|fsr1, `render_scale` 0.5–1, `sharpness` 0–1 | custom only; see GRAPHICS_ROADMAP.md "Remaster" | Enhanced |
 | `raytracing` | `reflections`, `shadows`, `gi` | `true` \| `false` (`1`/`0` accepted) | `false` |
 | `display` | `width`, `height` | integer 0–16384; `0` = desktop resolution; if only one is 0 both become 0 | `0` |
 | `display` | `aspect` | `auto` \| `4:3` \| `16:9` \| `16:10` \| `21:9` | `auto` |

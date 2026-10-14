@@ -3,49 +3,15 @@
 // slot draw FUN_007538b0, text buttons FUN_00754220, FILE INFORMATION bar FUN_00753440.
 #include "engine/menu_saveload.hpp"
 #include "engine/ui_screens.hpp"
-#include "formats/save_sav.hpp"
 
 #include <SDL3/SDL_scancode.h>
 
 #include <algorithm>
 #include <cmath>
-#include <ctime>
 #include <filesystem>
 #include <string>
 
 namespace joa::engine {
-
-std::vector<SaveSlot> scan_saves(const formats::Vfs& vfs) {
-    static constexpr const char* kMonths[12] = {"January", "February", "March",     "April",   "May",      "June",
-                                                "July",    "August",   "September", "October", "November", "December"};
-    std::vector<std::pair<std::uint64_t, SaveSlot>> found;
-    const auto dir = vfs.resolve("Save");
-    std::error_code ec;
-    if (dir)
-        for (const auto& e : std::filesystem::directory_iterator(*dir, ec)) {
-            if (!e.is_regular_file() || !formats::iequals(e.path().extension().string(), ".sav")) continue;
-            const auto bytes = formats::read_file(e.path());
-            const auto sav = bytes ? formats::parse_sav(*bytes) : std::nullopt;
-            if (!sav) continue;
-            // Date FUN_00580350 + DATE|1, time FUN_00580510 "%d:%.2d %s" (12 h, AMPM|1/2); both local time.
-            const std::time_t t = formats::filetime_to_unix(sav->header.saved_local);
-            std::tm tm{};
-            gmtime_r(&t, &tm);
-            SaveSlot s;
-            s.file = e.path().stem().string();
-            s.description = sav->header.description;
-            s.mission = int(sav->header.value_c);
-            s.date = std::string(kMonths[tm.tm_mon]) + " " + std::to_string(tm.tm_mday) + ", " + std::to_string(tm.tm_year + 1900);
-            char buf[16];
-            std::snprintf(buf, sizeof buf, "%d:%.2d %s", tm.tm_hour % 12 ? tm.tm_hour % 12 : 12, tm.tm_min, tm.tm_hour < 12 ? "AM" : "PM");
-            s.time = buf;
-            found.emplace_back(sav->header.saved_utc, std::move(s));
-        }
-    std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-    std::vector<SaveSlot> out;
-    for (auto& f : found) out.push_back(std::move(f.second));
-    return out;
-}
 
 void ui_text_in_rect(Ui& ui, const UiFont* f, std::string_view s, glm::ivec4 r, glm::vec4 color) {
     if (!f) return;
@@ -56,6 +22,12 @@ void ui_text_in_rect(Ui& ui, const UiFont* f, std::string_view s, glm::ivec4 r, 
 
 namespace {
 const glm::vec4 kBlack = ui_rgba(0, 0, 0);
+
+// Save/<stem>.BMP thumbnail of an original .SAV (SaveSlot::file = name or path); native saves have none.
+std::string thumbnail(const SaveSlot& s) {
+    const std::filesystem::path p(s.file);
+    return p.extension() == ".jsav" ? std::string() : "Save/" + p.stem().string() + ".BMP";
+}
 
 // MARK diamonds left/right of a centred label of width w (0x6f5200 / 0x754220 / 0x7538b0), y = y1 + 8.
 void marks(Ui& ui, glm::ivec4 r, int w) {
@@ -187,7 +159,7 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     // PIC from y -168 + lc, INFOBAR from 480 + lc, INFO from 360 + lc.
     ui.sprite("SAVEMENU", "pic", {580, std::round(float(232 + lc) - 400 + pos(tl.slot[5], 0.2f, 400))}, {1, 1, 1, alpha(tl.slot[5], 0.2f, 4)});
     if (sel && live)
-        if (TextureHandle tex = ui.bitmap("Save/" + sel->file + ".BMP"))  // thumbnail: 320x240 in a 512x256 BMP
+        if (TextureHandle tex = ui.bitmap(thumbnail(*sel)))  // thumbnail: 320x240 in a 512x256 BMP
             ui.image(tex, {601, float(253 + lc), 320, 240}, {0, 0}, {320.0f / 512.0f, 240.0f / 256.0f});
     // FILE INFORMATION bar (0x753440): INFOBAR + SAVEMENU 23 + DIAMONDs at y + 8.
     const int iy = int(std::round(480.0f + float(lc) + pos(tl.slot[1], 0.4f, 40)));
@@ -269,7 +241,7 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
             } else if (idx == m.save_selected && load && t - m.save_click_time < 0.5f) {
                 out.push_back({UiCommand::Type::Load, 0, m.saves[std::size_t(idx)].file, {}});  // double click
             } else {
-                if (idx != m.save_selected) ui.bitmap("Save/" + m.saves[std::size_t(idx)].file + ".BMP", true);
+                if (idx != m.save_selected) ui.bitmap(thumbnail(m.saves[std::size_t(idx)]), true);
                 m.save_selected = idx;
             }
             m.save_click_time = t;

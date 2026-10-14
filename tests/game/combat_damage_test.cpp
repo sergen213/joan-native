@@ -76,7 +76,7 @@ int main() {
             Unit& e = d.E();
             const float r = deg * 0.017453292f;
             e.pos = {50 * std::cos(r), 50 * std::sin(r), 0};
-            d.w.set_yaw(e, deg + 180);           // face Joan
+            d.w.set_yaw_now(e, deg + 180);       // face Joan
             d.w.set_action(e, IDLE);             // restart the combo string ("A" record, Range 38)
             d.w.set_action(e, ATTACK, 'A');
             d.w.set_action(d.J(), GUARD1);
@@ -92,7 +92,7 @@ int main() {
         d.w.set_action(d.J(), IDLE);   // not guarding: front hit lands
         Unit& e = d.E();
         e.pos = {50, 0, 0};
-        d.w.set_yaw(e, 180);
+        d.w.set_yaw_now(e, 180);
         d.w.set_action(e, IDLE);
         d.w.set_action(e, ATTACK, 'A');
         CHECK(d.w.try_melee_hit(d.J(), e) > 0, "unguarded front hit");

@@ -27,7 +27,9 @@ enum Act : int {
     BACK, CLIMB, SHTLOAD, SHTLOADC, SHTLOAD2, SHTOUT, SHTOUT2, SHTOUTC, SHTIDLE, SHTIDLEC, SHTOUTH,
     SHTIDLEH, THROW, THROWN, STANDUP, DIZZY, STOP, STOP_B, KNOCKDN, KNOCKDN2, KNOCKDN3, H_IDLE,
     H_WALK, H_BACK, H_RUN, H_STOP_B, H_STOP, H_ATTACK, H_HITED, H_BHITED, H_LHITED, H_RHITED,
-    H_DROP, H_MNT_L, H_MNT_R, H_DMNT_L, H_DMNT_R, RUSH, PUSH, PUSH2, PUSH_L, PUSH_R, BATTER_C,
+    H_DROP, H_MNT_L, H_MNT_R, H_DMNT_L, H_DMNT_R, RUSH, PUSH, PUSH2, PUSH_L, PUSH_R, BATTER_C, C_IDLE_A, C_IDLE_B,
+    C_DN_AB, C_DN_AS, C_DN_BA, C_DN_CA, C_DN_CB, C_DN_SC, C_UP_AB, C_UP_AC, C_UP_BA, C_UP_BC, C_UP_CS, C_UP_SA, C_DROP,
+    CA_IDLE, CA_RUN, CA_WALK,
     ACT_COUNT_KNOWN
 };
 const char* action_name(int a);             // "IDLE", ...; "#n" when unnamed
@@ -40,6 +42,7 @@ bool is_knocked_ext(int a);     // knocked or H_DROP or DNATKED (most hit checks
 bool can_act_state(int a);      // state half of CanAct 0x500ba0
 bool is_flinch(int a);          // ATTACKED..RATTKED (0x23..0x28)
 bool is_locomotion(int a);     // TIPTOE, WALK, RUN, MOVE_L..MOVE_BR (Unit_move speed table)
+bool is_idle_class(int a);     // Unit_anim_is_idle_class 0x508ab0: idles, JATTBI, H_IDLE, C_IDLE 0x59/0x5a
 
 // Learned upgrade entry (+0x1aa list; 0x5313d0).
 struct UpgradeEntry {
@@ -88,6 +91,8 @@ struct UnitMission {
     int held_item[2] = {};              // +0x1bd / +0x1bf map-object recno held in hand
     int held_bone[2] = {};              // bone index 1..10 (0x9f748c table), 0 none
     int rider = 0;                      // +0x1e6 on a horse: rider recno
+    int climb = 0;                      // +0x1fd ladder map-item recno (Unit_get_busy_state 0x42d690)
+    Vec3 climb_from;                    // +0x203 climb segment anchor
     template <class V> void visit(V& v) {
         v(cutscene_process), v(control), v(hide_cmd), v(interact_unit), v(interact_item), v(interact_stage),
             v(can_interact), v(bribe), v(active), v(vision), v(training), v(saved_lives), v(task_id),
@@ -98,7 +103,7 @@ struct UnitMission {
         v(can_attach), v(bound), v(prisoner_can_be_attacked), v(getting_weapon), v(physics_disabled),
             v(siege_tower_state), v(can_rided), v(cart), v(cart_driver), v(bounding), v(hide_hp_bar), v(model_alt);
         for (int i = 0; i < 2; ++i) v(held_item[i]), v(held_bone[i]);
-        v(rider);
+        v(rider), v(climb), v(climb_from);
     }
 };
 
@@ -107,7 +112,8 @@ struct Unit {
     int nation = 0;             // +0x002 side (1-based NATION row; 0 none)
     int move_index = -1;        // +0x00a current move (animgrp) record, index into the class move table
     Vec3 pos;                   // +0x00e world position (z up)
-    float yaw_deg = 0;          // +0x01e facing in degrees (mirror of radians +0x01a)
+    float yaw_deg = 0;          // +0x01a body facing in degrees (radians in the original; Unit_set_yaw_rad 0x4ff870)
+    float yaw_goal = 0;         // +0x01e desired heading, degrees (Unit_set_yaw_deg 0x50abd0); turned toward by 0x4f2190
     int lod_tier = 1;           // +0x022
     int last_phase1 = 0;        // +0x02a
     int team = 0;               // +0x031 troop id
@@ -157,6 +163,9 @@ struct Unit {
     int invuln_ms = 0;          // +0x1dd
     bool down_attacked = false; // +0x1e1
     int mount = 0;              // +0x1e2 ridden horse recno
+    bool ride_ready = false;    // +0x1ea seated: mount animation finished (horse follows rider yaw)
+    int gear_ts = 0;            // +0x1f1 run-gear start (0x466d50: 10 m/s after 1000 ms)
+    float gear_speed = 0;       // horse body +0x2a4 speed cap m/s (0x6b1d80), 0 = class speeds
     int ts_state = 0;           // +0x20f time current state began (CanAct)
     int posture = 0;            // +0x213 0 STAND, 1 JUMP
     int action = IDLE;          // +0x215
@@ -190,7 +199,7 @@ struct Unit {
     float yaw_rad() const { return yaw_deg * 0.017453292f; }
 
     template <class V> void visit(V& v) {
-        v(id), v(nation), v(move_index), v(pos), v(yaw_deg), v(lod_tier), v(last_phase1), v(team), v(members),
+        v(id), v(nation), v(move_index), v(pos), v(yaw_deg), v(yaw_goal), v(lod_tier), v(last_phase1), v(team), v(members),
             v(leader), v(cls), v(name), v(short_name), v(title), v(ai_controlled), v(rank), v(kingdom), v(race),
             v(retreat), v(ts_hp_regen), v(max_lives), v(lives), v(level), v(xp), v(skill_points), v(attr_points),
             v(level_arrow), v(ts_level), v(hp), v(hp_trail), v(base_max_hp), v(ep), v(base_max_ep),
@@ -200,7 +209,7 @@ struct Unit {
             v(mountain), v(upgrades), v(medals),
             v(kills), v(officer_kills), v(crit_flag), v(crit_count), v(crit_kills), v(troop_lost),
             v(troop_kills), v(inv), v(drop_item), v(drop_level), v(balance), v(ts_balance), v(knock_ms),
-            v(invuln_ms), v(down_attacked), v(mount), v(ts_state), v(posture), v(action), v(prev_action),
+            v(invuln_ms), v(down_attacked), v(mount), v(ride_ready), v(gear_ts), v(gear_speed), v(ts_state), v(posture), v(action), v(prev_action),
             v(item_using), v(special), v(combo), v(combo_idx), v(idle_variant), v(follow_queued), v(win_open),
             v(win_close), v(combo_lock), v(gravity_scale), v(think_ts), v(target), v(threat), v(no_react),
             v(takeoff_ts), v(aim_dir), v(upgrade_ts), v(anim_start), v(vel), v(airborne), v(shot_spawned),

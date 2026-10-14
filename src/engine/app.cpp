@@ -9,13 +9,12 @@
 #include "engine/profile.hpp"
 #include "engine/renderer_gl.hpp"
 #include "engine/renderer_vk.hpp"
+#include "engine/session_client.hpp"
 #include "engine/sim.hpp"
 #include "engine/ui_runner.hpp"
 #include "engine/video_player.hpp"
-#include "engine/world_view.hpp"
 
 #include <SDL3/SDL_mouse.h>
-
 #include <SDL3/SDL_timer.h>
 
 #include <algorithm>
@@ -30,22 +29,10 @@
 namespace joa::engine {
 namespace {
 
-// Deterministic scripted input for --headless runs (and their regression hashes).
-PlayerCommand scripted_command(std::uint64_t tick) {
-    PlayerCommand c;
-    c.move_y = 1.0f;
-    c.move_x = (tick / 45) % 2 ? 0.5f : -0.5f;
-    c.heading = float(tick % 360) * 0.01745329f;
-    c.run = (tick / 90) % 2 == 1;
-    return c;
-}
-
-int run_headless(const Options& o) {
-    World w;
-    for (int i = 0; i < o.frames; ++i) step(w, scripted_command(w.tick), float(kTickSeconds));
-    std::printf("ticks=%llu hash=%016llx pos=%.4f,%.4f,%.4f\n", static_cast<unsigned long long>(w.tick),
-                static_cast<unsigned long long>(state_hash(w)), w.player_position.x, w.player_position.y, w.player_position.z);
-    return 0;
+std::unique_ptr<IRenderer> make_renderer(Platform& platform, const Options& o) {
+    auto r = o.renderer == RendererKind::Vulkan ? create_vk_renderer(platform.window(), o) : create_gl_renderer(platform.window());
+    r->set_graphics(o.graphics.resolve());
+    return r;
 }
 
 std::filesystem::path user_input_config() {
@@ -74,17 +61,14 @@ bool load_input(const Options& o, InputMap& map) {
     return true;
 }
 
-int run_client(const Options& o) {
+// Procedural demo scene (no game data) and the standalone original-interface screens (--ui-screen).
+int run_demo(const Options& o) {
     InputMap input;
     if (!load_input(o, input)) return 1;
     const bool capture = !o.screenshot.empty();
     Platform platform(o, capture);
-    std::unique_ptr<IRenderer> renderer =
-        o.renderer == RendererKind::Vulkan ? create_vk_renderer(platform.window(), o) : create_gl_renderer(platform.window());
+    std::unique_ptr<IRenderer> renderer = make_renderer(platform, o);
     DemoScene scene(*renderer);
-    std::unique_ptr<WorldView> world;
-    if (!o.scenario.empty()) world = std::make_unique<WorldView>(*renderer, o);
-    // Original 2D interface (--ui-screen); the system pointer is replaced by CURSOR.RES.
     const formats::Vfs ui_vfs(o.game_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(o.game_dir));
     std::unique_ptr<UiRunner> ui;
     UiInputTracker ui_input;
@@ -92,21 +76,17 @@ int run_client(const Options& o) {
         ui = std::make_unique<UiRunner>(ui_vfs, *renderer, o.ui_screen);
         SDL_HideCursor();
     }
-    double frame_ms_sum = 0;
-    std::size_t draw_sum = 0;
 
     World previous, current;
     FixedStep clock;
     FollowCamera camera;
-    if (world) world->setup_camera(camera);
     RawInput raw;
     ActionState actions;
     std::vector<DrawItem> draws;
     std::vector<UiQuad> quads;
     std::uint64_t last_ns = SDL_GetTicksNS();
 
-    int frame = 0;
-    for (; o.frames == 0 || frame < o.frames; ++frame) {
+    for (int frame = 0; o.frames == 0 || frame < o.frames; ++frame) {
         if (!platform.pump(raw)) break;
         const std::uint64_t now_ns = SDL_GetTicksNS();
         // Captures use a fixed frame time so the same command line renders the same image.
@@ -126,9 +106,7 @@ int run_client(const Options& o) {
         const PlayerCommand cmd{actions[Action::MoveX], actions[Action::MoveY], camera.yaw, actions.down(Action::Run)};
         for (int n = clock.advance(frame_dt); n > 0; --n) {
             previous = current;
-            JOA_ZONE("sim.step");
             step(current, cmd, float(clock.tick));
-            if (world) world->tick(current);
         }
         const World shown = interpolate(previous, current, clock.alpha());
 
@@ -138,32 +116,22 @@ int run_client(const Options& o) {
         FrameData f;
         f.view.projection = perspective_hor_plus(glm::radians(kOriginalVerticalFovDeg), aspect, kDefaultNear, kDefaultFar);
         f.view.viewport = vp;
-        if (world) {
-            draws.clear();
-            quads.clear();
-            world->frame(shown, clock.alpha(), camera, actions, float(frame_dt), f.view.projection, f.view, draws);
-            f.lighting = world->lighting();
-        } else {
-            camera.update(shown.player_position, float(frame_dt));
-            scene.build(shown, ui_layout(vp), draws, quads);
-            f.view.view = camera.view();
-            f.view.camera_position = camera.eye;
-            f.lighting = scene.lighting();
-        }
+        camera.update(shown.player_position, float(frame_dt));
+        draws.clear();
+        quads.clear();
+        scene.build(shown, ui_layout(vp), draws, quads);
+        f.view.view = camera.view();
+        f.view.camera_position = camera.eye;
+        f.lighting = scene.lighting();
         if (ui) {
-            if (!world) {
-                quads.clear();
-                if (!ui->show_hud) draws.clear(), f.lighting = Lighting{};  // menus: black behind the 4:3 canvas
-            }
+            quads.clear();
+            if (!ui->show_hud) draws.clear(), f.lighting = Lighting{};  // menus: black behind the 4:3 canvas
             if (!ui->frame(vp, ui_input.update(platform.window(), raw), float(frame_dt), quads)) break;
         }
         f.draws = draws;
         f.ui = quads;
         renderer->begin_frame(size);
-        {
-            JOA_ZONE("render.submit");
-            renderer->submit(f);
-        }
+        renderer->submit(f);
         if (capture && frame + 1 == o.frames) {
             const Image img = renderer->read_back();
             if (!write_png(o.screenshot, img.width, img.height, img.rgba)) {
@@ -173,13 +141,8 @@ int run_client(const Options& o) {
             std::fprintf(stderr, "joan-native: wrote %s (%dx%d)\n", o.screenshot.c_str(), img.width, img.height);
         }
         renderer->end_frame();
-        frame_ms_sum += double(SDL_GetTicksNS() - now_ns) * 1e-6;
-        draw_sum += draws.size();
         JOA_FRAME_MARK();
     }
-    if (world && frame > 0)
-        std::fprintf(stderr, "joan-native: %d frames, mean CPU frame %.2f ms (build+submit+present), mean draws %.0f\n", frame,
-                     frame_ms_sum / frame, double(draw_sum) / frame);
     return 0;
 }
 
@@ -193,8 +156,7 @@ int run_movie(const Options& o) {
     }
     const bool capture = !o.screenshot.empty();
     Platform platform(o, capture);
-    std::unique_ptr<IRenderer> renderer =
-        o.renderer == RendererKind::Vulkan ? create_vk_renderer(platform.window(), o) : create_gl_renderer(platform.window());
+    std::unique_ptr<IRenderer> renderer = make_renderer(platform, o);
     std::unique_ptr<AudioSystem> audio = capture ? nullptr : std::make_unique<AudioSystem>(vfs);
     return play_movie(platform, *renderer, audio ? &audio->mixer() : nullptr, *path, {o.movie_time, o.screenshot}) ? 0 : 1;
 }
@@ -210,9 +172,16 @@ int run(const Options& o) {
         std::fprintf(stderr, "joan-native: --game-dir %s is not a directory\n", o.game_dir.c_str());
         return 1;
     }
-    if (o.headless) return run_headless(o);
     try {
-        return o.movie.empty() ? run_client(o) : run_movie(o);
+        if (!o.movie.empty()) return run_movie(o);
+        const formats::Vfs vfs(o.game_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(o.game_dir));
+        const bool game = o.ui_screen.empty() && vfs.exists("scenario/scenario_01.scr");
+        const bool wants_game = o.headless || !o.scenario.empty() || o.new_game || !o.load.empty() || !o.autoplay.empty();
+        if (wants_game && !game && o.ui_screen.empty()) {
+            std::fprintf(stderr, "joan-native: no original game data in %s (scenario/scenario_01.scr)\n", vfs.root().c_str());
+            return 1;
+        }
+        return game ? run_game(o) : run_demo(o);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "joan-native: %s\n", e.what());
         return 1;

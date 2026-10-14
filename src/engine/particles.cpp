@@ -184,7 +184,7 @@ void run_events(std::minstd_rand& r, const Def::Seq& s, ParticleSystem::Particle
 
 }  // namespace
 
-ParticleSystem::ParticleSystem(AssetCache& assets, std::string_view scenario) : assets_(assets) {
+ParticleSystem::ParticleSystem(AssetCache& assets, std::string_view scenario, glm::vec3 origin) : assets_(assets) {
     const auto& vfs = assets.vfs();
     const auto paths = find_scenario(vfs, scenario);
     const auto text = paths ? read_text(vfs, paths->dir + "/" + paths->name + ".stg") : std::nullopt;
@@ -195,7 +195,7 @@ ParticleSystem::ParticleSystem(AssetCache& assets, std::string_view scenario) : 
             // FUN_00551930: X, Y, Z (sector-relative X/Y; main-stage origin 0), HD degrees.
             if (const std::string* n = b.get("ParticleName")) {
                 ++stage_emitters_;
-                add_emitter(*n, to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))),
+                add_emitter(*n, origin + to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))),
                             glm::radians(float(b.number("HD"))));
             }
             continue;
@@ -226,7 +226,7 @@ ParticleSystem::ParticleSystem(AssetCache& assets, std::string_view scenario) : 
         // offset follows the object matrix (FUN_0041ab50 lock types 1/3/4: point_transform), heading
         // = object HD + EmitterDirection (HYPOTHESIS: degrees; 0 in every shipped emitter .pro).
         const float hd = float(b.number("HD"));
-        glm::mat4 t = glm::translate(glm::mat4(1.0f), to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))));
+        glm::mat4 t = glm::translate(glm::mat4(1.0f), origin + to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))));
         t = glm::rotate(t, glm::radians(hd), glm::vec3(0, 1, 0));
         t = glm::scale(t, glm::vec3(float(b.number("Scale", 1.0))));
         for (std::size_t i = 0; i < slots.size() && i < 2; ++i) {
@@ -267,18 +267,38 @@ const ParticleSystem::Def* ParticleSystem::system(const std::string& name) {
     return defs_.emplace(key, std::move(def)).first->second.get();
 }
 
-void ParticleSystem::add_emitter(const std::string& name, glm::vec3 position, float heading) {
+ParticleSystem::Emitter* ParticleSystem::add_emitter(const std::string& name, glm::vec3 position, float heading) {
     const Def* def = system(name);
     if (!def) {
         ++missing_;
-        return;
+        return nullptr;
     }
     Emitter e;
     e.def = def;
     e.position = position;
     e.rotation = yaw(heading);
     e.seqs.resize(def->seqs.size());
-    emitters_.push_back(std::move(e));
+    return &emitters_.emplace_back(std::move(e));
+}
+
+bool ParticleSystem::spawn(const std::string& name, glm::vec3 position, float heading, float start, float stop, int tag, glm::vec3 local) {
+    Emitter* e = add_emitter(name, position, heading);
+    if (!e) return false;
+    e->age = -start;
+    e->stop = stop - start;
+    e->tag = tag;
+    e->local = local;
+    return true;
+}
+
+void ParticleSystem::follow(const std::unordered_map<int, glm::mat4>& frames) {
+    for (Emitter& e : emitters_) {
+        if (!e.tag) continue;
+        const auto it = frames.find(e.tag);
+        if (it == frames.end()) continue;
+        e.position = glm::vec3(it->second * glm::vec4(e.local, 1.0f));
+        e.rotation = glm::mat3(it->second);
+    }
 }
 
 std::size_t ParticleSystem::particle_count() const {
@@ -329,7 +349,7 @@ void ParticleSystem::build(float dt, const glm::mat4& view, const glm::mat4& vie
                 return false;
             });
             // Emission: rate x dt with a fractional carry, capped at NumParticles alive.
-            if (!q.done && e.age >= s.delay) {
+            if (!q.done && e.age >= s.delay && e.age < e.stop) {
                 const float want = pick(rng_, s.rate) * dt;
                 int n = int(want);
                 q.acc += want - float(n);
@@ -421,6 +441,9 @@ void ParticleSystem::build(float dt, const glm::mat4& view, const glm::mat4& vie
             out.push_back(di);
         }
     }
+    std::erase_if(emitters_, [](const Emitter& e) {
+        return e.age >= e.stop && std::all_of(e.seqs.begin(), e.seqs.end(), [](const Sequence& q) { return q.particles.empty(); });
+    });
     drawn_ = mesh.indices.size() / 6;
     if (out.empty()) return;
     IRenderer& r = assets_.renderer();

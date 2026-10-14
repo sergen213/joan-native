@@ -22,15 +22,23 @@ namespace joa::engine {
 
 class ParticleSystem {
 public:
-    // Reads the scenario .stg (CreateParticle + CreateObject item .pro emitters). Unknown scenarios
-    // yield no emitters; emitter names without a usable pscript are counted in missing().
-    ParticleSystem(AssetCache& assets, std::string_view scenario);
+    // Reads the scenario .stg (CreateParticle + CreateObject item .pro emitters), placed at the map node
+    // offset `origin` (engine space). Unknown scenarios (e.g. "") yield no emitters; emitter names without
+    // a usable pscript are counted in missing().
+    ParticleSystem(AssetCache& assets, std::string_view scenario, glm::vec3 origin = glm::vec3(0.0f));
     ~ParticleSystem();
     ParticleSystem(const ParticleSystem&) = delete;
     ParticleSystem& operator=(const ParticleSystem&) = delete;
 
     // Advances every emitter by dt seconds, then appends one draw per visible emitter sequence.
     void build(float dt, const glm::mat4& view, const glm::mat4& view_proj, std::vector<DrawItem>& draws);
+    // One-shot emitter (animscr.res attack-script slot): emits from `start` s to `stop` s after the call
+    // and is removed once its particles are gone. tag != 0 with `local` (unit-frame engine offset): the
+    // emitter follows that unit (follow()). False when the pscript is missing.
+    bool spawn(const std::string& name, glm::vec3 position, float yaw, float start, float stop, int tag = 0,
+               glm::vec3 local = glm::vec3(0.0f));
+    // Moves tagged emitters to their unit's frame (translation + yaw of the unit model matrix).
+    void follow(const std::unordered_map<int, glm::mat4>& frames);
 
     std::size_t emitter_count() const { return emitters_.size(); }
     int stage_emitters() const { return stage_emitters_; }  // .stg CreateParticle
@@ -62,12 +70,15 @@ public:
         glm::vec3 position{0.0f};  // engine space
         glm::mat3 rotation{1.0f};  // yaw about +Y (HD / object heading)
         float age = 0;
+        float stop = 1e30f;  // emission ends at this age (s); spawn() emitters are erased after it
+        int tag = 0;
+        glm::vec3 local{0.0f};
         std::vector<Sequence> seqs;
     };
 
 private:
     const Def* system(const std::string& name);
-    void add_emitter(const std::string& name, glm::vec3 position, float yaw);
+    Emitter* add_emitter(const std::string& name, glm::vec3 position, float yaw);
 
     AssetCache& assets_;
     std::unordered_map<std::string, std::unique_ptr<Def>> defs_;  // lowercase name; null = missing

@@ -94,7 +94,7 @@ int main() {
     // Recruit-by-interact (0x43c210 -> 0x48dfb0(100)): nearest eligible unit in front within 100 joins.
     {
         Unit& Lu = *w.unit(L);
-        w.set_yaw(Lu, 0);
+        w.set_yaw_now(Lu, 0);
         const int r = w.spawn_unit("ENGLISH_LIGHT_INFANTRY", 1, {Lu.pos.x + 60, Lu.pos.y, 0}, 0);
         const int behind = w.spawn_unit("ENGLISH_LIGHT_INFANTRY", 1, {w.unit(L)->pos.x - 40, w.unit(L)->pos.y, 0}, 0);
         CHECK(ai.recruit_nearby(*w.unit(L)) == r && w.unit(r)->leader == L, "recruit in front");

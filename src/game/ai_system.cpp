@@ -63,7 +63,7 @@ template <class V, class K, class T> void visit_map(V& v, std::map<K, T>& m) {
 }
 }  // namespace
 
-AiSystem::AiSystem(World& w, const NavMesh* nav) : w_(w), nav_(nav) {
+AiSystem::AiSystem(World& w, const NavWorld* nav) : w_(w), nav_(nav) {
     item = [this](int id) -> std::optional<AiItem> {
         WorldItem* it = w_.item(id);
         if (!it || it->deleted) return std::nullopt;
@@ -102,7 +102,6 @@ void AiSystem::ensure_init(Unit& u) {
     if (s.initialised) return;
     s.initialised = true;
     s.wait_len = s.wait_cnt = 5;  // INIT_W_C (GAMEPLAY.RES)
-    s.desired_yaw = s.desired_seen = u.yaw_deg;
     s.last_pos = u.pos;
     if (u.ai_class == 0) u.ai_class = ai_class_for(u);
     if (u.threat == 0) u.threat = base_attack_chance(u);
@@ -132,10 +131,6 @@ void AiSystem::execute_orders(World& w, Unit& u) {
     if (w.dead(u)) {  // die 0x7c6240 clears the task; corpses keep their team slot
         if (s.task.id) clear_task(u);
         return;
-    }
-    if (s.desired_yaw != s.desired_seen) {  // +0x1e written by a script: turn (instantly, see deviations)
-        s.desired_seen = s.desired_yaw;
-        w.set_yaw(u, s.desired_yaw);
     }
     if (s.task.id == task::RETREAT && s.task.p3 > 0) s.task.p3 -= World::kTickMs;  // phase 0 timer
     update_movement(u);                                   // phase 1 Unit_update_movement

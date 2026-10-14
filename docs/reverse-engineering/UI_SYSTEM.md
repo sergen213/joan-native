@@ -393,7 +393,8 @@ Code: `src/engine/menu_saveload.{hpp,cpp}`, `src/engine/menu_ingame.cpp`. Tests:
   cancels / leaves; SAVE / SAVE NEW → entry (IN_FRAME (228,660+lc), IN_BG (286,670+lc), text (286,671+lc),
   63 chars, Enter = confirm). "Enter description here" (SAVEMENU 8) and the delete question (SAVEMENU 7)
   are never referenced by the exe → not shown.
-- `scan_saves`: Save/*.SAV newest first (GameFile_enum_saves 0x4770a0, comparator 0x477bd0 on saved FILETIME).
+- `list_saves` (game_ui_bridge.cpp): native `*.jsav` (META) + Save/*.SAV newest first (GameFile_enum_saves 0x4770a0,
+  comparator 0x477bd0 on saved FILETIME); `SaveSlot::file` = full path, thumbnail Save/<stem>.BMP for .SAV only.
 
 #### Font object map (Sys_init 0x4d6fe0, `mov ecx` + name push): work/ui/MenuSaveLoad/fonts.txt
 Two pairings disagree with the screenshots (0xa489c8, 0xa48d48 as button labels); every final choice above is
@@ -485,8 +486,8 @@ in/out and the "(Time left: %1d minutes)" suffixes.
 #### Attention message — FUN_004d8c10. CONFIRMED (corn_tl SSD 0.09, tmess 0.03)
 PANEL (12,548), CORN_TL/TR (4|0x3d5, 540), CORN_BL/BR (4|0x3d5, 621), ICON_1 / icon / ICON_2 (28,564) (48x48 M000x
 icons centred), text Goudy14(22) white (0xa51608) in (0x68,H-0xcc)-(W-0x1c,H-0x84), `_` toggles red, line gap 2,
-last 3 lines shown. Icon 'TMESS' for tutorial messages, 'M0000' otherwise (SCRIPT_VM 344). Typewriter rate 40 chars/s
-is a guess (ponytail note in code). Highlight red (220,32,32) measured.
+last 3 lines shown. Icon 'TMESS' for tutorial messages, 'M0000' otherwise (SCRIPT_VM 344). Typewriter 40 chars/s =
+FUN_004ace90 typed += dt·0.04 (CONFIRMED). Highlight red (220,32,32) measured.
 
 #### Message log — FUN_006e1570 / FUN_006e22e0 over the in-game backdrop (FUN_006f21c0). CONFIRMED
 cover (0x48,0x88); page_l (0x68,0x98), page_r (0x200,0x98); "Page %1d/%2d" Goudy14(22) at (0xa4,0x28c) left /
@@ -521,8 +522,8 @@ side-by-side is near-identical (work/ui/HudGame/c_*.png).
 #### Out of scope / gaps
 Character-details window (F1, s04_06_character_details); combo/level-up/+EXP floating numbers (MGEXP, ComboHUD);
 critical HUD (Crit_drawHUD); siege/gate HP (TUI SWORD/EHPBAR/SBASE); hit/select flashing frames (CHIT/CSELECT/MSELECT,
-DICON/DSWORD damage blink); morale pips (CMORAL); cutscene dialog box (FUN_0063b830: ICON_1 at (28,689), s04_04_mission1_tutorial_msg);
-fog of war on the minimap.
+DICON/DSWORD damage blink); morale pips (CMORAL); fog of war on the minimap. The cut-scene dialog box is now in
+`GameUiBridge` (below).
 HUD entry is now `hud_game(Ui&, HudModel&, std::vector<UiCommand>&)`: HoldResume{value = party index} from the
 HOLD_*/RESUME* button (hover/press states), MinimapClick, QuickLoad, QuickLoadCancel.
 
@@ -543,3 +544,36 @@ Full notes (layout tables, data sources, SSIM, gaps): `work/ui/notes_MissionBrie
   commanders-2 1.000 (actor rect excluded), battleground 0.966.
 - Gaps: commander / siege 3D actors, battleground camera controls, 2D icon rotation, voice-over, user key names in
   Strategic text, no references for Strategic / Siege / 2D battleground.
+
+### Game UI bridge (UiBridge) — live HudModel + in-game overlays
+Code `src/engine/game_ui_bridge.{hpp,cpp}` (fill / events / handle / list_saves / speaker portraits),
+`game_ui_bridge_screens.cpp` (overlays). Tests `game_ui_bridge_test.cpp` (headless, mission 1), `gl_/vk_ui_bridge_test.cpp`
+(`ui_bridge_shots.hpp`). Fact sheet behind this section: work/ui/UiBridge (set.py dumps INTERFAC.SET tables).
+- HUD fill: party = FUN_006ff950 (live units of the player's nation, rank > 3, class in DAT_00a6a570 table JOAN_OF_ARC,
+  JEAN_DE_METZ, LAHIRE, ALENCON, ORLEAN, CHARLIE7, arthur_de_richemont, FLAVY; slot order = table order) CONFIRMED;
+  panel portrait = unit.res CFileName + "1" (class +0x100) CONFIRMED; party portrait <CFILE>_ARMOR_LVn → JOANC2/1/3,
+  JEANCn, LAHIRECn, ALENCOCn, else CFileName CONFIRMED; PLVLBAR (xp − LEVEL[l−1]) / (LEVEL[l] − LEVEL[l−1]) CONFIRMED.
+  Minimap: <stem>.map records (0xa4 bytes: +2 key, +0x44 sprite, +0x92/+0x96 x/y) shown unless
+  set_minimap_icon_display_enable(key, 0) HIGH; waypoints MAPICON wp_<type>; FUN_0070fbe0 hero icons "!joan_M"…,
+  other friendly = green dot, hostile = red dot (siege / captain / "_H" mounted branches not modelled: HYPOTHESIS).
+  Name bars: head + 95 projected with view_proj, bar_scale from the projected size of 16 world units (MEDIUM).
+  Commanders 0x4cdd40, objectives = enabled end conditions with a description (Win first). Attention messages:
+  states 3..5 of MissionUi, age = typed / 40, logged when they leave (FUN_00499e40); speaker portraits
+  FUN_004ab330 (class) / FUN_004aa3c0 (name) tables, METZ/LAHIRE/ALENCON 1..3 by armour CONFIRMED.
+- Letterbox FUN_006ca230: bars (W·55/640)·fade/255 = 88 px, black alpha = fade; wipe status 6/8 cut_scene_texture
+  at cs.wipe, 7 black CONFIRMED. Dialog FUN_0063b830 (cs.status 2, fade 255): ICON_1/portrait/ICON_2 (28,689), text
+  Goudy14(22) white (asm 0x63bae5) in (119,693) 848x36, 40 chars/s, click/Space/Enter finishes typing; done when
+  typed and the voice stopped (deviation: voiced lines also type out). Choices below the text at x 134, 5 px apart;
+  hovered = red (HYPOTHESIS), click answers. Continue indicator (dot<n>_up/_hl, art not in INTERFAC.SET): not drawn.
+- Title FUN_00761340: black (bg alpha) + font_verdana_12_bold ×5 centred, fade-in / hold / fade-out CONFIRMED.
+- Loading FUN_00756430: M<n> scr (0,194) / title (416,72) / name (276,352), SL_BG1 vignette, SL_COM bar (fill
+  408,710; frame 410,712; head 405+2%,708), "LOADING" (SCELOAD 1) Goudy_bold_18 (asm 0x75987d) at (450,744); stages
+  3 s black, 1 s title, 1 s name, 1 s reveal, bar 20 %/s, wait for 100 %, 2 s bar fade, 0.5 s to black. SSIM 1.000
+  (loading_7s, stage 2) / 1.000 (mission1_cutscene, stage 5 at 45 %), GL.
+- Win FUN_006e6dc0: VICT G100 0.9..0.6 → G50 (256,320) + GGLOW pulse (50 ms steps), text VICTS n Goudy18(27) white
+  in (172,450)-(852,586), then MBUT "Next Mission" (412,694) → game-end menu: in-game backdrop titled OBJMENU 14,
+  time boxes, RESTART MISSION / LOAD GAME / CONTINUE (VICT 5) → RestartMission / LoadMenu / ContinueCampaign.
+  Gap: the menu's topic list (De-brief page 7 …) and the button positions (HYPOTHESIS: bottom row).
+- Game over FUN_006b7160: GAMEOVER G100 1080x144..720x96 → G50 (212,344) + GGLOW (192,324), call_gameover_msg text,
+  MBUT buttons (412, 564/604/644) GAMEOVER 1..3 → RestartMission / LoadMenu / QuitToMain CONFIRMED. Scenario 6's
+  "restart = load <text>.SAV" variant not modelled.

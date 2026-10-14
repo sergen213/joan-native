@@ -40,6 +40,14 @@ struct MissionEvent {
         GameOverMessage, AttentionMessage, Dialog, ChoiceDialog, DialogClosed, Letter, TitleScreen, Brief,
         BuyInterface, ScenarioPart, CutScene, Camera, Sound, Music, Minimap, Ui, Ending, SaveGame, Text,
         Transition,    // campaign advanced to the next scenario
+        // Player interact (R) indicator FUN_006d3590 (show 0x6d3450 / hide 0x6d3480), emitted on change:
+        // a = 1 shown / 0 hidden, b = target recno (unit, modify item or facility), text = target kind
+        // ("talk", "bribe", "prisoner", "mount", "recruit", "item", "recruit_screen", "workshop").
+        InteractPrompt,
+        // Interact handler result: a = player, b = target, text = "free_prisoner", "talk", "bribe",
+        // "bribe_no_gold" (one-shot message), "recruit", "item", "recruit_screen" (0x6c0310),
+        // "workshop_screen" (0x6ed3e0).
+        Interact,
     };
     Kind kind = Kind::Ui;
     std::uint64_t tick = 0;
@@ -69,6 +77,7 @@ struct MissionState {
     std::uint8_t food_can_be_picked = 0;
     std::uint8_t objective_menu_opened = 0;  // DAT_00a591c7
     std::uint8_t read_letter_once = 0;       // DAT_00a46059
+    std::uint8_t bribe_no_gold_shown = 0;    // DAT_00a591b5 (Unit_bribe "not enough gold" message once)
     std::vector<std::int16_t> scenario_generals;  // add/remove_scenario_general, max 31
     std::vector<std::uint16_t> item_hints_a, item_hints_b;  // Game+0x71c / +0x728 (carried in profile)
     std::string scenario_name, scenario_description;

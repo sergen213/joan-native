@@ -38,7 +38,8 @@ Unit decode_unit(std::span<const std::uint8_t> u) {
     Unit x;
     x.nation = at<std::int16_t>(u, 0x2);
     x.pos = {at<float>(u, 0xe), at<float>(u, 0x12), at<float>(u, 0x16)};
-    x.yaw_deg = at<float>(u, 0x1e);
+    x.yaw_goal = at<float>(u, 0x1e);
+    x.yaw_deg = at<float>(u, 0x1a) / 0.017453292f;
     x.team = at<std::int16_t>(u, 0x31);
     x.cls = at<std::int16_t>(u, 0x3b) - 1;
     x.name = cstr(u, 0x3d, 0x42);

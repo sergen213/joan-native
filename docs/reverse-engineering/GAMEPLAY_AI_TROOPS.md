@@ -2753,6 +2753,13 @@ CONFIRMED.
   (world+0x6a) with all coordinates /32 and radius `BODY_R/32`, into `unit+0x473`, scale back `(32,1)` (`0066faa0`),
   remember start at +0x490. Then find the first..last world waypoint inside the current level and replan that span
   on the local mesh (`0xa3cb28`/`0xa3cae0` temp), splicing it in front of the remaining world path. CONFIRMED (flow).
+  Details (disasm 0x5062d4..0x506301, 0x506822..0x50695a): after `Path_scale(32,1)` the world path is translated by
+  **(+16,+16,0)** (cell centre; the destination too, so a cross-map route ends at target+16). Start waypoint = ftol(pos/32).
+  Run `[c0..c4]` = leading waypoints inside the (loaded) current level, `c4 = c0+1` if only one; the local leg goes
+  `get(c0) → get(c4)` (z of the waypoints = 0); unit path = world[1..c0] + local[1..n] + world[c4+1..count−1] + dest
+  (dest = local dest when c4 == count). CONFIRMED. Shipped world meshes differ: S2/S3/S5/S6/S7 cover the whole world,
+  S4L1w is only 15 doorway polys straddling node borders (6 components) — a far target gives a partial route through the
+  nearest doorway, the unit replans locally once in the next level. Port: `NavWorld::find_path` (src/game/multimap_nav.cpp).
 - Total path length → `unit+0x40e` (sum of segment lengths `004256d0`). Waypoint index `unit+0x3e6` = 0.
 
 ### 3.2 Following — `Unit_update_movement 0052daa0` (per tick)
@@ -3498,6 +3505,11 @@ MAP\*.res/.PFD/m*.PFD/.trk/.cm/_STG/.GRI/.PLN); 3 → 1. Optional `free_world_vi
   if level changed: `Level_add_unit`, hand items re-registered to level; then if level loaded (+0x43≠0) and unit inactive (+0x2ed==0)
   → activate `0x442820`; if level unloaded and unit active → deactivate `0x41fcc0`; else add all actors to the new sector. Then mounted/attached
   sub-units (unit-type +0x1ad count, +0x1b1 offsets, +0x1b5 angles) are carried along. Unit fields: +0x335 World*, +0x339 Level*, +0x33d/+0x341 links, +0x345 SceneSector*.
+  Gameplay effect (CONFIRMED): `Unit_process 0x52c490` phase 1 (`Unit_updateAction`, turn `FUN_004f2190`, `Unit_process_movement`)
+  runs only `if (unit+0x2f5 != 0)`, and `Unit_deactivate` → `0x4f07f0` destroys +0x2f5: units in streamed-out levels keep
+  thinking/issuing orders (phases 0/2/3; `Unit_process` only checks +0x335 == current world) but neither animate, turn nor
+  move, and melee/ranged hit tests (`0x5048b0`/`0x5051e0`) return 0 against inactive units. Level unload `0x449780` also
+  frees the level's PathSpace (`0x6ad450` clears bodies' map/poly), so `Unit_path_to` (level+0x43 == 0) plans world-mesh only.
 - Items: `Item_update_location 0x4311d0` (from Actor_set_pos types 1/10/6–9): same scheme with item+0xa6 World*, +0xaa Level*, +0xb6 SceneSector*,
   actors +0x86 (main), +0x8e (second model), emitter actors from anim-particle-effect slots +0x96/+0x98; active flag +0x82; activate vtbl+0x1c, deactivate vtbl+0x20.
 - `Item_activate 0x4227c0` (vtbl+0x1c): create actor (vtbl+0x10 `0x42f210`), collision shape (vtbl+0x7c `0x41e850`), locate sector, add actors+emitters to sector,

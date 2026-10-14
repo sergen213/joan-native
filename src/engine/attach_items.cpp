@@ -76,14 +76,18 @@ std::optional<UnitLook> UnitDb::look(std::string_view code) const {
         if (const std::string id = field(rec, k); !none(id)) ids.push_back(id);
     if (ids.empty())
         if (const std::string id = field(rec, "PRangeWeaponId"); !none(id)) ids.push_back(id);
-    for (const std::string& id : ids) {
-        const auto item = record(items_, id);
-        std::string mesh = field(item, "ModelName");
-        if (none(mesh)) mesh = field(item, "Model");
-        const std::string bone = field(item, "AttachBoneName");
-        if (!none(mesh) && !none(bone)) out.items.push_back({"item/" + mesh, bone});
-    }
+    for (const std::string& id : ids)
+        if (auto it = item(id)) out.items.push_back(std::move(*it));
     return out;
+}
+
+std::optional<UnitLook::Item> UnitDb::item(std::string_view code) const {
+    const auto rec = record(items_, code);
+    std::string mesh = field(rec, "ModelName");
+    if (none(mesh)) mesh = field(rec, "Model");
+    const std::string bone = field(rec, "AttachBoneName");
+    if (none(mesh) || none(bone)) return std::nullopt;
+    return UnitLook::Item{"item/" + mesh, bone};
 }
 
 }  // namespace joa::engine

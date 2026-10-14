@@ -29,6 +29,10 @@ void hud_game(Ui& ui, HudModel& model, std::vector<UiCommand>& out);
 // bar text ("SAVE A GAME", "OPTIONS", ...; empty = none).
 void menu_frontend_backdrop(Ui& ui, const MenuModel& model);
 void menu_ingame_backdrop(Ui& ui, const MenuModel& model, std::string_view heading);
+// '_'-markup text (hud_game.cpp; '_' toggles the red highlight, 0x626320 with markup on): greedy word wrap in
+// r.z, line gap 2, only the last `max_lines` lines (scrolled up like FUN_004d8c10). Returns the line count.
+int ui_markup_block(Ui& ui, const UiFont* f, std::string_view s, glm::vec4 r, glm::vec4 c, int max_lines = 99);
+int ui_markup_lines(const UiFontMetrics& m, std::string_view s, int width);  // line count of ui_markup_block
 
 // --ui-screen names: main, difficulty, credits, options (root list), video, audio, input, game, remap, load,
 // save, ingame, ingame-options, hud, msglog, brief, brief-background, brief-objectives, brief-townships,

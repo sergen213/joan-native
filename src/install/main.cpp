@@ -18,6 +18,8 @@ int usage() {
                  "  repair <source> [--use-wine]       re-copy missing/damaged files from source\n"
                  "  uninstall                          remove imported game data and desktop entry\n"
                  "  manifest <dir> --id ID --label L   (dev) print known_versions.json for dir\n"
+                 "  hd-import <dir> [--name N]         copy an extracted HD texture pack to $XDG_DATA_HOME/joan-native/hd/N\n"
+                 "                                     (default N = hd-update); files identical to the install are skipped\n"
                  "GAME_ROOT defaults to $XDG_DATA_HOME/joan-native/game. Progress: stderr lines `progress N message`.\n";
     return 2;
 }
@@ -46,7 +48,7 @@ void print_text(const json& j) {
 int main(int argc, char** argv) {
     bool as_json = false, use_wine = false, desktop = true;
     std::vector<std::string> args;
-    std::string dest, id, label;
+    std::string dest, id, label, name = "hd-update";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto value = [&](std::string& out) { if (i + 1 >= argc) return false; out = argv[++i]; return true; };
@@ -56,13 +58,14 @@ int main(int argc, char** argv) {
         else if (a == "--dest") { if (!value(dest)) return usage(); }
         else if (a == "--id") { if (!value(id)) return usage(); }
         else if (a == "--label") { if (!value(label)) return usage(); }
+        else if (a == "--name") { if (!value(name)) return usage(); }
         else if (a == "-h" || a == "--help") return usage(), 0;
         else if (a.starts_with("--")) return usage();
         else args.push_back(a);
     }
     if (args.empty()) return usage();
     const auto& cmd = args[0];
-    const bool needs_path = cmd == "detect" || cmd == "import" || cmd == "repair" || cmd == "manifest";
+    const bool needs_path = cmd == "detect" || cmd == "import" || cmd == "repair" || cmd == "manifest" || cmd == "hd-import";
     if (needs_path != (args.size() == 2) || args.size() > 2) return usage();
 
     int last = -1;
@@ -104,6 +107,9 @@ int main(int argc, char** argv) {
             if (id.empty()) return usage();
             std::cout << generate_manifest(args[1], id, label.empty() ? id : label);
             return 0;
+        } else if (cmd == "hd-import") {
+            const auto r = import_hd_pack(args[1], name, paths, opt);
+            out = {{"ok", true}, {"pack", r.pack.string()}, {"name", name}, {"copied", r.copied}, {"identical_skipped", r.identical}};
         } else {
             return usage();
         }

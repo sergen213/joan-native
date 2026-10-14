@@ -1,6 +1,7 @@
 #pragma once
-// Original scenario world: GRI terrain, .stg objects, .day/.lgt/.sca lighting and fog, start pose.
-// Evidence and open questions: docs/GRAPHICS_ROADMAP.md "First original scene".
+// Original scenario world: GRI terrain, .stg objects, .day/.lgt/.sca lighting and fog. A mission map is
+// one or more world nodes (<world>.wor CreateNode, game::world_nodes): each node's .gri/.stg/lightmaps
+// use node-local X/Y, placed at the node origin. Evidence: docs/GRAPHICS_ROADMAP.md "First original scene".
 #include "engine/assets_cache.hpp"
 #include "engine/renderer.hpp"
 #include "formats/map_grid.hpp"
@@ -33,7 +34,6 @@ struct WorldStats {
     int terrain_groups = 0;   // (ground type 1, ground type 2) draw groups
     int lightmaps = 0;        // sector lightmaps found
     int lights = 0;           // point lights: .stg CreateLight blocks + item .pro HasLight
-    int map_units = 0;        // .uni CreateUnit blocks
     std::string stage;        // .day lighting stage in use
 };
 
@@ -56,19 +56,42 @@ struct Scattering {
 // along the view direction, quantised to bytes. Gamma space. CONFIRMED formula.
 glm::vec3 scattering_fog_color(const Scattering& s, glm::vec3 view_dir);
 
+// One world node: map base name (files <dir>/<name>.gri/.stg) at an origin in original X/Y.
+struct MapNode {
+    std::string name;
+    glm::vec2 origin{0.0f};
+};
+
 class WorldScene {
 public:
-    // Throws std::runtime_error when the scenario or its .gri is missing or malformed.
+    // Throws std::runtime_error when a node's .gri/.stg is missing or malformed.
     // clock_minutes picks the lighting stage of the world .day cycle (minutes after midnight).
     // HYPOTHESIS: missions start at noon; matches the original S1L1 start capture
     // (work/reference/shots/s04_04_mission1_hud.png: white daylight, blue-grey haze).
+    // dir: game path of the map directory ("map/scenario3"); world: .wor/.day stem ("S3L1w").
+    WorldScene(AssetCache& assets, const std::string& dir, const std::vector<MapNode>& nodes, const std::string& world,
+               float clock_minutes = 720.0f);
+    // One map at the origin by scenario name (find_scenario), world .day <name>w.day.
     WorldScene(AssetCache& assets, std::string_view scenario, float clock_minutes = 720.0f);
     ~WorldScene();
     WorldScene(const WorldScene&) = delete;
     WorldScene& operator=(const WorldScene&) = delete;
 
-    const WorldStats& stats() const { return stats_; }
-    const formats::TerrainGrid& grid() const { return grid_; }
+    struct Node {
+        MapNode map;
+        formats::TerrainGrid grid;
+        WorldStats stats;  // this node's share (stage empty)
+        MeshHandle terrain_mesh;
+        TextureHandle lightmap;
+        std::vector<DrawItem> terrain_draws;  // model = translation to the origin
+        glm::vec3 offset() const { return to_engine(map.origin.x, map.origin.y, 0.0f); }
+        bool contains(float x, float y) const {  // original world X/Y, edges inclusive (game NodeTerrain)
+            const float s = formats::TerrainGrid::kCellSize;
+            return x >= map.origin.x && y >= map.origin.y && x <= map.origin.x + grid.cells_x * s && y <= map.origin.y + grid.cells_y * s;
+        }
+    };
+    const std::vector<Node>& nodes() const { return nodes_; }
+    const WorldStats& stats() const { return stats_; }  // every node
     const std::vector<PlacedObject>& objects() const { return objects_; }
     // Stage lighting at the start clock; fog_color for a level view (WorldView recomputes it per frame
     // with fog_color()); point_lights = every scene light (flickering ones change in tick_lights()).
@@ -81,40 +104,24 @@ public:
     // .day CloudTexture1, CloudTexture2 (e.g. newcloud02, newcloud01); empty without a .day.
     const std::vector<std::string>& cloud_textures() const { return clouds_; }
 
-    // Bilinear terrain height (engine Y) under an engine-space point.
-    float ground_height(glm::vec3 p) const { return grid_.height_at(p.x, -p.z); }
-    // Joan's scripted start (script/scenario/<name>.sce set_unit_pos / set_unit_dir), else the .pla
-    // StartPointPlace, else the map centre. Heading: degrees CCW from original +X (HIGH: Joan 115 and
-    // Jean 295 face each other in S1L1, as in the original capture); returned in radians.
-    glm::vec3 start_position() const { return start_; }
-    float start_yaw() const { return start_yaw_; }
-    struct StartUnit {
-        std::string code;  // unit.res record, e.g. JOAN_OF_ARC, ENGLISH_ARCHER (attach_items.hpp UnitDb)
-        glm::vec3 position{0.0f};  // engine space, on the terrain
-        float heading = 0.0f;      // radians CCW from original +X
-    };
-    // Units the scenario script places at start (FUNC load_unit/add_unit + set_unit_pos/dir), then
-    // the map's .uni armies.
-    const std::vector<StartUnit>& units() const { return units_; }
+    // Bilinear terrain height (engine Y) under an engine-space point: the first node containing it, else
+    // the first node (same rule as the game's NodeTerrain).
+    float ground_height(glm::vec3 p) const;
 
     // Appends the visible draws (terrain, objects within the frustum).
     void build(const glm::mat4& view_proj, glm::vec3 camera_pos, std::vector<DrawItem>& draws) const;
 
 private:
-    void load_terrain(const ScenarioPaths& p, const formats::BlockText& stg);
-    void load_objects(const formats::BlockText& stg);
-    void load_lighting(const ScenarioPaths& p, float clock_minutes);
-    void load_lights(const formats::BlockText& stg);
-    void load_start(const ScenarioPaths& p);
+    void load_terrain(Node& n, const formats::BlockText& stg);
+    void load_objects(Node& n, const formats::BlockText& stg);
+    void load_lighting(const std::string& dir, const std::string& world, const std::string& map, float clock_minutes);
+    void load_lights(Node& n, const formats::BlockText& stg);
     int sector_at(glm::vec3 p) const;
-    void add_light(PointLight light, int sector);
+    void add_light(PointLight light, int sector, WorldStats& st);
 
     AssetCache& assets_;
-    formats::TerrainGrid grid_;
+    std::vector<Node> nodes_;
     WorldStats stats_;
-    MeshHandle terrain_mesh_;
-    TextureHandle lightmap_;
-    std::vector<DrawItem> terrain_draws_;  // model matrix identity
     std::vector<PlacedObject> objects_;
     Lighting lighting_;
     Scattering scattering_;
@@ -126,13 +133,10 @@ private:
     std::vector<Flicker> flicker_;
     std::uint32_t flicker_rng_ = 0x2545f491u;
     struct Sector {
-        glm::vec2 min{0.0f}, max{0.0f};  // original X/Y
+        glm::vec2 min{0.0f}, max{0.0f};  // original world X/Y
         std::vector<std::uint16_t> lights;
     };
     std::vector<Sector> sectors_;
-    glm::vec3 start_{0.0f};
-    float start_yaw_ = 0.0f;
-    std::vector<StartUnit> units_;
     std::vector<std::string> clouds_;
 };
 

@@ -20,7 +20,7 @@
 namespace joa::game {
 
 class Mission;
-class NavMesh;
+class NavWorld;
 struct Trigger;
 
 // ItemRes record (0x2bf bytes, ItemRes_parse 0x4a0160): the fields the mission layer reads.
@@ -116,6 +116,8 @@ public:
     int find_by_name(std::string_view name) const;       // FUN_0049f420 (from top, stricmp)
     int find_by_code(std::string_view code) const;       // FUN_0049f4b0 (from top)
     int modify_item(int modify_recno) const;             // modify recno -> item recno (0 none)
+    int modify_count() const { return int(modify_.size()); }   // modify-item array 0xa50534 size
+    const std::vector<MapTrigger>& triggers() const { return triggers_; }  // .stg PLAY_ANIMATION / PLAY_AMB_SOUND
 
     // --- ItemRes ---------------------------------------------------------------------------------
     const ObjRes* res(int id) const { return id >= 1 && id < int(res_.size()) ? &res_[id] : nullptr; }
@@ -162,7 +164,7 @@ private:
     std::vector<std::string> sell_lists_;         // upper Code per sellitem.res record
     std::map<std::string, int> clip_cache_;       // "<res>:<CLIP>" -> ms (derived, not saved)
     const formats::Vfs* vfs_ = nullptr;
-    NavMesh* nav_ = nullptr;                      // Mission::nav() (null for multi-node worlds)
+    NavWorld* nav_ = nullptr;                     // Mission::nav() (null without a .pfd)
 
     std::vector<MapItem> items_;
     std::vector<int> free_;                       // DynArrayB free stack (LIFO)

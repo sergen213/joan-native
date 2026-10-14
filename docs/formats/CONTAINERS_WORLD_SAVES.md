@@ -287,24 +287,62 @@ port needs the per-section object layouts — **not done**. The thumbnail beside
 (`BM`, 40-byte DIB, 512x256, 24 bpp, uncompressed, 393 270 bytes). Autosave names: `_AUTO%03d.SAV` (15-slot ring, oldest
 FILETIME replaced, `FUN_00477770`); manual: `SAVE\<name>%04d.SAV`.
 
-### 7.2 `Save/Player.dat` (profile) — HIGH
+### 7.2 `Save/Player.dat` (profile) — CONFIRMED [formats.save_sav, game.campaign_full_playerdat]
 
-Written by `FUN_004c8810`, read by `FUN_004c8bb0` (profile.cpp, extension `.dat`, record mode **off**):
+Written by `FUN_004c8810` (called only at the game-end CONTINUE, `GameEndMenu_input`), read by `FUN_004c8bb0`
+(profile.cpp, record mode **off**: raw bytes, no length prefixes; `put_short`/`put_long` raw). Every fixed-size piece is
+a raw memory image of the original object, so stale heap pointers appear in it. `formats::parse_player_dat` /
+`write_player_dat` keep those images verbatim (byte-exact rewrite); `game::to_player_dat` / `from_player_dat` convert
+to/from `CampaignProfile`.
 
-| Off | Size | Content |
-|---|---|---|
-| 0 | 0x48 | profile header; name at +0 ("Player"); +0x38 u32 = 100 (UNKNOWN) |
-| 0x48 | 0x20 | second block, starts with a name ("Player") |
-| 0x68 | 4 | N (0 in shipped file) |
-| | N x 0x20 | entries (`FUN_004c93e0`) |
-| | N x var | per entry 0x20 bytes + `FUN_004c9880` + `u16 m` + m sub-records (`FUN_004c9460`) |
-| | 2 + 2a | `u16 a` + a x u16 |
-| | 2 + 2b | `u16 b` + b x u16 |
-| | 2 | u16 |
+File order (all CONFIRMED from the writer asm/decomp):
 
-Shipped file: 0x48 + 0x20 + 4 + 2 + 2 + 2 = 114 bytes, exact. Entries for N > 0 are not decoded (parser rejects them).
-What campaign state lives in these lists (completed missions, unlocked units) is **UNKNOWN**; it needs a profile with
-progress to diff.
+| Size | Content |
+|---|---|
+| 0x48 | profile object image `this[0..0x48]` (fields below) |
+| 0x20 | `this[0..0x20]` again (second `File_write(this, 0x20)`, asm 0x4c88ee) = the name |
+| 4 | u32 N = entry count (+0x20) |
+| N x 0x20 | entry heads (`FUN_004c93e0`: first 0x20 bytes of each 0x77-byte entry) |
+| N x var | entry bodies (`FUN_004c9460`): the 0x20 head again, unit block, u16 m (+0x25), m unit blocks (reader reads m unconditionally; the game never fills members) |
+| 2 + 2a | u16 a (+0x28) + a x u16 item-hint list A (Game+0x71c, `FUN_004727b0`) |
+| 2 + 2b | u16 b (+0x30) + b x u16 item-hint list B (Game+0x728, `FUN_00472b00`) |
+| 2 | u16 = (short)+0x40 command points; the reader stores it sign-extended over +0x40 |
+
+Profile object (0x48): +0x00 char name[0x20]; +0x20 int N; +0x24 entry array ptr; +0x28 int a; +0x2c ptr; +0x30 int b;
+`+0x34` ptr; **+0x38 gold** (`DAT_00a596c4` = Game+0x734; 100 in a new profile, `FUN_004c7e20`); **+0x3c play time ms**
+(`DAT_00a596d0` = Game+0x740); **+0x40 command points** (`DAT_00a5b9f0`); +0x44 int UNKNOWN (accessors 0x4c9390/0x4c93b0
+have no callers). All CONFIRMED (`GameEndMenu_input` sets +0x38/+0x3c/+0x40 right before the write). Not stored:
+difficulty (config byte 0xa57fc2) and the "profile written" flag `DAT_00a58f95` (set by CONTINUE, cleared by a new
+campaign `FUN_0070acb0`).
+
+Entry (0x77 in memory): +0x00 char code[0x21] (unit class code, `FUN_004c80c0` strncpy 0x21; lookup stricmp `FUN_004c81a0`),
++0x21 Unit\* hero, +0x25 short member count, +0x27 Unit\* members[20]. Entries come from `FUN_004c90a0` (heroes rank > 3
+via `FUN_0051ff00`, and `Scenario_store_generals`).
+
+Unit block (`FUN_004c9880` / reader `FUN_004c9930`):
+
+| Size | Content |
+|---|---|
+| 0x432 | Unit image. Read back only through `FUN_004c96f0`: +0x31 short team, +0x3b short class (unit.res index + 1), +0x3d name[0x42], +0xc1 title[0x41], +0x104 int rank, +0x108/+0x10a short kingdom/race, +0x11c..+0x16e (0x53 bytes: lives, level, xp, points, HP/EP + maxima, STR/DEX/DEF/LEAD, armour, loyalty, morale, reputation, mode, attack behaviour; offsets in GAMEPLAY_CHARACTER_COMBAT.md Part A §1), +0x16f..+0x1a9 (0x3b: skill ints archery..mountain + 15 bytes), +0x3c5 u32 (UNKNOWN) |
+| 0x3b | unit+0x16f again (`FUN_0047e5c0`) |
+| 4 | unit+0x1aa upgrade-list pointer again (`FUN_0047e640`); if != 0: u32 n + n x 8 {short upitem id (1-based, `UpItemRes_get`), short unlocked, short applied, short combo level} |
+| var | if unit+0x1c1 (inventory ptr) != 0: inventory (`FUN_0047e850`) |
+
+Inventory: 0x1e image (+0x00 short weapon mode, u32 ptrs +0x02/+0x06 melee, +0x0a ranged, +0x0e ammo, +0x12/+0x16/+0x1a
+item containers); then for each non-null slot ptr a 0x12-byte instance {short item id (1-based item.res row), short
+quantity, short level, 3 ints}; then each non-null container (`FUN_0047ede0`): grid rows x cols x cell bytes
+(`FUN_00457290` args: +0x12 1x1x4 = enhancers, +0x16 1x8x6 = main bag, +0x1a 1x4x6 = second bag; each byte = 1-based slot
+occupying the cell), u32 slot count, per slot u16 used + 0x18-byte record if used, then the DynArrayB free list u32 n +
+n x 8 bytes (`FUN_00585b40`). Bag record 0x18: +0 short item id, +2 short quantity, +4 short level, +6/+0xa/+0xe int
+(UNKNOWN, 0 from pickups), +0x12/+0x13 byte width/height (item.res Width/Height = itemres +0x24/+0x26), +0x14 byte row,
++0x15 x, +0x16 y, +0x17 slot index (0 = free). Placement (`FUN_004575a0`/`FUN_00458090`): first fit, y outer, x inner;
+ITEMCLAS 9 ENHANCER → +0x12, other bag items → +0x16 then +0x1a (`FUN_00495f40`, asm 0x495fc1/0x495feb/0x496bc3).
+
+Shipped file: N = 0, 0x48 + 0x20 + 4 + 2 + 2 + 2 = 114 bytes, name "Player", gold 100.
+
+Port export (`to_player_dat`): pointer fields are written as 0 or 1 (non-zero = present; the reader allocates fresh
+objects), unmodelled Unit bytes are 0, bag items are re-placed first-fit (order normalised to container order; an item
+that fits nowhere is dropped).
 
 ## 8. VFS and tool
 
@@ -315,7 +353,7 @@ progress to diff.
 
 ## 9. Open gaps
 
-- SAV body object layouts (20 sections) and Player.dat entry layout / campaign progress fields.
+- SAV body object layouts (20 sections). Player.dat: profile +0x44, unit +0x3c5, bag-record ints +6/+0xa/+0xe (UNKNOWN).
 - CONFIG.DAT rows marked UNKNOWN; key-binding record layout beyond the restored fields.
 - GRI planes 1-4 meaning; `header_c`; `.PLN`, `.pfd`, `.map` contents.
 - FIN `metric_a/c/d` exact roles.

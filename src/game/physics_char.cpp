@@ -35,12 +35,16 @@ void CharPhysics::integrate(World& w, float dt_s) {
     };
     std::unordered_map<std::int64_t, std::vector<int>> grid;
     auto radius_of = [&](const Unit& u) { return w.data().units[std::size_t(u.cls)].cyl_radius; };
+    // Inactive units (+0x2ed == 0) have no body actor; climbers (0x4ac910), cart drivers (0x454b20)
+    // and riders (0x5174e0) have theirs disabled: neither move nor block (ladder / cart / mount sync
+    // places them).
+    auto bodiless = [](const Unit& u) { return u.deleted || !u.m.active || u.m.climb || u.m.cart || u.mount; };
     for (const Unit& u : units)
-        if (!u.deleted && !w.dead(u)) grid[key(u.pos.x, u.pos.y)].push_back(u.id);
+        if (!bodiless(u) && !w.dead(u)) grid[key(u.pos.x, u.pos.y)].push_back(u.id);
 
     const int steps = (frame_ms + kSubstepMs - 1) / kSubstepMs;
     for (Unit& u : units) {
-        if (u.deleted) continue;
+        if (bodiless(u)) continue;
         if (!u.airborne && !is_locomotion(u.action)) {  // ground friction (same factor as World::integrate_units)
             u.vel.x *= 0.5f, u.vel.y *= 0.5f;
             if (std::fabs(u.vel.x) < 1 && std::fabs(u.vel.y) < 1) u.vel.x = u.vel.y = 0;

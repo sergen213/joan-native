@@ -18,7 +18,7 @@
 // - FUN_0049a010 mode 1 (gate: segment tests against the gate box) is approximated by the same
 //   footprint/height test as mode 0 without the angle window (HYPOTHESIS).
 // - Gate_set_open_collision: the unit-proximity refusal is reproduced; the path-mesh polygon is
-//   the one containing the gate position (find_poly_xy), toggled via NavMesh::set_blocked.
+//   the one containing the gate position (find_poly_xy over every level), toggled via NavWorld::set_blocked.
 // - Map PLAY_ANIMATION / PLAY_AMB_SOUND triggers are cosmetic: they are evaluated here (not in
 //   World's one-shot trigger list) and emit MissionEvents.
 #include "game/mission_objects.hpp"
@@ -34,7 +34,8 @@
 #include "formats/res_archive.hpp"
 #include "formats/world_text.hpp"
 #include "game/mission.hpp"
-#include "game/nav_mesh.hpp"
+#include "game/ladder_climb.hpp"
+#include "game/multimap_nav.hpp"
 
 namespace joa::game {
 namespace {
@@ -192,9 +193,6 @@ bool get_ints(formats::ByteReader& r, std::vector<int>& v) {
     for (int& x : v) x = r.i32();
     return r.ok();
 }
-
-// Unit_anim_is_idle_class (IDLE_CLASS FUN_00508ab0).
-bool idle_class(int a) { return (a >= 1 && a <= 6) || a == 8 || a == 0x43 || a == 0x59 || a == 0x5a; }
 
 }  // namespace
 
@@ -492,6 +490,7 @@ bool MapObjects::load(Mission& m, const formats::Vfs& vfs, const std::string& ma
 
 void MapObjects::install_hooks(Mission& m) {
     m.world().object_trigger = [this, &m](const Trigger& t) { on_trigger(m, t); };
+    m.world().ladder_input = [&m](Unit& u, const InputFrame& in) { return ladder_input(m, u, in); };
     AiSystem& ai = m.ai();
     ai.item = [this](int id) -> std::optional<AiItem> {
         const MapItem* it = item(id);
@@ -539,6 +538,7 @@ void MapObjects::tick(Mission& m) {
         if (dead(m, items_[ir - 1])) del_item(m, ir);
         else process(m, ir);
     }
+    ladder_tick(m);   // climbing states (Unit_updateAction 0x7c7ab0 cases 0x5b..0x66), before the units
     const int now = m.world().now();
     const Unit* player = m.world().unit(m.world().player_id());
     for (MapTrigger& t : triggers_) {
@@ -549,7 +549,7 @@ void MapObjects::tick(Mission& m) {
             if (!r || r->stages.empty() || r->stages[0].anim.empty()) continue;
             bool near = false;
             for (const Unit& u : m.world().units()) {
-                if (u.deleted || idle_class(u.action)) continue;
+                if (u.deleted || is_idle_class(u.action)) continue;
                 const float dx = t.pos.x - u.pos.x, dy = t.pos.y - u.pos.y, dz = t.pos.z - u.pos.z;
                 if (dx * dx + dy * dy + dz * dz <= t.radius * t.radius) { near = true; break; }
             }
@@ -744,7 +744,7 @@ bool MapObjects::gate_collision(Mission& m, int ir, bool close) {
 void MapObjects::gate_nav(const MapItem& g) {
     const ObjRes* r = res(g.res);
     if (!nav_ || (r && r->not_block)) return;
-    if (const int poly = nav_->find_poly_xy(g.pos.x, g.pos.y, g.pos.z); poly >= 0) nav_->set_blocked(poly, g.blocking);
+    if (const int poly = nav_->find_poly_xy(g.pos.x, g.pos.y, g.pos.z, true); poly >= 0) nav_->set_blocked(poly, g.blocking);
 }
 
 void MapObjects::gate_event(Mission& m, int ir, const Trigger& t) {

@@ -10,7 +10,9 @@
 #include <type_traits>
 #include <utility>
 
+#include "game/mount_ride.hpp"
 #include "game/rng_lcg.hpp"
+#include "game/siege_crew.hpp"
 
 namespace joa::game {
 
@@ -53,7 +55,7 @@ int World::spawn_unit(std::string_view class_code, int nation, Vec3 pos, float y
     u.nation = nation;
     u.pos = pos;
     if (terrain_) u.pos.z = terrain_->height(pos.x, pos.y);
-    u.yaw_deg = wrap360(yaw_deg);
+    u.yaw_deg = u.yaw_goal = wrap360(yaw_deg);
     u.name = rec.name, u.short_name = rec.short_name, u.title = rec.title;
     u.rank = rec.ranking;  // creator 0x5089e0 passes rec+0x149
     u.kingdom = rec.kingdom;
@@ -257,10 +259,129 @@ float World::rel_angle(const Unit& self, Vec3 t) const {
     if (a < -180.0f) a += 360.0f;
     return a;
 }
-void World::set_yaw(Unit& u, float deg) { u.yaw_deg = wrap360(deg); }
+void World::set_yaw(Unit& u, float deg) { u.yaw_goal = wrap360(deg); }
+
+// Unit_set_yaw_rad 0x4ff870 rotates the ridden horse too, except during mount/dismount (0x4f..0x52).
+static void set_body_yaw(World& w, Unit& u, float deg) {
+    u.yaw_deg = wrap360(deg);
+    if (Unit* h = w.unit(u.mount); h && !h->deleted && !(u.action >= H_MNT_L && u.action <= H_DMNT_R)) h->yaw_deg = u.yaw_deg;
+}
+void World::set_yaw_now(Unit& u, float deg) {
+    u.yaw_goal = wrap360(deg);
+    set_body_yaw(*this, u, deg);
+}
+
+// Unit_stop 0x508b90 (CONFIRMED): idle-class states are kept as they are. A rider stands H_IDLE and
+// its horse IDLE; a horse with a rider stops the rider (0x429ec0, HYPOTHESIS); a cart with a driver
+// stands and the driver gets CA_IDLE; a cart driver CA_IDLE and the cart IDLE; a climber
+// C_IDLE_A/B by climb stage; UP lands as IDLEDN; units in ATTACK/ACTIVE mode stand IDLE_BAT, bound
+// prisoners IDLE_T, everyone else IDLE. Deviation: JATTACKB (excluded in the original, which ends it
+// elsewhere) stands too; set_action turns that IDLE into JATTBI.
+void World::stop(Unit& u) {
+    const int a = u.action;
+    if (is_idle_class(a)) return;
+    if (Unit* h = unit(u.mount); h && !h->deleted) {
+        set_action(u, H_IDLE);
+        set_action(*h, IDLE);
+        return;
+    }
+    if (Unit* r = unit(u.m.rider); r && !r->deleted && r->mount == u.id) return stop(*r);
+    const int stand = a == UP ? IDLEDN : (u.mode == 1 || u.mode == 2) ? IDLE_BAT : (u.no_react && u.m.bound) ? IDLE_T : IDLE;
+    if (Unit* d = unit(u.m.cart_driver); d && !d->deleted) {
+        set_action(u, stand);
+        set_action(*d, CA_IDLE);
+        return;
+    }
+    if (Unit* c = unit(u.m.cart); c && !c->deleted) {
+        set_action(u, CA_IDLE);
+        set_action(*c, IDLE);
+        return;
+    }
+    if (u.m.climb) {
+        switch (a) {
+        case C_DN_BA: case C_DN_CA: case C_UP_BA: case C_UP_SA: set_action(u, C_IDLE_A); break;
+        case C_DN_AB: case C_DN_CB: case C_UP_AB: set_action(u, C_IDLE_B); break;
+        }
+        return;
+    }
+    set_action(u, stand);
+}
+
+// 0x4f2190 (Unit_process phase 1, after Unit_updateAction): step the body facing (+0x1a) toward the
+// desired heading (+0x1e). Degrees per 33 ms by class Special: siege/tower/bombard/trebuchet/ram/cart
+// 1, fauconneau 2, siege crossbow 5, everyone else 20; capped at 25 (LOD < 2) or 90. A siege weapon
+// turns only with every required slot (usage bit 1, or any slot for crossbow/trebuchet) manned; the
+// crew is carried to the rotated attach points. Returns true while the remaining angle >= the step:
+// the caller then skips/cancels the move (CONFIRMED decomp + asm: ftol tests are on diff / 360-diff).
+bool World::turn_step(Unit& u) {
+    if (u.m.vehicle >= 1) return false;   // +0x384: attached units are placed by their vehicle
+    const float cur = u.yaw_deg;
+    const int a = u.action;
+    if ((a >= ATTACKED && a <= BATTKED) || a == DIE || (a >= H_HITED && a <= H_RHITED)) {
+        u.yaw_goal = cur;
+        return false;
+    }
+    const UnitClass& rec = gd_.units[u.cls];
+    const int n = int(rec.attach_points.size());
+    if (rec.unit_class == 8 && n > 0) {
+        bool manned = false;
+        for (int i = 0; i < n; ++i) {
+            if (!((rec.attach_points[i].usage & 1) || rec.special == 6 || rec.special == 10)) continue;
+            const Unit* c = i < int(u.m.crew.size()) ? unit(u.m.crew[i]) : nullptr;
+            if (!c || c->deleted) continue;
+            manned = c->m.vehicle == u.id;
+            if (!manned) break;
+        }
+        if (!manned) {
+            u.yaw_goal = cur;
+            return false;
+        }
+    }
+    const float diff = wrap360(u.yaw_goal - cur);
+    if (diff <= 0 || diff >= 360) return false;
+    float rate = 20;
+    switch (rec.special) {
+    case 4: case 8: case 9: case 10: case 11: case 13: rate = 1; break;
+    case 5: rate = 2; break;
+    case 6: rate = 5; break;
+    }
+    const float step = std::min(float(unsigned(now_ - u.last_phase1)) / 33.0f * rate, u.lod_tier < 2 ? 25.0f : 90.0f);
+    const bool neg = diff >= 180;
+    const float rem = neg ? 360 - diff : diff;
+    set_body_yaw(*this, u, neg ? cur - std::min(step, rem) : cur + std::min(step, rem));
+    const bool rotating = int(diff) != 0 && int(360 - diff) != 0;
+    if (rec.unit_class == 8) {
+        const int push = rec.special == 4 ? PUSH_L : PUSH;
+        const float yaw = u.yaw_deg * kDegToRad, cs = std::cos(yaw), sn = std::sin(yaw);
+        for (int i = 0; i < n && i < int(u.m.crew.size()); ++i) {
+            Unit* c = u.m.crew[i] > 0 ? unit(u.m.crew[i]) : nullptr;
+            if (!c || c->deleted) continue;
+            const UnitClass::AttachPoint& p = rec.attach_points[i];
+            set_body_yaw(*this, *c, u.yaw_deg + p.dir);
+            c->pos = {p.x * cs - p.y * sn + u.pos.x, p.x * sn + p.y * cs + u.pos.y, u.pos.z + p.z};
+            if (terrain_) c->pos.z = terrain_->height(c->pos.x, c->pos.y) + p.z;
+            const bool pusher = p.usage & 1;
+            const bool firing = c->action == SHTLOADC || c->action == SHTIDLEC || c->action == SHTOUTC;
+            if (!rotating) {
+                if (!is_idle_class(c->action) && (pusher || !firing)) stop(*c);
+            } else if (pusher) {
+                if (c->action != push) set_action(*c, push);
+            } else if (rec.special == 11) {
+                if (!is_idle_class(c->action)) stop(*c);
+            } else if (!firing && c->action != WALK) {
+                set_action(*c, WALK);
+            }
+        }
+    } else if (rec.unit_class == 9 && a != WALK && a != RUN) {
+        if (!rotating) stop(u);
+        else set_action(u, neg ? T_RIGHT : T_LEFT);
+    }
+    return step <= rem;
+}
 
 // Unit_set_action 0x501190.
 bool World::set_action(Unit& u, int a, char letter) {
+    siege_on_set_action(*this, u, a);
     const int cur = u.action;
     const bool hit_action = (a >= ATTACKED && a <= DNATKED) || is_knocked(a) || a == H_DROP || a == DIE;
     // While flinching, non-hit actions wait for the flinch animation (hit-stun); siege exempt.
@@ -436,6 +557,10 @@ void World::tick_physics() {
     integrate_projectiles(float(kTickMs));
     if (physics_) physics_->integrate(*this, kTickMs / 1000.0f);
     else integrate_units(kTickMs / 1000.0f);
+    siege_after_physics(*this);
+    for (Unit& u : units_)   // seated riders follow the horse body (actor attach)
+        if (const Unit* h = unit(u.mount); !u.deleted && h && u.ride_ready && !(u.action >= H_MNT_L && u.action <= H_DMNT_R))
+            u.pos = h->pos;
 }
 
 void World::unit_process(Unit& u, int phase) {
@@ -446,14 +571,23 @@ void World::unit_process(Unit& u, int phase) {
         if (u.no_react && u.action != IDLE_T && u.action != IDLE && u.action != DIE) set_action(u, u.m.bound ? IDLE_T : IDLE);
         break;
     case 1: {
+        mount_sync(*this, u);   // 0x5174e0 rider/horse sync (Unit_process phase 1 head)
         if (u.level_arrow && now_ - u.ts_level > gd_.c.levelarr) u.level_arrow = false;
         // Landing (controller 0x4352f0 landing detection, generalised to every unit).
         if (u.posture == 1 && !u.airborne) {
             u.posture = 0;
             if (!is_knocked_ext(u.action) && u.action != DIE) set_action(u, DOWN);
         }
-        update_action(u);
-        unit_move(u);
+        // Unit_process 0x52c490: Unit_updateAction / 0x4f2190 / Unit_process_movement need the body
+        // actor (+0x2f5), which Unit_deactivate 0x41fcc0 destroys: inactive units freeze (CONFIRMED).
+        // Movement runs unless turning (AI or cut scene); a turning body has its velocity and move
+        // request cleared (body +0x142/+0x146/+0x260).
+        if (u.m.active) {
+            update_action(u);
+            const bool turning = turn_step(u);
+            if (!turning || (!u.ai_controlled && !cut_scene)) siege_vehicle_move(*this, u), unit_move(u);
+            if (turning) u.vel.x = u.vel.y = 0;
+        }
         regen(u);
         u.invuln_ms -= kTickMs;
         if (u.upgrade_ts != 0 && now_ - u.upgrade_ts >= gd_.c.upg_time && !gd_.units[u.cls].hero) {
@@ -516,7 +650,7 @@ void World::update_action(Unit& u) {
     }
     if (rem > 0) return;
     switch (a) {
-    case ATTACK: case JATTACKB: case DOWNATK: case CHAIN: case RUSH: case ENGATK4:
+    case ATTACK: case JATTACKB: case DOWNATK: case CHAIN: case RUSH: case ENGATK4: case H_ATTACK:
     finish:
         u.combo_idx = -1;
         u.combo_lock = now_;
@@ -540,11 +674,33 @@ void World::update_action(Unit& u) {
     case SHTIDLEH:
         if (u.ai_controlled) set_action(u, SHTOUTH);
         break;
-    case SHTOUT2: case STANDUP: case GUARD2: case DOWN: case JATTBD: case IDLEDN: case JUMP_B: case JUMP_R:
+    case IDLEDN:   // idle-class: Unit_stop would keep it (HYPOTHESIS: the landing idle ends in IDLE)
+        if (dead(u)) set_action(u, DIE);
+        else set_action(u, IDLE);
+        break;
+    case SHTOUT2: case STANDUP: case GUARD2: case DOWN: case JATTBD: case JUMP_B: case JUMP_R:
     case JUMP_L: case THROW: case STOP: case STOP_B: case DIZZY: case BACK:
     case ATTACKED: case ATTKED2: case ATTKEDR: case BATTKED: case LATTKED: case RATTKED:
+    case H_HITED: case H_BHITED: case H_LHITED: case H_RHITED:
         if (dead(u)) set_action(u, DIE);
         else stop(u);
+        break;
+    case H_STOP: case H_STOP_B: set_action(u, H_IDLE); break;   // 0x7c7ab0 cases 0x47/0x48
+    case H_MNT_L: case H_MNT_R:   // seated: rider takes the horse heading, +0x1ea = 1, stand
+        if (Unit* h = unit(u.mount)) set_yaw_now(u, h->yaw_deg);
+        u.ride_ready = true;
+        stop(u);
+        break;
+    case H_DMNT_L: case H_DMNT_R: {   // step 30 to the side, heading -90 (L) / -270 (R)
+        const float y = u.yaw_rad(), s = a == H_DMNT_L ? 30.0f : -30.0f;
+        u.pos.x += -std::sin(y) * s, u.pos.y += std::cos(y) * s;
+        set_yaw_now(u, u.yaw_deg - (a == H_DMNT_L ? 90.0f : 270.0f));
+        if (dead(u)) set_action(u, DIE);
+        else stop(u);
+        break;
+    }
+    case THROWN:   // 0x7c7ab0 case 0x3b: balance 100, STANDUP unless dead
+        if (!dead(u)) u.balance = 100, set_action(u, STANDUP);
         break;
     default: break;   // looping states
     }
@@ -568,14 +724,28 @@ void World::unit_move(Unit& u) {
     case MOVE_R: s = rec.shift_r, off = -90; break;
     case MOVE_B: s = rec.shift_b, off = 180; break;
     }
+    // A ridden horse on WALK runs at its body speed cap (+0x2a4, 5 or 10 m/s, set by the gear
+    // functions 0x470430 / 0x466d50 via 0x6b1d80). HYPOTHESIS: the cap is reached at once.
+    if (u.m.rider && u.gear_speed > 0 && a == WALK) {
+        const float d = u.yaw_deg * kDegToRad;
+        u.vel.x = std::cos(d) * u.gear_speed * kUnitsPerMetre;
+        u.vel.y = std::sin(d) * u.gear_speed * kUnitsPerMetre;
+        return;
+    }
+    // DEX bonus from the raw +0x157 DEX (no item effects) of the team leader, own DEX for leaders
+    // and loners; never for MOVE_L/MOVE_R/MOVE_B (CONFIRMED 0x4f0b50).
     if (a != MOVE_L && a != MOVE_R && a != MOVE_B) {
-        const Unit* rider = &u;
-        const int dex = stat_dex(*rider);
+        const Unit* L = u.leader && u.leader != u.id ? unit(u.leader) : nullptr;
+        const int dex = (L && !L->deleted ? L : &u)->dex;
         if (dex > gd_.c.mindexs)
             s *= float(std::min(dex, gd_.c.maxdexs) - gd_.c.mindexs) / float(gd_.c.maxdexs - gd_.c.mindexs) + 1.0f;
     }
     if (u.ai_controlled) s *= gd_.c.ai_move;
     s *= 1.3f;
+    if (!u.mount) {   // distant LOD tiers catch up: tier 2 x1.4 (speed < 20), tier >= 3 x1.8
+        if (u.lod_tier >= 3) s *= 1.8f;
+        else if (u.lod_tier == 2 && s < 20.0f) s *= 1.4f;
+    }
     const float speed = s * kUnitsPerMetre;   // HYPOTHESIS: 1 speed point = 46.1 u/s
     const float d = (u.yaw_deg + off) * kDegToRad;
     u.vel.x = std::cos(d) * speed;
@@ -608,7 +778,8 @@ void World::regen(Unit& u) {
 
 void World::integrate_units(float dt) {
     for (Unit& u : units_) {
-        if (u.deleted) continue;
+        // Bodies disabled while climbing (0x4ac910), driving a cart (0x454b20) or riding (0x5174e0).
+        if (u.deleted || u.m.climb || u.m.cart || u.mount) continue;
         if (!u.airborne && !is_locomotion(u.action)) {
             // Ground friction for knock-back / stopped locomotion (HYPOTHESIS; the original body
             // only moves for the duration of the last move request or force pulse).

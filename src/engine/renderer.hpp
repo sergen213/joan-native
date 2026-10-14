@@ -1,6 +1,8 @@
 #pragma once
 // API-neutral rendering interface. Gameplay/simulation never includes this; the app layer
 // turns simulation state into a FrameData draw list. Backends: OpenGL (renderer_gl), Vulkan (planned).
+#include "engine/preset.hpp"
+
 #include <glm/glm.hpp>
 
 #include <array>
@@ -52,6 +54,17 @@ struct MeshHandle {
 struct TextureHandle {
     std::uint32_t id = 0;
     explicit operator bool() const { return id != 0; }
+};
+
+// Remaster (Enhanced/Ultra) material inputs registered per albedo texture by the asset layer; the
+// Original path ignores them. Class selects the conservative legacy -> PBR conversion (pbr_material.hpp).
+enum class MaterialClass : std::uint8_t { Generic, Terrain, Character, Item, Building, Vegetation, Particle };
+struct MaterialMaps {
+    MaterialClass cls = MaterialClass::Generic;
+    TextureHandle normal;     // HD pack `<name>_n`: tangent-space normal (Rgba8Unorm, +Y = up in texture space / V decreasing)
+    TextureHandle roughness;  // `<name>_r`: roughness in R
+    TextureHandle metal;      // `<name>_m`: metalness in R
+    TextureHandle ao;         // `<name>_ao`: ambient occlusion in R
 };
 
 // ShadowVolume: stencil only (no colour or depth writes, depth test LEQUAL, both faces): front faces
@@ -167,6 +180,12 @@ public:
     virtual bool update_mesh(MeshHandle, const MeshData&) { return false; }
     virtual TextureHandle create_texture(const TextureData& texture) = 0;
     virtual void destroy_texture(TextureHandle texture) = 0;
+
+    // Remaster settings (preset.hpp); Original (the default) keeps the faithful path bit-for-bit.
+    // May be called between frames; backends (re)create their remaster resources lazily.
+    virtual void set_graphics(const GraphicsSettings&) {}
+    // Associates PBR inputs with an albedo texture (any material using it picks them up).
+    virtual void set_material_maps(TextureHandle /*albedo*/, const MaterialMaps&) {}
 
     // One frame: begin_frame(size) -> submit(frame) once -> end_frame() presents.
     virtual void begin_frame(glm::ivec2 framebuffer_pixels) = 0;

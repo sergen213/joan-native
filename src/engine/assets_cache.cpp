@@ -58,11 +58,31 @@ MeshData build_mesh_data(const formats::Mesh& mesh, std::span<const std::vector<
     return out;
 }
 
-AssetCache::AssetCache(const formats::Vfs& vfs, IRenderer& renderer) : vfs_(vfs), renderer_(renderer) {}
+// Base level + the file's own mip chain (face 0), as the original D3D8 upload does; the GPU fills
+// in single-level files. Levels are accepted while they halve exactly (HD files often break that).
+static TextureData texture_data(formats::DdsTexture& dds, bool repeat, PixelFormat format) {
+    formats::DdsImage& img = dds.images[0];
+    TextureData t;
+    t.width = int(img.width);
+    t.height = int(img.height);
+    t.format = format;
+    t.pixels = std::move(img.rgba);
+    t.repeat = repeat;
+    for (std::size_t i = 1; i < std::min<std::size_t>(dds.images.size(), dds.mipCount) && dds.images[i].width == std::max(img.width >> i, 1u) &&
+                            dds.images[i].height == std::max(img.height >> i, 1u);
+         ++i)
+        t.mip_pixels.push_back(std::move(dds.images[i].rgba));
+    return t;
+}
+
+AssetCache::AssetCache(const formats::Vfs& vfs, IRenderer& renderer, std::vector<std::filesystem::path> hd_packs)
+    : vfs_(vfs), renderer_(renderer), hd_(std::move(hd_packs)) {}
 
 AssetCache::~AssetCache() {
+    if (!hd_.empty()) std::fprintf(stderr, "joan-native: hd: %zu textures overridden (%zu pack files)\n", hd_overrides_, hd_.files());
     for (auto& [k, t] : textures_)
         if (t) renderer_.destroy_texture(t->handle);
+    for (TextureHandle h : companions_) renderer_.destroy_texture(h);
     for (auto& [k, m] : models_)
         if (m) renderer_.destroy_mesh(m->mesh);
 }
@@ -89,14 +109,36 @@ std::filesystem::path AssetCache::texture_path(std::string_view name) const {
     return it == texture_index_.end() ? std::filesystem::path{} : it->second;
 }
 
+bool AssetCache::load_texture(const std::filesystem::path& original, formats::DdsTexture& dds, std::uint32_t max_mips, HdOverride* hd) const {
+    std::string err;
+    *hd = hd_.find(original.lexically_relative(vfs_.root()).generic_string());
+    if (!hd->albedo.empty()) {
+        if (load_image_file(hd->albedo, dds, err, max_mips) && !dds.images.empty() && !dds.images[0].rgba.empty()) return true;
+        std::fprintf(stderr, "joan-native: hd %s: %s, using the original\n", hd->albedo.c_str(), err.c_str());
+        hd->albedo.clear();
+    }
+    return load_image_file(original, dds, err, max_mips) && !dds.images.empty() && !dds.images[0].rgba.empty();
+}
+
 formats::DdsImage AssetCache::texture_pixels(std::string_view name) const {
     const auto path = texture_path(name);
-    if (path.empty()) return {};
-    const auto bytes = formats::read_file(path);
+    formats::DdsTexture dds;
+    HdOverride hd;
+    if (path.empty() || !load_texture(path, dds, 1, &hd)) return {};
+    return std::move(dds.images[0]);
+}
+
+TextureHandle AssetCache::companion(const std::filesystem::path& file, bool repeat) {
     formats::DdsTexture dds;
     std::string err;
-    if (!bytes || !formats::parse_dds(*bytes, dds, err, 1) || dds.images.empty()) return {};
-    return std::move(dds.images[0]);
+    if (file.empty()) return {};
+    if (!load_image_file(file, dds, err) || dds.images.empty() || dds.images[0].rgba.empty()) {
+        std::fprintf(stderr, "joan-native: hd %s: %s, skipped\n", file.c_str(), err.c_str());
+        return {};
+    }
+    const TextureHandle h = renderer_.create_texture(texture_data(dds, repeat, PixelFormat::Rgba8Unorm));
+    if (h) companions_.push_back(h);
+    return h;
 }
 
 const TextureInfo* AssetCache::texture(std::string_view name, bool repeat) {
@@ -104,32 +146,28 @@ const TextureInfo* AssetCache::texture(std::string_view name, bool repeat) {
     if (auto it = textures_.find(key); it != textures_.end()) return it->second.get();
     auto& slot = textures_[key];
     const auto path = texture_path(name);
-    const auto bytes = path.empty() ? std::nullopt : formats::read_file(path);
     formats::DdsTexture dds;
-    std::string err;
-    if (!bytes || !formats::parse_dds(*bytes, dds, err) || dds.images.empty() || dds.images[0].rgba.empty()) {
+    HdOverride hd;
+    if (path.empty() || !load_texture(path, dds, 0, &hd)) {
         missing_textures_.push_back(std::string(name));
         return nullptr;
     }
-    formats::DdsImage& img = dds.images[0];
+    if (!hd.albedo.empty()) ++hd_overrides_;
+    const formats::DdsImage& img = dds.images[0];
     auto info = std::make_unique<TextureInfo>();
     for (std::size_t i = 3; i < img.rgba.size(); i += 4)
         if (img.rgba[i] != 255) {
             info->has_alpha = true;
             break;
         }
-    TextureData t;
-    t.width = int(img.width);
-    t.height = int(img.height);
-    t.pixels = std::move(img.rgba);
-    t.repeat = repeat;
-    // The file's own mip chain (face 0), as the original D3D8 upload does; the GPU fills in only
-    // single-level files. Levels are accepted while they halve exactly.
-    for (std::size_t i = 1; i < std::min<std::size_t>(dds.images.size(), dds.mipCount) && dds.images[i].width == std::max(img.width >> i, 1u) &&
-                            dds.images[i].height == std::max(img.height >> i, 1u);
-         ++i)
-        t.mip_pixels.push_back(std::move(dds.images[i].rgba));
-    info->handle = renderer_.create_texture(t);
+    info->handle = renderer_.create_texture(texture_data(dds, repeat, PixelFormat::Rgba8Srgb));
+    MaterialMaps maps;
+    maps.cls = material_class(path.lexically_relative(vfs_.root()).generic_string());
+    maps.normal = companion(hd.normal, repeat);
+    maps.roughness = companion(hd.roughness, repeat);
+    maps.metal = companion(hd.metal, repeat);
+    maps.ao = companion(hd.ao, repeat);
+    if (info->handle) renderer_.set_material_maps(info->handle, maps);
     slot = std::move(info);
     return slot.get();
 }

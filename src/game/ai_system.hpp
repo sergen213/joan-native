@@ -20,7 +20,7 @@
 
 namespace joa::game {
 
-class NavMesh;
+class NavWorld;
 
 // Mission "place" (array 0xa484d0): AABB + optional numbered slots. Filled by the mission layer.
 struct AiPlace {
@@ -59,8 +59,6 @@ struct AiUnit {
     int stuck_since = -1;
     Vec3 last_pos;
     Vec3 approach_goal;                 // +0x3d9 APPROACH_ENEMY cached goal
-    float desired_yaw = 0;              // +0x1e desired heading (deg); script writes are applied next phase 2
-    float desired_seen = 0;             // last applied desired_yaw (edge trigger)
     // formation (+0x412 world offset, +0x41e width, +0x422/+0x426 local slot)
     Vec3 slot;
     float width = 0, local_fwd = 0, local_side = 0;
@@ -71,7 +69,7 @@ struct AiUnit {
     bool initialised = false;
     template <class V> void visit(V& v) {
         v(task), v(task2), v(orders), v(path), v(wp), v(path_len), v(path_goal), v(wait_len), v(wait_cnt),
-            v(sidestepped), v(side), v(stuck_since), v(last_pos), v(approach_goal), v(desired_yaw), v(desired_seen), v(slot), v(width),
+            v(sidestepped), v(side), v(stuck_since), v(last_pos), v(approach_goal), v(slot), v(width),
             v(local_fwd), v(local_side), v(place), v(place_slot), v(orphan), v(spawned), v(push_slot), v(initialised);
     }
 };
@@ -95,7 +93,7 @@ public:
     static constexpr int kRtsTaskMs = 180000;     // RTS task expiry
 
     // Registers itself as w's brain. nav may be null (straight-line movement, no LOS quads).
-    AiSystem(World& w, const NavMesh* nav);
+    AiSystem(World& w, const NavWorld* nav);
     ~AiSystem() override;
 
     // --- IUnitBrain ---------------------------------------------------------------------
@@ -116,7 +114,7 @@ public:
     AiUnit& st(const Unit& u);                         // created on demand
     const AiUnit* find(int recno) const;
     AiTeam* team_of_leader(int recno);                 // non-null iff recno leads a team
-    const NavMesh* nav() const { return nav_; }
+    const NavWorld* nav() const { return nav_; }
 
     // --- tasks (Part B §1) ------------------------------------------------------------------
     bool set_task(Unit& u, const Task& t);             // 0x527fb0 (strict prio, lazy expiry)
@@ -205,7 +203,8 @@ public:
     // --- player / RTS (Part B §5) -------------------------------------------------------------
     void toggle_hold(Unit& u, bool recurse);           // Unit_toggle_hold 0x5121c0
     bool is_holding(const Unit& u);                    // current task == {0, p1 != 0}
-    int recruit_nearby(Unit& player);                  // 0x43c210 / 0x48dfb0(100); returns recruit recno
+    int find_recruitable(Unit& player);                // 0x48dfb0(100): nearest recruitable recno, 0 none
+    int recruit_nearby(Unit& player);                  // 0x43c210; returns recruit recno
     bool rts_selectable(const Unit& u);                // 0x453620
     std::vector<int> rts_select_with_team(int recno);  // click-select: unit (+ team if leader)
     bool rts_move(std::span<const int> sel, Vec3 dest, bool attack_move);   // 0x44cfb0
@@ -245,7 +244,7 @@ private:
     int ai_class_for(const Unit& u) const;             // UnitAI_class_from_name 0x546520
 
     World& w_;
-    const NavMesh* nav_;
+    const NavWorld* nav_;
     std::map<int, AiUnit> units_;
     std::map<int, AiTeam> teams_;
 };

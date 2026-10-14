@@ -48,7 +48,8 @@ public:
     // PathSpace_find_poly 0066c020: first poly containing (x,y) with |height - z| <= 16. -1 if none.
     int find_poly(float x, float y, float z, float radius = 0) const;
     // Any poly containing (x,y), ignoring z; prefers the one whose surface is closest to z. -1 if none.
-    int find_poly_xy(float x, float y, float z) const;
+    // ignore_blocked also finds closed-gate polys (the gate toggle must find its poly again).
+    int find_poly_xy(float x, float y, float z, bool ignore_blocked = false) const;
     // 0066c710: nearest poly by 3-D bbox distance (ties: centroid distance).
     int nearest_poly(float x, float y, float z) const;
     // Poly_height 00664180 (grid triangulated bilinear 004c7b70, or walkway plane).

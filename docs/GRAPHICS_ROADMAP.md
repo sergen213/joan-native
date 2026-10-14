@@ -20,6 +20,10 @@ Camera/projection reverse engineering lives in [CAMERA_AND_WIDESCREEN.md](CAMERA
 | `app.*`, `main.cpp` | Loop: pump → actions → fixed ticks → interpolate → camera → draw list → render | all |
 | `shaders/gl/*.glsl` | Embedded into the binary at configure time | — |
 | `shaders/vk/*.{vert,frag}` | Compiled by `glslc` at build time (`-mfmt=num`, depfile), `#include`d into `renderer_vk.cpp` | glslc (shaderc) |
+| `shaders/common/*.glsl` | Remaster shader bodies shared by both backends (embedded for GL, `#include`d by `shaders/vk`) | — |
+| `preset.*` | Graphics presets + `[renderer] preset` / `[graphics]` keys ([Remaster](#remaster-enhanced--ultra-presets)) | — |
+| `post_frame.*`, `pbr_env.*` | Remaster per-frame constants (jitter, sun shadow frustum) and sky IBL maps, shared by both backends | glm |
+| `hd_pack.*` | HD texture override packs ([HD_ASSETS.md](HD_ASSETS.md)) | joa_formats |
 
 Simulation never includes renderer or SDL headers; the app turns `World` into a `FrameData` draw list each frame.
 
@@ -36,6 +40,8 @@ class IRenderer {
     virtual void submit(const FrameData&);                    // view+projection+viewport, Lighting, DrawItems, UiQuads
     virtual void end_frame();                                 // present
     virtual Image read_back();                                // sRGB RGBA8, top row first
+    virtual void set_graphics(const GraphicsSettings&);       // preset/features (default Original = faithful path)
+    virtual void set_material_maps(TextureHandle albedo, const MaterialMaps&); // HD normal/rough/metal/AO + class
 };
 ```
 
@@ -154,3 +160,45 @@ Tests: `engine.world_load` (fog range/colour, 144 point lights, sector light set
 
 Gaps: scatter.nvo sky, point lights on terrain/grass draws and point-light shadow volumes (FUN_005f0f80), grass wind,
 water Reflection = High, weather, combat particle features (orbits, SMO particles), LOD (`#2/#3`), unit distance culling.
+
+## Remaster (Enhanced / Ultra presets)
+
+`[renderer] preset=original|enhanced|ultra|custom` + `[graphics]` keys (docs/LAUNCHER.md), CLI `--preset`,
+`--graphics k=v,...` (implies custom), `--hd-packs` ([HD_ASSETS.md](HD_ASSETS.md)). `src/engine/preset.*` resolves
+them into `GraphicsSettings`; the app calls `IRenderer::set_graphics()` after creating the backend (may be called
+again between frames). Without a settings file the engine runs **Original**.
+
+- **Original** = the faithful D3D8-emulating path, untouched: verified byte-identical to the pre-remaster build
+  (S1L1 1920×1080 and the demo frame, GL and Vulkan: `work/remaster/baseline` vs current), and
+  `engine.gl_remaster` / `engine.vk_remaster` check Original stays bit-identical after Enhanced/Ultra frames.
+- **Enhanced / Ultra** (Custom = Enhanced + keys). Every feature has its own key:
+
+| Feature | Key | Enhanced | Ultra | Implementation |
+|---|---|---|---|---|
+| PBR metallic-roughness | `pbr` | on | on | `shaders/common/pbr_shade.glsl`: per-pixel D3D8 light sum kept as the reference brightness (ambient part × sky irradiance shape × AO, direct part × shadow), GGX sun specular + prefiltered sky reflection on top. Legacy conversion by `MaterialClass` + albedo: only unsaturated bright (steel) / saturated yellow (gilding) texels of characters (≤0.55) and carried items (≤0.75) become metallic; terrain 0.95, buildings 0.88 roughness |
+| Normal maps | `normal_maps` | on | on | HD pack `_n` maps, screen-space cotangent frame (no vertex tangents) |
+| IBL | `ibl` | on | on | `pbr_env.cpp`: 64×32 equirect sky (sky_dome gradient + lit ground) with 7 GGX-prefiltered mips + 32×16 irradiance normalised to the up normal (terrain keeps its Original ambient); rebuilt when the lighting changes |
+| HDR + tone map | `hdr`, `exposure` | 0.85 | 0.85 | RGBA16F scene, Narkowicz ACES fit, sRGB encode |
+| Sun shadows | `shadow_map_size`, `shadow_softness`, `shadow_distance` | 2048, 1.5 texel, 2500 | 4096, 2.5, 4000 | replaces the stencil volumes (0 = volumes, also in the HDR path); casters = lit opaque/alpha-test/blended (alpha 0.5) draws except terrain; texel-snapped bounding-sphere ortho, slope bias + normal offset, 12-tap rotated Poisson PCF on hardware compare; vegetation receives at 50 % |
+| SSAO | `ssao`, `ssao_radius`, `ssao_intensity` | 48 | 64 | 12 world-space samples from depth, applied only to the ambient/environment MRT (reverse-subtract pass, 3×3 depth-aware blur); not on foliage |
+| AA | `aa=taa` | TAA | TAA | Halton(2,3) jitter, depth reprojection, YCoCg variance clip |
+| Volumetric fog | `volumetric_fog`, `fog_density` | 12 steps | 24 steps | height fog below the camera with shadow-mapped HG(0.55) sun in-scattering, on top of the original linear fog |
+| Particle lighting | `particle_lighting` | on | on | alpha-blended smoke lit by ambient + shadowed sun; additive fire ×1.6 HDR |
+| Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0.2 | off, 1.0, 0.3 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX) |
+
+Passes (both backends, same shader bodies in `shaders/common/`, same CPU constants from `post_frame.cpp`): shadow map →
+opaque (HDR colour + ambient MRT, depth-stencil) [→ stencil volumes + fill when shadow maps are off] → SSAO → AO apply →
+translucent → composite (volumetric fog, exposure, ACES) → TAA → EASU → RCAS/copy into the display target → UI.
+GL: units = Vulkan set-2 binding + 7, block binding 0 (`shaders/gl/remaster_prelude.glsl`). Vulkan: set 2 (frame
+block, textures, per-draw `MaterialExtra` SSBO), separate depth-only shadow caster shader, `independentBlend` required.
+
+Tests: `engine.preset` (names, ini/CLI keys, custom semantics, jitter, shadow texel snapping), `engine.gl_remaster`
+(Original bit-identical incl. after toggling; Enhanced/Ultra/FSR1 sane and within ±25 % mean luma of Original;
+S1L1 when data present), `engine.vk_remaster` (GL vs Vulkan: Enhanced 53.1 dB / MAD 0.26, Ultra 52.4 / 0.30, FSR1
+67 % 51.6 / 0.32, S1L1 Enhanced 50.8 / 0.38; thresholds 40 dB / 1.0; 0 validation errors), `engine.hd_pack`,
+`tools.hd_upscale`.
+
+Remaster gaps: SMAA not implemented (TAA only); no soft particles (GL 3.3 cannot sample the attached depth);
+characters ghost slightly under TAA (no per-object motion vectors, CPU skinning); GL GPU timing (`JOA_GPU_TIMING=1`)
+uses timestamps that include driver submission bubbles; no bloom; the volumetric density is relative to the camera
+height (no absolute ground reference); the in-game options menu does not expose presets yet.

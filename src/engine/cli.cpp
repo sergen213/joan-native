@@ -1,5 +1,6 @@
 #include "engine/cli.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <sstream>
@@ -40,21 +41,32 @@ const char* usage() {
            "  --input-config FILE      input bindings file\n"
            "  --screenshot FILE.png    render --frames N frames (default 5), save PNG, exit\n"
            "  --frames N               stop after N frames (N simulation ticks with --headless)\n"
-           "  --headless               simulation only, no window; prints the final state hash\n"
+           "  --headless               no window: run the game session for --frames ticks (default 300), print the hash\n"
            "  --gpu N                  Vulkan device index (default: prefer discrete; devices are logged)\n"
            "  --present-mode M         Vulkan: fifo (default, vsync) | relaxed | mailbox | immediate\n"
            "  --vk-validation          enable Khronos validation layer (errors are counted and logged)\n"
            "  --gpu-timing             log mean GPU timestamps per pass at exit (Vulkan)\n"
-           "  --scenario NAME|PATH     load an original map (e.g. S1L1 or map/scenario1/S1L1) with Joan\n"
+           "  --scenario NAME          play the campaign mission of an original map (e.g. S1L1), menus skipped\n"
            "  --free-camera            fly camera (move/look keys) instead of following Joan\n"
            "  --camera X,Y,Z[,H[,P]]   free camera pose: original units, heading/pitch in degrees\n"
-           "  --anim CLIP              force Joan's animation clip (e.g. f_run, f_idle)\n"
+           "  --new-game               start a new campaign directly (no movies/menus); see --mission/--difficulty\n"
+           "  --mission N              campaign mission 1..8 for --new-game (default 1)\n"
+           "  --difficulty D           0 easy, 1 normal, 2 hard, 3 very hard (default: game options)\n"
+           "  --load FILE              load a native save (.jsav) or import an original Save/*.SAV directly\n"
+           "  --autoplay-script FILE   timed synthetic input (docs/PLAYING.md); exits after its last event\n"
+           "  --seed N                 World/script RNG seed of a new game (default random)\n"
+           "  --no-movies              skip the startup movies\n"
+           "  --rts-unlocked           allow the RTS toggle (F2) before mission 5 (test hook)\n"
+           "  --camera-fix             Camera Fix Patch mouse turn rate (5x), docs/CAMERA_AND_WIDESCREEN.md\n"
            "  --ui-screen NAME         show an original interface screen: main difficulty credits options video audio\n"
            "                           input game remap load save ingame ingame-options hud msglog brief quickload\n"
            "                           objective attention brief-background brief-objectives brief-townships\n"
            "                           brief-townships-2 brief-commanders brief-commanders-2 brief-battleground\n"
            "                           brief-battleground-2d brief-strategy brief-siege\n"
            "  --play-movie FILE        play a movie (e.g. movie/intro.wmv, relative to the game dir); Esc/click skips\n"
+           "  --preset NAME            graphics preset: original (faithful, default) | enhanced | ultra | custom\n"
+           "  --graphics K=V[,K=V]     custom preset feature keys (docs/GRAPHICS_ROADMAP.md, e.g. ssao=false,aa=taa)\n"
+           "  --hd-packs A[,B]         HD texture packs (names under $XDG_DATA_HOME/joan-native/hd/ or dirs), first wins\n"
            "  --movie-time SEC         start the movie at SEC (with --screenshot: capture the frame shown at SEC)\n";
 }
 
@@ -104,10 +116,21 @@ std::string apply_settings_ini(std::string_view ini, Options& o) {
             o.deadzone = f;
         } else if (key == "controller.sensitivity" && number(v, f)) {
             o.sensitivity = f;
+        } else if (key == "controller.camera_fix") {
+            o.camera_fix = v == "true" || v == "1";
+        } else if (key.starts_with("audio.") && number(v, i)) {
+            const std::string_view k = std::string_view(key).substr(6);
+            i = std::clamp(i, 0, 100);
+            if (k == "master") o.master_volume = i;
+            else if (k == "music") o.music_volume = i;
+            else if (k == "sound") o.sound_volume = i;
+            else if (k == "environment") o.environment_volume = i;
         } else if (key == "paths.game_dir" && !v.empty()) {
             o.game_dir = std::string(v);
+        } else if (auto err = o.graphics.apply(key, v); !err.empty()) {
+            return err;  // renderer.preset, graphics.* (preset.hpp)
         }
-        // Other launcher keys (preset, raytracing, update) do not affect this build yet.
+        // Other launcher keys (raytracing, update) do not affect this build yet.
     }
     return {};
 }
@@ -182,9 +205,26 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
                 p = c + 1;
             }
             if (o.camera_pose.size() < 3 || o.camera_pose.size() > 5) return "--camera expects X,Y,Z[,HEADING[,PITCH]]";
-        } else if (a == "--anim") {
-            if (!value(v)) return "--anim expects a clip name";
-            o.anim = std::string(v);
+        } else if (a == "--new-game") {
+            o.new_game = true;
+        } else if (a == "--mission") {
+            if (!value(v) || !number(v, o.mission) || o.mission < 1 || o.mission > 8) return "--mission expects 1..8";
+        } else if (a == "--difficulty") {
+            if (!value(v) || !number(v, o.difficulty) || o.difficulty < 0 || o.difficulty > 3) return "--difficulty expects 0..3";
+        } else if (a == "--load") {
+            if (!value(v) || v.empty()) return "--load expects a save file";
+            o.load = std::string(v);
+        } else if (a == "--autoplay-script") {
+            if (!value(v) || v.empty()) return "--autoplay-script expects a file";
+            o.autoplay = std::string(v);
+        } else if (a == "--seed") {
+            if (!value(v) || !number(v, o.seed)) return "--seed expects an unsigned integer";
+        } else if (a == "--no-movies") {
+            o.no_movies = true;
+        } else if (a == "--rts-unlocked") {
+            o.rts_unlocked = true;
+        } else if (a == "--camera-fix") {
+            o.camera_fix = true;
         } else if (a == "--ui-screen") {
             if (!value(v) || v.empty()) return "--ui-screen expects a screen name (see --help)";
             o.ui_screen = std::string(v);
@@ -193,9 +233,27 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
             o.movie = std::string(v);
         } else if (a == "--movie-time") {
             if (!value(v) || !number(v, o.movie_time) || o.movie_time < 0) return "--movie-time expects seconds >= 0";
+        } else if (a == "--preset") {
+            if (!value(v) || !parse_preset(v, o.graphics.preset)) return "--preset expects original|enhanced|ultra|custom";
+        } else if (a == "--graphics") {
+            if (!value(v)) return "--graphics expects KEY=VALUE[,KEY=VALUE]";
+            o.graphics.preset = GraphicsPreset::Custom;
+            for (std::size_t p = 0; p <= v.size();) {
+                const std::size_t c = std::min(v.find(',', p), v.size());
+                const std::string_view kv = v.substr(p, c - p);
+                const auto eq = kv.find('=');
+                if (eq == std::string_view::npos) return "--graphics expects KEY=VALUE[,KEY=VALUE]";
+                if (auto err = o.graphics.apply("graphics." + std::string(trim(kv.substr(0, eq))), trim(kv.substr(eq + 1))); !err.empty())
+                    return err;
+                p = c + 1;
+            }
+        } else if (a == "--hd-packs") {
+            if (!value(v)) return "--hd-packs expects NAME|DIR[,NAME|DIR]";
+            o.graphics.apply("graphics.hd_packs", v);
         } else return "unknown option " + std::string(a);
     }
-    if (o.frames == 0) o.frames = !o.screenshot.empty() ? 5 : o.headless ? 300 : 0;
+    if (std::string err; o.graphics.resolve(&err), !err.empty()) return err;
+    if (o.frames == 0) o.frames = !o.screenshot.empty() ? 5 : o.headless && o.autoplay.empty() ? 300 : 0;
     return {};
 }
 

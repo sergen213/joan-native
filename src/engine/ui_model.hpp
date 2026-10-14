@@ -62,7 +62,7 @@ struct KeyBindingRow {
 };
 
 struct SaveSlot {
-    std::string file;             // base name: Save/<file>.SAV (+ Save/<file>.BMP thumbnail)
+    std::string file;             // full path (list_saves): native <dir>/*.jsav or original Save/<name>.SAV (+ Save/<name>.BMP)
     std::string description;      // player-entered text (raw cp1252)
     int mission = 0;              // 1..8, 0 = free mission
     std::string date, time;       // as shown
@@ -117,6 +117,8 @@ struct UiCommand {
         MinimapClick,    // HUD minimap: world = clicked world x/y, value = 0 left / 1 right button
         QuickLoad,       // quick-load prompt OK
         QuickLoadCancel, // quick-load prompt Cancel
+        ContinueCampaign,// mission won: game-end menu CONTINUE (next campaign mission, FUN_00720ca0)
+        LoadMenu,        // game-over / game-end menu LOAD GAME: open the Load screen (load menu 0x74da40)
     } type;
     int value = 0;
     std::string text, text2;

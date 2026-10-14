@@ -8,6 +8,7 @@
 
 #include "game/rng_lcg.hpp"
 #include "game/world_sim.hpp"
+#include "game/siege_crew.hpp"
 
 namespace joa::game {
 
@@ -322,6 +323,7 @@ void World::unit_die(Unit& v, int killer) {
             else if (v.nation != 0 && u.nation == v.nation && v.team != 0 && u.team == v.team) set_morale(u, int(float(u.morale) - dlt));
         }
     }
+    siege_on_death(*this, v, killer);   // crew / cart driver of a dying weapon or cart
     if (v.action != THROWN) set_action(v, DIE);
     if (const Unit* k = unit(killer)) {   // death impulse: killer's script force
         const AnimScript* s = script_of(move(*k));

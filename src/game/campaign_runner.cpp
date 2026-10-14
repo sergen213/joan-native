@@ -31,7 +31,9 @@ bool CampaignRunner::continue_after_win(std::string* err) {
     mission_->store_profile();
     mission_->scenario().game_finish = 3;  // "continue to next scenario"
     auto events = mission_->take_events();
-    if (!start(no + 1, err)) return false;
+    // ModeNextScenario_process 0x755d80: Battle_start_scenario(no + 1, 1, keep = 1). The keep flag
+    // only matters leaving scenario 5: scenario 6 (S9L1) continues in scenario 5's world.
+    if (no == 5 ? !mission_->continue_in_world(missions[no], err) : !start(no + 1, err)) return false;
     mission_->state().events = std::move(events);
     mission_->emit(MissionEvent::Kind::Transition, no, no + 1, missions[no].stem());
     return true;

@@ -7,7 +7,7 @@ const char* event_kind_name(MissionEvent::Kind k) {
         "objective_add", "objective_update", "objective_finish", "objective_fail", "objective_show", "objective_hide",
         "victory", "defeat", "game_over_message", "attention_message", "dialog", "choice_dialog", "dialog_closed",
         "letter", "title_screen", "brief", "buy_interface", "scenario_part", "cut_scene", "camera", "sound", "music",
-        "minimap", "ui", "ending", "save_game", "text", "transition"};
+        "minimap", "ui", "ending", "save_game", "text", "transition", "interact_prompt", "interact"};
     return kNames[static_cast<int>(k)];
 }
 
@@ -102,6 +102,7 @@ void MissionState::save(ByteWriter& w) const {
     w.i32(date_jdn), w.i32(day), w.i32(month), w.i32(year), w.f32(minute), w.f32(min_start);
     w.f32(fog_distance), w.i16(snow_level), w.f32(weather_start[0]), w.f32(weather_start[1]);
     w.u8(charmove_detect_block), w.u8(clock_running), w.u8(game_over), w.str(game_over_text);
+    w.u8(bribe_no_gold_shown);
 }
 
 bool MissionState::load(formats::ByteReader& r) {
@@ -143,6 +144,7 @@ bool MissionState::load(formats::ByteReader& r) {
     fog_distance = r.f32(), snow_level = r.i16(), weather_start[0] = r.f32(), weather_start[1] = r.f32();
     charmove_detect_block = r.u8(), clock_running = r.u8(), game_over = r.u8();
     game_over_text = str();
+    bribe_no_gold_shown = r.u8();
     events.clear();
     return r.ok();
 }

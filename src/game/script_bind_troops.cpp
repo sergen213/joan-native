@@ -88,6 +88,8 @@ void set_prisoner(Mission& m, Unit& u, int flag, int bound) {
     set_hand(m, u, 1, -1, 0);
 }
 
+}  // namespace
+
 // Unit_free_prisoner 0x5199b0: weapons back in hand (only for occupied inventory slots).
 void free_prisoner(Mission& m, Unit& u) {
     if (!u.no_react) return;
@@ -97,6 +99,8 @@ void free_prisoner(Mission& m, Unit& u) {
     u.m.bound = 0;
     m.world().stop(u);
 }
+
+namespace {
 
 // Unit_add_item 0x50fd90 (troop = 4th arg). Inventory placement goes through World::give_item.
 // ponytail: the grid-bag placement / overflow-to-floor of FUN_00495f40 and its troop flag are
@@ -145,18 +149,10 @@ Value add_unit_ref(Mission& m, const BuiltinCall& c) {
     return I(1);
 }
 
-// 85 add_unit 0x655150 -> UnitArray_add 0x51dfc0: Unit_init leaves the unit at the origin, yaw 0;
-// a CONTINUE profile hero of that class is restored instead (FUN_004c91c0) with full hp/ep.
+// 85 add_unit 0x655150 -> UnitArray_add 0x51dfc0 (Mission::add_unit): unit at the origin, yaw 0,
+// or the restored CONTINUE profile hero of that class.
 Value add_unit(Mission& m, const BuiltinCall& c) {
-    World& w = m.world();
-    int id = m.load_hero(c.s(0), {});
-    if (Unit* h = unit(m, id)) {
-        w.set_hp(*h, w.max_hp(*h));
-        w.set_ep(*h, w.max_ep(*h));
-        h->troop_kills = h->troop_lost = 0;
-    } else {
-        id = w.spawn_unit(c.s(0), 0, {}, 0);
-    }
+    const int id = m.add_unit(c.s(0));
     Unit* u = unit(m, id);
     if (const int nation = m.data().nation_id(c.s(1)); nation && u) {
         u->nation = nation;

@@ -10,11 +10,12 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavut
 find_program(JOA_GLSLC glslc REQUIRED)
 option(JOA_TRACY "Enable the Tracy profiler client (downloads Tracy via FetchContent)" OFF)
 
-# Embed shaders/gl/<name>.glsl as joa::engine::gl_shaders::<name>; reconfigures when a shader changes.
+# Embed shaders/gl/<name>.glsl and shaders/common/<name>.glsl (remaster passes, shared with Vulkan) as
+# joa::engine::gl_shaders::<name>; reconfigures when a shader changes.
 cmake_path(ABSOLUTE_PATH CMAKE_CURRENT_SOURCE_DIR OUTPUT_VARIABLE JOA_ROOT)
 cmake_path(GET JOA_ROOT PARENT_PATH JOA_ROOT)
 cmake_path(GET JOA_ROOT PARENT_PATH JOA_ROOT)
-file(GLOB JOA_GL_SHADERS CONFIGURE_DEPENDS "${JOA_ROOT}/shaders/gl/*.glsl")
+file(GLOB JOA_GL_SHADERS CONFIGURE_DEPENDS "${JOA_ROOT}/shaders/gl/*.glsl" "${JOA_ROOT}/shaders/common/*.glsl")
 set(JOA_GL_SHADER_DEFS "")
 foreach(s ${JOA_GL_SHADERS})
   file(READ ${s} body)
@@ -42,7 +43,7 @@ list(REMOVE_ITEM JOA_ENGINE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
 add_library(joa_engine STATIC ${JOA_ENGINE_SRC} ${CMAKE_CURRENT_BINARY_DIR}/gl_shaders.cpp ${JOA_VK_SPIRV})
 target_include_directories(joa_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vk_shaders")
 target_include_directories(joa_engine PUBLIC "${JOA_ROOT}/src")
-target_link_libraries(joa_engine PUBLIC joa_formats SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG)
+target_link_libraries(joa_engine PUBLIC joa_formats joa_game SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG)
 target_compile_options(joa_engine PRIVATE -Wall -Wextra)
 
 if(JOA_TRACY)

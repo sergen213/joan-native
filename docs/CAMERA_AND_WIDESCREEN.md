@@ -169,3 +169,11 @@ Camera input (from §3):
 Test matrix (each independently): main menu, in-game HUD, tactical/overview camera, scripted cutscenes, map screen, movies — at 4:3, 5:4, 16:10, 16:9, 21:9, 32:9 and one custom ratio. Compare against reference captures of the original at 1024×768 (vertical framing must match).
 
 The native implementation needs no ASI loader, wrapper or exe patch; it does not reuse code from either community fix (the FOV fix is MIT and could be cited, but only its formulas are needed).
+
+### Native mouse yaw (`src/engine/game_input.cpp`, item 10)
+
+- The game side keeps the original step: the player controller (0x431790, `controller_player.cpp`) turns `d = int(mouse_dx · k)` whole degrees per update, `k = ((s + 1)·0.7 + 0.2)·0.2` (0.18°/count at the default sensitivity), ±45° clamp in ATTACK.
+- `GameInput::take()` (once per 33 ms tick) adds `raw_dx · k` to a float accumulator, hands the game the whole degrees `n = trunc(acc)` encoded as `mouse_dx = (n ± 0.5) / k` (so the game's truncation yields exactly `n`) and keeps `acc − n` for the next tick. No counts are lost: 1 count per tick for 60 ticks turns 10° (float 10.8°) instead of 0°. The game state stays deterministic (it only ever sees integer degrees); the remainder is engine state, cleared by `GameInput::reset()` (pause/load).
+- Right-stick X feeds the same accumulator at 150°/s × `[controller] sensitivity` at full deflection (after the radial deadzone).
+- Option `camera_fix` (default off) reproduces the Camera Fix Patch (§3): the factor `0.2` is dropped from the engine accumulator, i.e. 5× turn rate (0.9°/count at default sensitivity). Mouse only; the stick rate is unchanged.
+- Riding (`+0xC4`, factor 0.4) is not implemented by the game controller yet; the accumulator uses 0.2.

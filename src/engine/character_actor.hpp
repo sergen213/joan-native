@@ -7,6 +7,7 @@
 #include "engine/shadow_volume.hpp"
 #include "formats/anim_clip.hpp"
 
+#include <algorithm>
 #include <string_view>
 #include <vector>
 
@@ -21,20 +22,20 @@ public:
     Character(const Character&) = delete;
     Character& operator=(const Character&) = delete;
 
-    // Switches to a looping clip by name (case-insensitive); unknown names keep the current clip.
-    bool play(std::string_view clip);
+    // Selects clip `clip` (case-insensitive) of the AM2 file `am2` (game path, loaded on first use).
+    // False, keeping the current clip, if the file or the clip is unknown.
+    bool play(std::string_view am2, std::string_view clip);
     const formats::AnimClip& clip() const { return anim_->clips[clip_]; }
-    // One fixed simulation tick: advances the clip time (ms, looping).
-    void tick(float dt_seconds);
-    // Clip-relative time between the last two ticks (alpha = FixedStep::alpha()).
-    float time_ms(float alpha) const;
-    // Skins at time_ms(alpha) and uploads the vertices. Call before begin_frame.
-    void pose(float alpha);
+    float clip_length() const { return std::max(clip().end - clip().start, 1.0f); }
+    // Skins the clip at `clip_ms` (clamped to the clip, so a finished one-shot holds its last frame)
+    // and uploads the vertices. Call before begin_frame.
+    void pose(float clip_ms);
 
     // Hangs `model` on the skeleton node named `bone` (case-insensitive). False if the bone is unknown.
     // `shadow` (the item's #s.SMO, optional) casts its own volume next to the body's.
     bool attach(const Model* model, std::string_view bone, const formats::Mesh* shadow = nullptr);
     std::size_t attachments() const { return attached_.size(); }
+    void clear_attachments() { attached_.clear(); }
     // Model-space bounds of the current pose (engine axes); valid after pose().
     float height() const { return height_; }
     void build(const glm::mat4& transform, std::vector<DrawItem>& draws) const;
@@ -68,7 +69,6 @@ private:
     std::vector<Attached> attached_;
     MeshHandle gpu_, shadow_gpu_;
     std::size_t clip_ = 0;
-    float prev_ms_ = 0, cur_ms_ = 0;
     float height_ = 0;
 };
 

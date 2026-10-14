@@ -4,6 +4,7 @@
 // Layout and confidence: docs/formats/CONTAINERS_WORLD_SAVES.md ("Saves").
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -49,20 +50,60 @@ std::optional<SaveGame> parse_sav(std::span<const std::uint8_t> bytes, std::stri
 // FILETIME -> seconds since the Unix epoch.
 inline std::int64_t filetime_to_unix(std::uint64_t ft) { return std::int64_t(ft / 10000000ULL) - 11644473600LL; }
 
-// Player.dat: raw writes (no record-size prefixes).
-struct PlayerProfile {
-    std::vector<std::uint8_t> header;  // 0x48 bytes; profile name at +0 (char[], "Player")
-    std::string name;                  // header name
-    std::uint32_t header_38 = 0;       // header +0x38 (100 in the shipped file), UNKNOWN
-    std::vector<std::uint8_t> block2;  // 0x20 bytes; starts with the player/character name
-    std::string name2;
-    std::uint32_t entry_count = 0;     // N; the shipped file has 0. Entries are not decoded.
-    std::vector<std::uint16_t> list_a, list_b;
-    std::uint16_t trailing = 0;
+// Player.dat (profile.cpp; writer FUN_004c8810, reader FUN_004c8bb0): raw writes, no record-size
+// prefixes. Fixed-size pieces are raw memory images of the original objects (they contain stale heap
+// pointers); they are kept verbatim so write_player_dat(parse_player_dat(b)) == b. Field map and
+// confidence: docs/formats/CONTAINERS_WORLD_SAVES.md §7.2.
+using PlayerBytes = std::vector<std::uint8_t>;
+
+// Item container (0x3e object, FUN_0047ede0 / FUN_0047ef30): grid of rows x cols cells of `cell`
+// bytes (each byte = 1-based item slot occupying it), item slots, DynArrayB free list.
+struct PlayerItemBag {
+    PlayerBytes grid;                        // 4 / 48 / 24 bytes for inventory +0x12 / +0x16 / +0x1a
+    std::vector<PlayerBytes> items;          // 0x18-byte records; empty = free slot (flag u16 0)
+    PlayerBytes free_list;                   // n x 8 bytes (FUN_00585b40: u32 n + data)
 };
 
-// Only N == 0 profiles are fully decoded; N > 0 fails (per-entry layout not yet confirmed).
+// Unit inventory (unit+0x1c1, FUN_0047e850 / FUN_0047e9f0).
+struct PlayerInventory {
+    PlayerBytes raw;                         // 0x1e; u32 at +0x02/+0x06/+0x0a/+0x0e/+0x12/+0x16/+0x1a != 0 = present
+    std::array<PlayerBytes, 4> slots;        // 0x12-byte item instances for +0x02/+0x06/+0x0a/+0x0e
+    std::array<PlayerItemBag, 3> bags;       // +0x12 (1x4x1) / +0x16 (1x6x8) / +0x1a (1x6x4)
+};
+
+// FUN_004c9880 / FUN_004c9930.
+struct PlayerUnit {
+    PlayerBytes raw;                         // 0x432 Unit image
+    PlayerBytes block_16f;                   // 0x3b, unit+0x16f again (FUN_0047e5c0)
+    std::uint32_t upgrade_ptr = 0;           // unit+0x1aa again (FUN_0047e640); != 0 = list follows
+    std::vector<std::array<std::int16_t, 4>> upgrades;  // {upitem id (1-based), unlocked, applied, combo level}
+    std::optional<PlayerInventory> inv;      // present iff raw u32 at +0x1c1 != 0
+};
+
+// Profile entry (0x77 bytes in memory: char code[0x21], Unit* +0x21, short count +0x25, Unit* +0x27[20]);
+// only its first 0x20 bytes are written, twice (FUN_004c93e0, then FUN_004c9460).
+struct PlayerEntry {
+    PlayerBytes head, head2;                 // 0x20 each; code at +0
+    PlayerUnit unit;
+    std::vector<PlayerUnit> members;         // u16 count (+0x25) + units; the game never fills it
+    std::string code() const;
+};
+
+struct PlayerProfile {
+    PlayerBytes header;                      // 0x48 profile object image; name at +0, see accessors
+    PlayerBytes block2;                      // 0x20 = the profile object's first 0x20 bytes again
+    std::vector<PlayerEntry> entries;        // u32 N, N heads, N bodies
+    std::vector<std::uint16_t> list_a, list_b;  // item-hint lists (profile +0x28/+0x2c, +0x30/+0x34)
+    std::uint16_t trailing = 0;              // (short) profile +0x40 = command points
+
+    std::string name() const;                // +0x00 char[0x20]
+    std::int32_t gold() const;               // +0x38 (100 in the shipped file)
+    std::uint32_t play_ms() const;           // +0x3c
+    std::int32_t command_points() const;     // +0x40
+};
+
 std::optional<PlayerProfile> parse_player_dat(std::span<const std::uint8_t> bytes, std::string* err = nullptr);
+std::vector<std::uint8_t> write_player_dat(const PlayerProfile& p);
 
 // Uncompressed bottom-up BMP (the thumbnail written beside each SAV, 512x256x24 in the shipped save).
 struct BmpInfo {

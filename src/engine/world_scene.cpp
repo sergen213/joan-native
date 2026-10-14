@@ -5,7 +5,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -108,38 +107,81 @@ std::optional<ScenarioPaths> find_scenario(const formats::Vfs& vfs, std::string_
     return std::nullopt;
 }
 
-WorldScene::WorldScene(AssetCache& assets, std::string_view scenario, float clock_minutes) : assets_(assets) {
+WorldScene::WorldScene(AssetCache& assets, const std::string& dir, const std::vector<MapNode>& maps, const std::string& world,
+                       float clock_minutes)
+    : assets_(assets) {
+    if (maps.empty()) throw std::runtime_error(dir + ": no world nodes");
     const auto& vfs = assets.vfs();
-    const auto paths = find_scenario(vfs, scenario);
-    if (!paths) throw std::runtime_error("scenario not found: " + std::string(scenario));
-    const std::string base = paths->dir + "/" + paths->name;
-    const auto gri_bytes = vfs.read(base + ".gri");
-    std::string err;
-    auto grid = gri_bytes ? formats::parse_gri(*gri_bytes, &err) : std::nullopt;
-    if (!grid) throw std::runtime_error(base + ".gri: " + (gri_bytes ? err : "missing"));
-    grid_ = std::move(*grid);
-    const auto stg = read_blocks(vfs, base + ".stg");
-    if (!stg) throw std::runtime_error(base + ".stg: missing or malformed");
-
-    load_lighting(*paths, clock_minutes);
-    load_terrain(*paths, *stg);
-    load_lights(*stg);
-    load_objects(*stg);
-    load_start(*paths);
+    // The lighting stage belongs to the world (<world>.day); the first node's .lgt stands for the map's.
+    load_lighting(dir, world, maps.front().name, clock_minutes);
+    for (const MapNode& m : maps) {
+        const std::string base = dir + "/" + m.name;
+        const auto gri_bytes = vfs.read(base + ".gri");
+        std::string err;
+        auto grid = gri_bytes ? formats::parse_gri(*gri_bytes, &err) : std::nullopt;
+        if (!grid) throw std::runtime_error(base + ".gri: " + (gri_bytes ? err : "missing"));
+        const auto stg = read_blocks(vfs, base + ".stg");
+        if (!stg) throw std::runtime_error(base + ".stg: missing or malformed");
+        Node& n = nodes_.emplace_back();
+        n.map = m;
+        n.grid = std::move(*grid);
+        load_terrain(n, *stg);
+        load_lights(n, *stg);
+        load_objects(n, *stg);
+        WorldStats& t = stats_;
+        const WorldStats& s = n.stats;
+        t.objects += s.objects, t.placed += s.placed, t.missing_models += s.missing_models;
+        t.terrain_triangles += s.terrain_triangles, t.terrain_groups += s.terrain_groups, t.lightmaps += s.lightmaps, t.lights += s.lights;
+        for (const std::string& miss : s.missing)
+            if (std::find(t.missing.begin(), t.missing.end(), miss) == t.missing.end()) t.missing.push_back(miss);
+    }
+    // Light set of each object = its sector's lights (sector of the bounding-sphere centre), once every
+    // node's lights are in.
+    for (PlacedObject& o : objects_) {
+        DrawItem lit;
+        sector_lights(o.center, kMaxDrawLights, lit);
+        o.light_count = lit.light_count;
+        o.lights = lit.lights;
+    }
 }
+
+namespace {
+ScenarioPaths scenario_or_throw(const formats::Vfs& vfs, std::string_view scenario) {
+    const auto p = find_scenario(vfs, scenario);
+    if (!p) throw std::runtime_error("scenario not found: " + std::string(scenario));
+    return *p;
+}
+}  // namespace
+
+WorldScene::WorldScene(AssetCache& assets, std::string_view scenario, float clock_minutes)
+    : WorldScene(assets, scenario_or_throw(assets.vfs(), scenario).dir, {{scenario_or_throw(assets.vfs(), scenario).name, {}}},
+                 scenario_or_throw(assets.vfs(), scenario).name + "w", clock_minutes) {}
 
 WorldScene::~WorldScene() {
     IRenderer& r = assets_.renderer();
-    r.destroy_mesh(terrain_mesh_);
-    r.destroy_texture(lightmap_);
+    for (Node& n : nodes_) {
+        r.destroy_mesh(n.terrain_mesh);
+        r.destroy_texture(n.lightmap);
+    }
 }
 
-void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
+float WorldScene::ground_height(glm::vec3 p) const {
+    const float x = p.x, y = -p.z;
+    const Node* n = &nodes_.front();
+    for (const Node& c : nodes_)
+        if (c.contains(x, y)) {
+            n = &c;
+            break;
+        }
+    return n->grid.height_at(x - n->map.origin.x, y - n->map.origin.y);
+}
+
+void WorldScene::load_lighting(const std::string& dir, const std::string& world, const std::string& map, float clock) {
     const auto& vfs = assets_.vfs();
     // Day cycle of the world (scenario_0N.scr WorldFileName = <map>w, e.g. S1L1w.day: Normal_06..
     // Normal_Night, StartTime/Duration in minutes after midnight); the per-map S1L1.day (three
     // Special_Night stages) is only the fallback. Stage = the one running at `clock`.
-    for (const std::string& f : {p.dir + "/" + p.name + "w.day", p.dir + "/" + p.name + ".day"}) {
+    for (const std::string& f : {dir + "/" + world + ".day", dir + "/" + map + ".day"}) {
         const auto day = read_text(vfs, f);
         if (!day) continue;
         std::string name, first;
@@ -160,7 +202,7 @@ void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
     }
     // Stage lights: the map's own .lgt first (S1L1.lgt is empty), then map/common.lgt, map/special.lgt.
     std::optional<LgtLight> sun, ambient;
-    for (const std::string& f : {p.dir + "/" + p.name + ".lgt", std::string("map/common.lgt"), std::string("map/special.lgt")}) {
+    for (const std::string& f : {dir + "/" + map + ".lgt", std::string("map/common.lgt"), std::string("map/special.lgt")}) {
         const auto t = read_text(vfs, f);
         if (!t) continue;
         for (const LgtLight& l : parse_lgt(*t)) {
@@ -259,23 +301,24 @@ void WorldScene::sector_lights(glm::vec3 p, int max, DrawItem& d) const {
     }
 }
 
-void WorldScene::add_light(PointLight light, int sector) {
+void WorldScene::add_light(PointLight light, int sector, WorldStats& st) {
     if (sector < 0 || lights_.size() >= 0xffff) return;
     sectors_[std::size_t(sector)].lights.push_back(std::uint16_t(lights_.size()));
     lights_.push_back(light);
-    ++stats_.lights;
+    ++st.lights;
 }
 
-void WorldScene::load_lights(const formats::BlockText& stg) {
+void WorldScene::load_lights(Node& n, const formats::BlockText& stg) {
     // Scene sectors (CreateSceneSector X1..X2 x Y1..Y2) carry the light lists: the engine enables a
     // primitive group's light set when it changes (FUN_005e67b0 -> LightEnable via FUN_005c6110) and
     // CreateLight registers each block with its scene_name sector (FUN_0049b970); lights reaching
-    // several sectors are repeated per sector and share a Group. CONFIRMED.
+    // several sectors are repeated per sector and share a Group. CONFIRMED. Sector names are per node.
+    const glm::vec2 o = n.map.origin;
     std::map<std::string, int> by_name;
     for (const auto& b : stg.blocks) {
         if (b.type != "CreateSceneSector") continue;
         if (const std::string* id = b.get("scene_id")) by_name[lower(*id)] = int(sectors_.size());
-        sectors_.push_back({{float(b.number("X1")), float(b.number("Y1"))}, {float(b.number("X2")), float(b.number("Y2"))}, {}});
+        sectors_.push_back({o + glm::vec2(float(b.number("X1")), float(b.number("Y1"))), o + glm::vec2(float(b.number("X2")), float(b.number("Y2"))), {}});
     }
     std::map<int, std::size_t> groups;
     for (const auto& b : stg.blocks) {
@@ -286,12 +329,12 @@ void WorldScene::load_lights(const formats::BlockText& stg) {
         const auto it = scene ? by_name.find(lower(*scene)) : by_name.end();
         if (it == by_name.end()) continue;
         PointLight p;
-        p.position = to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z")));
+        p.position = to_engine(float(b.number("X")) + o.x, float(b.number("Y")) + o.y, float(b.number("Z")));
         p.range = float(b.number("Radius"));
         p.color = glm::vec3(float(b.number("Red")), float(b.number("Green")), float(b.number("Blue"))) / 255.0f;
         p.attenuation = {float(b.number("ATT0")), float(b.number("ATT1")), float(b.number("ATT2"))};
         const auto index = std::uint16_t(lights_.size());
-        add_light(p, it->second);
+        add_light(p, it->second, n.stats);
         // ModifyEffect RANDOM_ATTENUATION: ATT1 flickers in [ATT1 (1 - ModifyRange), ATT1 (1 + ModifyRange)]
         // per light Group (FUN_004afd60).
         const std::string* effect = b.get("ModifyEffect");
@@ -318,7 +361,7 @@ void WorldScene::tick_lights() {
     }
 }
 
-void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& stg) {
+void WorldScene::load_terrain(Node& n, const formats::BlockText& stg) {
     // Sector lightmaps texture/terrain/<map>_scene_sector_<N>.dds as one atlas: sector (ix, iy) at
     // column ix, row (rows-1-iy). The engine maps a sector's lightmap with u = (x-x0)/size,
     // v = 1-(y-y0)/size (vertex build in FUN_0055b?? world_s.cpp, decompile line ~444000), so the
@@ -339,7 +382,7 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
         int tile = 0;
         std::vector<std::uint8_t> atlas;
         for (const Sector& s : sectors) {
-            formats::DdsImage img = assets_.texture_pixels(p.name + "_" + s.id);
+            formats::DdsImage img = assets_.texture_pixels(n.map.name + "_" + s.id);
             if (img.rgba.empty()) img = assets_.texture_pixels("lightmap_default");
             if (img.rgba.empty() || img.width != img.height) continue;
             if (!tile) {
@@ -347,7 +390,7 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
                 atlas.assign(std::size_t(nsx * tile) * nsy * tile * 4, 255);
             }
             if (int(img.width) != tile) continue;
-            ++stats_.lightmaps;
+            ++n.stats.lightmaps;
             const int row0 = (nsy - 1 - s.iy) * tile, col0 = s.ix * tile;
             for (int y = 0; y < tile; ++y)
                 std::copy_n(img.rgba.data() + std::size_t(y) * tile * 4, tile * 4,
@@ -359,7 +402,7 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
             t.height = nsy * tile;
             t.pixels = std::move(atlas);
             t.repeat = false;
-            lightmap_ = assets_.renderer().create_texture(t);
+            n.lightmap = assets_.renderer().create_texture(t);
         }
     }
 
@@ -368,12 +411,12 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
     // (case 0x11/0x13 at decompile ~523200): tex1, then BLENDDIFFUSEALPHA with tex2, alpha =
     // 255 - node byte 4; then * lightmap (uv1, clamp); then * vertex colour (node bytes 1,2,3 = R,G,B).
     // Ground UV repeats every header_c (4) cells: u from y, v from x (both decreasing).
-    const auto& g = grid_;
+    const auto& g = n.grid;
     const int vx = g.verts_x(), vy = g.verts_y();
     auto tex_name = [&](std::uint16_t i) -> std::string {
         if (i == 0 || i > g.textures.size()) return {};
-        const std::string n = lower(g.textures[i - 1].name);
-        return n == "none" ? std::string{} : n;
+        const std::string name = lower(g.textures[i - 1].name);
+        return name == "none" ? std::string{} : name;
     };
     std::map<std::pair<std::string, std::string>, std::vector<int>> groups;  // -> cell ids
     for (int x = 0; x < g.cells_x; ++x)
@@ -391,7 +434,7 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
             std::int32_t& r = remap[std::size_t(x) * vy + y];
             if (r >= 0) return std::uint32_t(r);
             const auto h = [&](int ix, int iy) { return float(g.height(std::clamp(ix, 0, vx - 1), std::clamp(iy, 0, vy - 1))); };
-            const auto& n = g.node(x, y);
+            const auto& nd = g.node(x, y);
             Vertex v;
             v.position = to_engine(x * formats::TerrainGrid::kCellSize, y * formats::TerrainGrid::kCellSize, h(x, y));
             const glm::vec3 nz{(h(x - 1, y) - h(x + 1, y)) / (2 * formats::TerrainGrid::kCellSize),
@@ -400,7 +443,7 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
             v.uv = {float(g.cells_y - y) / repeat, float(g.cells_x - x) / repeat};
             v.uv2 = {float(x) / float(g.cells_x), 1.0f - float(y) / float(g.cells_y)};
             // Gamma-space D3D vertex colour: the terrain's diffuse material (Material::vertex_diffuse).
-            v.color = glm::vec4(glm::vec3(n[1], n[2], n[3]) / 255.0f, two ? float(255 - n[4]) / 255.0f : 1.0f);
+            v.color = glm::vec4(glm::vec3(nd[1], nd[2], nd[3]) / 255.0f, two ? float(255 - nd[4]) / 255.0f : 1.0f);
             r = std::int32_t(mesh.vertices.size());
             mesh.vertices.push_back(v);
             return std::uint32_t(r);
@@ -417,25 +460,26 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
         if (const TextureInfo* t = assets_.texture(names.first)) m.albedo = t->handle;
         if (two)
             if (const TextureInfo* t = assets_.texture(names.second)) m.layer2 = t->handle;
-        m.lightmap = lightmap_;
+        m.lightmap = n.lightmap;
         // Stage set 0x13 ends in `* DIFFUSE`: the lit vertex colour (D3D default DIFFUSEMATERIALSOURCE =
         // COLOR1). At noon ambient 0.72 + sun * 0.78 clamps to 1, matching the capture's ground
         // brightness (unlit vertex colours were 0.78x too dark). HYPOTHESIS (lighting render state of the
         // terrain group not traced).
         m.vertex_diffuse = true;
-        terrain_draws_.push_back({{}, m, glm::mat4(1.0f), first, std::uint32_t(mesh.indices.size()) - first});
+        n.terrain_draws.push_back({{}, m, glm::translate(glm::mat4(1.0f), n.offset()), first, std::uint32_t(mesh.indices.size()) - first});
     }
-    stats_.terrain_triangles = int(mesh.indices.size() / 3);
-    stats_.terrain_groups = int(terrain_draws_.size());
-    terrain_mesh_ = assets_.renderer().create_mesh(mesh);
-    for (auto& d : terrain_draws_) d.mesh = terrain_mesh_;
+    n.stats.terrain_triangles = int(mesh.indices.size() / 3);
+    n.stats.terrain_groups = int(n.terrain_draws.size());
+    n.terrain_mesh = assets_.renderer().create_mesh(mesh);
+    for (auto& d : n.terrain_draws) d.mesh = n.terrain_mesh;
 }
 
-void WorldScene::load_objects(const formats::BlockText& stg) {
+void WorldScene::load_objects(Node& n, const formats::BlockText& stg) {
     const auto& vfs = assets_.vfs();
+    WorldStats& st = n.stats;
     for (const auto& b : stg.blocks) {
         if (b.type != "CreateObject") continue;
-        ++stats_.objects;
+        ++st.objects;
         const std::string* file = b.get("ObjectFile");
         const std::string* dir = b.get("Path");
         if (!file || !dir) continue;
@@ -479,107 +523,29 @@ void WorldScene::load_objects(const formats::BlockText& stg) {
             anim = vfs.exists(base + "anim/" + stem + ".am2") ? base + "anim/" + stem + ".am2" : "anim/" + stem + ".am2";
         const Model* m = assets_.model(base + model_file, anim);
         if (!m) {
-            ++stats_.missing_models;
+            ++st.missing_models;
             const std::string miss = base + model_file;
-            if (std::find(stats_.missing.begin(), stats_.missing.end(), miss) == stats_.missing.end()) stats_.missing.push_back(miss);
+            if (std::find(st.missing.begin(), st.missing.end(), miss) == st.missing.end()) st.missing.push_back(miss);
             continue;
         }
         // HD: degrees about +Z, same sense as unit headings (HYPOTHESIS for objects, checked visually
         // on wall/fence runs). VD (always 0 in S1L1) and WIDTH/LENGTH/HEIGHT (collision box) unused.
         const float scale = float(b.number("Scale", 1.0));
-        glm::mat4 t = glm::translate(glm::mat4(1.0f), to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))));
+        glm::mat4 t = glm::translate(glm::mat4(1.0f), n.offset() + to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))));
         t = glm::rotate(t, glm::radians(float(b.number("HD"))), glm::vec3(0, 1, 0));
         t = glm::scale(t, glm::vec3(scale));
         // HYPOTHESIS: an item light joins the scene sector of its object like a CreateLight.
         if (item_light) {
             item_light->position = glm::vec3(t * glm::vec4(item_light->position, 1.0f));
-            add_light(*item_light, sector_at(item_light->position));
+            add_light(*item_light, sector_at(item_light->position), st);
         }
         objects_.push_back({m, t, glm::vec3(t * glm::vec4(m->center, 1.0f)), m->radius * scale});
-        ++stats_.placed;
+        ++st.placed;
     }
-    // Light set of each object = its sector's lights (sector of the bounding-sphere centre).
-    for (PlacedObject& o : objects_) {
-        DrawItem lit;
-        sector_lights(o.center, kMaxDrawLights, lit);
-        o.light_count = lit.light_count;
-        o.lights = lit.lights;
-    }
-}
-
-void WorldScene::load_start(const ScenarioPaths& p) {
-    const auto& vfs = assets_.vfs();
-    // Scripted placements in script/scenario/<map>.sce:
-    //   var = FUNC("load_unit"|"add_unit", "CODE", ...)   FUNC("set_unit_pos", var, x, y, z)
-    //   FUNC("set_unit_dir", var, degrees)
-    struct Pending { std::string code; std::optional<glm::vec2> pos; float dir = 0; bool has_dir = false; };
-    std::map<std::string, Pending> vars;
-    auto trim = [](std::string s) {
-        const auto a = s.find_first_not_of(" \t\r"), b = s.find_last_not_of(" \t\r");
-        return a == std::string::npos ? std::string{} : s.substr(a, b - a + 1);
-    };
-    if (const auto sce = read_text(vfs, "script/scenario/" + p.name + ".sce")) {
-        std::size_t pos = 0;
-        while (pos < sce->size()) {
-            const std::size_t end = std::min(sce->find('\n', pos), sce->size());
-            std::string line(std::string_view(*sce).substr(pos, end - pos));
-            pos = end + 1;
-            if (const auto c = line.find("//"); c != std::string::npos) line.resize(c);
-            const std::string l = lower(line);
-            if (l.find("\"load_unit\"") != std::string::npos || l.find("\"add_unit\"") != std::string::npos) {
-                const auto eq = l.find('='), q1 = l.find('"', l.find(',')), q2 = l.find('"', q1 + 1);
-                if (eq == std::string::npos || q1 == std::string::npos || q2 == std::string::npos) continue;
-                vars[trim(l.substr(0, eq))].code = line.substr(q1 + 1, q2 - q1 - 1);
-                continue;
-            }
-            const bool is_pos = l.find("\"set_unit_pos\"") != std::string::npos, is_dir = l.find("\"set_unit_dir\"") != std::string::npos;
-            if (!is_pos && !is_dir) continue;
-            std::vector<std::string> args;
-            for (std::size_t a = l.find(','); a != std::string::npos;) {
-                const std::size_t b = l.find_first_of(",)", a + 1);
-                args.push_back(trim(l.substr(a + 1, b == std::string::npos ? b : b - a - 1)));
-                a = b != std::string::npos && l[b] == ',' ? b : std::string::npos;
-            }
-            // First placement wins (later script events move units during play).
-            Pending& u = vars[args.empty() ? std::string{} : args[0]];
-            if (args.size() >= 3 && is_pos && !u.pos) u.pos = glm::vec2(to_number(args[1]), to_number(args[2]));
-            if (args.size() >= 2 && is_dir && !u.has_dir) u.dir = float(to_number(args[1])), u.has_dir = true;
-        }
-    }
-    float x = grid_.cells_x * formats::TerrainGrid::kCellSize * 0.5f, y = grid_.cells_y * formats::TerrainGrid::kCellSize * 0.5f;
-    float dir = 0;
-    bool found = false;
-    for (const auto& [var, u] : vars) {
-        if (u.code.empty() || !u.pos) continue;
-        units_.push_back({u.code, to_engine(u.pos->x, u.pos->y, grid_.height_at(u.pos->x, u.pos->y)), glm::radians(u.dir)});
-        if (lower(u.code) == "joan_of_arc") x = u.pos->x, y = u.pos->y, dir = u.dir, found = true;
-    }
-    if (!found)
-        if (const auto pla = read_blocks(vfs, p.dir + "/" + p.name + ".pla"))
-            for (const auto& b : pla->blocks)
-                if (const std::string* n = b.get("PLACE_NAME"); n && lower(*n) == "startpointplace") {
-                    x = float(b.number("X")), y = float(b.number("Y"));
-                    break;
-                }
-    start_ = to_engine(x, y, grid_.height_at(x, y));
-    start_yaw_ = glm::radians(dir);
-
-    // Map armies: <map>.uni CreateUnit blocks (UnitFile = unit.res record in lower case, X/Y/Z,
-    // HD heading in the script convention). Units stand on the terrain like scripted ones.
-    if (const auto uni = read_blocks(vfs, p.dir + "/" + p.name + ".uni"))
-        for (const auto& b : uni->blocks) {
-            const std::string* file = b.get("UnitFile");
-            if (b.type != "CreateUnit" || !file) continue;
-            std::string code = *file;
-            for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
-            const float ux = float(b.number("X")), uy = float(b.number("Y"));
-            units_.push_back({code, to_engine(ux, uy, grid_.height_at(ux, uy)), glm::radians(float(b.number("HD")))});
-            ++stats_.map_units;
-        }
 }
 
 void WorldScene::build(const glm::mat4& view_proj, glm::vec3 camera_pos, std::vector<DrawItem>& draws) const {
-    draws.insert(draws.end(), terrain_draws_.begin(), terrain_draws_.end());
+    for (const Node& n : nodes_) draws.insert(draws.end(), n.terrain_draws.begin(), n.terrain_draws.end());
     const auto planes = frustum_planes(view_proj);
     const float far2 = kWorldFar * kWorldFar;
     for (const PlacedObject& o : objects_) {

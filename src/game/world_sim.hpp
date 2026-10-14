@@ -162,6 +162,7 @@ public:
     Rng& cosmetic_rng() { return cosmetic_; }
     int now() const { return now_; }
     GameData& data() { return gd_; }
+    const GameData& data() const { return gd_; }
     const ITerrainQuery* terrain() const { return terrain_; }
     void set_terrain(const ITerrainQuery* t) { terrain_ = t; }
 
@@ -180,6 +181,12 @@ public:
     void set_physics(IUnitPhysics* p) { physics_ = p; }
     // Receiver for target_kind 2 (map object) triggers: gates, walls, kegs (mission layer).
     std::function<void(const Trigger&)> object_trigger;
+    // Ladder climbing (mission layer, map items): consumes the player's input while climbing / at the
+    // 0x42d300 interact slot. Returns true when it handled the frame.
+    std::function<bool(Unit&, const InputFrame&)> ladder_input;
+    // Player interact key (R) handlers 0x43bef0, 0x43bd40, 0x43be40, 0x43c210, 0x43bc50, 0x43bfe0,
+    // 0x43c080 in that order (mission layer: interact_player.cpp). True when one consumed the key.
+    std::function<bool(Unit&)> interact;
 
     // --- output ----------------------------------------------------------------------------
     const std::vector<GameEvent>& events() const { return events_; }
@@ -193,7 +200,7 @@ public:
 
     // --- rules (original functions; see the doc for addresses) --------------------------------
     bool set_action(Unit& u, int action, char letter = 0);   // Unit_set_action 0x501190
-    void stop(Unit& u) { set_action(u, IDLE); }              // Unit_stop 0x508b90
+    void stop(Unit& u);                                      // Unit_stop 0x508b90
     bool can_act(const Unit& u) const;                       // 0x500ba0
     bool dead(const Unit& u) const { return u.hp < 1 && u.lives == 0; }   // 0x42d0e0
     int anim_length(const Unit& u) const;                    // 0x504760 (ms)
@@ -202,7 +209,8 @@ public:
     const MoveRecord* find_move(const Unit& u, int action, std::string_view combo = {}, int posture = -1) const;
     const AnimScript* script_of(const MoveRecord* r) const;
     float rel_angle(const Unit& self, Vec3 target) const;    // 0x505a00, degrees [-180,180], + = clockwise/right
-    void set_yaw(Unit& u, float deg);
+    void set_yaw(Unit& u, float deg);       // Unit_set_yaw_deg 0x50abd0: desired heading (+0x1e); the body turns in phase 1
+    void set_yaw_now(Unit& u, float deg);   // 0x50abd0 + Unit_set_yaw_rad 0x4ff870: body and goal at once (mount follows)
 
     int max_hp(const Unit& u) const;   // 0x523320
     int max_ep(const Unit& u) const;   // 0x523700
@@ -265,6 +273,7 @@ private:
     void unit_process(Unit& u, int phase);
     void update_action(Unit& u);                           // Unit_updateAction 0x7c7ab0
     void unit_move(Unit& u);                               // Unit_move 0x4f0b50
+    bool turn_step(Unit& u);                               // 0x4f2190: body toward yaw_goal; true = still turning
     void regen(Unit& u);
     void process_triggers();
     void deliver_trigger(const Trigger& t);

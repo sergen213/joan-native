@@ -2,6 +2,8 @@
 
 #include "engine/gl_loader.hpp"
 #include "engine/gl_shaders.hpp"
+#include "engine/pbr_env.hpp"
+#include "engine/post_frame.hpp"
 #include "engine/shadow_volume.hpp"
 
 #include <SDL3/SDL_video.h>
@@ -10,6 +12,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -136,6 +139,11 @@ public:
     }
 
     ~GlRenderer() override {
+        if (timing_.frames)
+            std::fprintf(stderr, "joan-native: opengl gpu timing (%llu frames, mean ms): scene %.3f\n",
+                         static_cast<unsigned long long>(timing_.frames), timing_.scene_ms / double(timing_.frames));
+        if (timing_.queries[0]) glDeleteQueries(2, timing_.queries);
+        destroy_remaster();
         for (auto& [id, m] : meshes_) release(m);
         for (auto& [id, t] : textures_) glDeleteTextures(1, &t);
         glDeleteTextures(1, &white_);
@@ -209,6 +217,19 @@ public:
         }
     }
 
+    void set_graphics(const GraphicsSettings& g) override {
+        if (g.shadow_map_size != gfx_.shadow_map_size) destroy_shadow_map();
+        gfx_ = g;
+        remaster_ = g.remastered();
+        history_.valid = false;
+        if (remaster_)
+            std::fprintf(stderr, "joan-native: opengl graphics preset %s (remaster path)\n", preset_name(g.preset));
+    }
+
+    void set_material_maps(TextureHandle albedo, const MaterialMaps& maps) override {
+        if (albedo) material_maps_[albedo.id] = maps;
+    }
+
     void begin_frame(glm::ivec2 size) override {
         size = glm::max(size, glm::ivec2(1));
         if (size != target_size_) create_target(size);
@@ -224,7 +245,10 @@ public:
     void submit(const FrameData& f) override {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
         glEnable(GL_FRAMEBUFFER_SRGB);
-        draw_scene(f);
+        const bool timed = timing_begin();
+        if (remaster_) draw_scene_remaster(f);
+        else draw_scene(f);
+        if (timed) glQueryCounter(timing_.queries[1], GL_TIMESTAMP);
         draw_ui(f.ui);
     }
 
@@ -525,6 +549,412 @@ private:
         glBindVertexArray(0);
     }
 
+    // ---- remaster (Enhanced/Ultra): docs/GRAPHICS_ROADMAP.md "Remaster" ------------------------------
+    // Passes: sun shadow map -> opaque (HDR colour + ambient MRT, depth-stencil texture) [-> stencil
+    // volumes if no shadow map] -> SSAO -> AO apply (reverse subtract) -> translucent -> composite
+    // (volumetric fog, exposure, ACES, sRGB encode) -> TAA -> EASU -> RCAS/copy into the display target.
+
+    struct PbrProgram {
+        GLuint program = 0;
+        GLint model, normal_matrix, no_fog, pass, tint, alpha_cutoff, unlit, has_layer2, has_lightmap, bump_scale, maps, cls, blend, diffuse,
+            vertex_diffuse, light_count, light_pos_range, light_color, light_att;
+    };
+    struct RemasterTargets {
+        glm::ivec2 scene{0, 0}, output{0, 0};
+        GLuint hdr = 0, ambient = 0, depth = 0, ao = 0, ldr = 0, hist[2]{}, easu = 0;
+        GLuint fbo_opaque = 0, fbo_trans = 0, fbo_hdr = 0, fbo_ao = 0, fbo_ldr = 0, fbo_hist[2]{}, fbo_easu = 0;
+    };
+
+    // GL texture units of the remaster samplers: Vulkan set-2 binding b <-> unit b + 7 (remaster_prelude.glsl).
+    GLuint link_remaster(const char* vs_body, const char* fs_body, bool pbr) {
+        const std::string pre = std::string(gl_shaders::remaster_prelude) + gl_shaders::remaster_common;
+        const std::string vs = pre + vs_body, fs = pre + (pbr ? gl_shaders::pbr_shade : "") + fs_body;
+        const GLuint p = link(vs.c_str(), fs.c_str());
+        glUseProgram(p);
+        static const std::pair<const char*, int> units[] = {
+            {"u_albedo", 0},  {"u_layer2", 1},  {"u_lightmap", 2},    {"u_bump", 3},  {"u_normal_map", 4}, {"u_rough_map", 5}, {"u_metal_map", 6},
+            {"u_ao_map", 7},  {"u_shadow", 8},  {"u_env", 9},         {"u_irradiance", 10}, {"u_hdr", 11},  {"u_ambient", 12}, {"u_depth", 13},
+            {"u_ao", 14},     {"u_ldr", 15},    {"u_history", 16},    {"u_src", 17},  {"u_final", 19}};
+        for (const auto& [n, unit] : units)
+            if (const GLint loc = glGetUniformLocation(p, n); loc >= 0) glUniform1i(loc, unit);
+        if (const GLuint block = glGetUniformBlockIndex(p, "RemasterFrame"); block != GL_INVALID_INDEX) glUniformBlockBinding(p, block, 0);
+        return p;
+    }
+
+    void ensure_remaster_programs() {
+        if (pbr_.program) return;
+        pbr_.program = link_remaster(gl_shaders::mesh_pbr_vert, gl_shaders::mesh_pbr_frag, true);
+        auto u = [&](const char* n) { return glGetUniformLocation(pbr_.program, n); };
+        pbr_ = {pbr_.program, u("u_model"), u("u_normal_matrix"), u("u_no_fog"), u("u_pass"), u("u_tint"), u("u_alpha_cutoff"), u("u_unlit"),
+                u("u_has_layer2"), u("u_has_lightmap"), u("u_bump_scale"), u("u_maps"), u("u_class"), u("u_blend"), u("u_diffuse"),
+                u("u_vertex_diffuse"), u("u_light_count"), u("u_light_pos_range"), u("u_light_color"), u("u_light_att")};
+        prog_ssao_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ssao, false);
+        prog_ao_apply_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ao_apply, false);
+        prog_composite_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_composite, false);
+        prog_taa_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_taa, false);
+        prog_easu_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_easu, false);
+        prog_rcas_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_rcas, false);
+        glGenBuffers(1, &ubo_);
+        glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(RemasterFrame), nullptr, GL_DYNAMIC_DRAW);
+    }
+
+    static GLuint make_texture(GLenum internal, GLenum format, GLenum type, glm::ivec2 size, GLint filter) {
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GLint(internal), size.x, size.y, 0, format, type, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        return t;
+    }
+
+    static GLuint make_fbo(std::initializer_list<GLuint> colors, GLuint depth, GLenum depth_attachment = GL_DEPTH_STENCIL_ATTACHMENT) {
+        GLuint f = 0;
+        glGenFramebuffers(1, &f);
+        glBindFramebuffer(GL_FRAMEBUFFER, f);
+        GLenum bufs[4] = {GL_NONE, GL_NONE, GL_NONE, GL_NONE};
+        GLsizei n = 0;
+        for (GLuint c : colors) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + n, GL_TEXTURE_2D, c, 0);
+            bufs[n] = GL_COLOR_ATTACHMENT0 + n;
+            ++n;
+        }
+        if (depth) glFramebufferTexture2D(GL_FRAMEBUFFER, depth_attachment, GL_TEXTURE_2D, depth, 0);
+        glDrawBuffers(std::max<GLsizei>(n, 1), bufs);
+        glReadBuffer(n ? GL_COLOR_ATTACHMENT0 : GL_NONE);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) throw std::runtime_error("GL remaster framebuffer incomplete");
+        return f;
+    }
+
+    void ensure_remaster_targets(glm::ivec2 scene, glm::ivec2 output) {
+        RemasterTargets& t = rt_;
+        if (t.scene == scene && t.output == output && t.hdr) return;
+        destroy_remaster_targets();
+        t.scene = scene;
+        t.output = output;
+        t.hdr = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_LINEAR);
+        t.ambient = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_NEAREST);
+        t.depth = make_texture(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, scene, GL_NEAREST);
+        t.ao = make_texture(GL_R8, GL_RED, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
+        t.ldr = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
+        for (GLuint& h : t.hist) h = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
+        t.easu = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, output, GL_LINEAR);
+        t.fbo_opaque = make_fbo({t.hdr, t.ambient}, t.depth);
+        t.fbo_trans = make_fbo({t.hdr}, t.depth);
+        t.fbo_hdr = make_fbo({t.hdr}, 0);
+        t.fbo_ao = make_fbo({t.ao}, 0);
+        t.fbo_ldr = make_fbo({t.ldr}, 0);
+        for (int i = 0; i < 2; ++i) t.fbo_hist[i] = make_fbo({t.hist[i]}, 0);
+        t.fbo_easu = make_fbo({t.easu}, 0);
+        history_.valid = false;
+    }
+
+    void destroy_remaster_targets() {
+        RemasterTargets& t = rt_;
+        for (GLuint f : {t.fbo_opaque, t.fbo_trans, t.fbo_hdr, t.fbo_ao, t.fbo_ldr, t.fbo_hist[0], t.fbo_hist[1], t.fbo_easu})
+            if (f) glDeleteFramebuffers(1, &f);
+        for (GLuint x : {t.hdr, t.ambient, t.depth, t.ao, t.ldr, t.hist[0], t.hist[1], t.easu})
+            if (x) glDeleteTextures(1, &x);
+        t = {};
+    }
+
+    void ensure_shadow_map() {
+        if (shadow_tex_ || gfx_.shadow_map_size <= 0) return;
+        const glm::ivec2 s(gfx_.shadow_map_size);
+        shadow_tex_ = make_texture(GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, s, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        shadow_fbo_ = make_fbo({}, shadow_tex_, GL_DEPTH_ATTACHMENT);
+    }
+
+    void destroy_shadow_map() {
+        if (shadow_fbo_) glDeleteFramebuffers(1, &shadow_fbo_);
+        if (shadow_tex_) glDeleteTextures(1, &shadow_tex_);
+        shadow_fbo_ = shadow_tex_ = 0;
+    }
+
+    void destroy_remaster() {
+        destroy_remaster_targets();
+        destroy_shadow_map();
+        for (GLuint p : {pbr_.program, prog_ssao_, prog_ao_apply_, prog_composite_, prog_taa_, prog_easu_, prog_rcas_})
+            if (p) glDeleteProgram(p);
+        if (ubo_) glDeleteBuffers(1, &ubo_);
+    }
+
+    void ensure_env(const Lighting& l) {
+        const std::uint64_t key = env_key(l);
+        if (env_radiance_ && key == env_key_) return;
+        destroy_texture(env_radiance_);
+        destroy_texture(env_irradiance_);
+        const EnvMaps m = build_env_maps(l);
+        env_radiance_ = create_texture(m.radiance);
+        env_irradiance_ = create_texture(m.irradiance);
+        env_levels_ = m.radiance_levels;
+        env_key_ = key;
+    }
+
+    static bool is_terrain(const Material& m) { return m.lightmap && m.vertex_diffuse; }
+
+    void bind_unit(int unit, GLuint tex) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, tex);
+    }
+
+    // pass 0 = scene, 1 = shadow caster (depth only).
+    void draw_pbr(const DrawItem& d, int pass) {
+        const auto it = meshes_.find(d.mesh.id);
+        if (it == meshes_.end()) return;
+        const Mesh& m = it->second;
+        const Material& mat = d.material;
+        if (mat.two_sided || pass == 1) glDisable(GL_CULL_FACE);
+        else {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
+        glUniformMatrix4fv(pbr_.model, 1, GL_FALSE, glm::value_ptr(d.model));
+        const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(d.model)));
+        glUniformMatrix3fv(pbr_.normal_matrix, 1, GL_FALSE, glm::value_ptr(nm));
+        glUniform1i(pbr_.pass, pass);
+        glUniform4fv(pbr_.tint, 1, glm::value_ptr(mat.tint));
+        // Shadow pass: blended foliage casts through an alpha test at 0.5.
+        const float cutoff = mat.blend == BlendMode::AlphaTest || mat.blend == BlendMode::ShadowVolume ? mat.alpha_cutoff
+                             : pass == 1 && mat.blend == BlendMode::AlphaBlend                         ? 0.5f
+                                                                                                      : -1.0f;
+        glUniform1f(pbr_.alpha_cutoff, cutoff);
+        glUniform1i(pbr_.unlit, mat.unlit ? 1 : 0);
+        glUniform1i(pbr_.no_fog, mat.fog ? 0 : 1);
+        glUniform1i(pbr_.has_layer2, mat.layer2 ? 1 : 0);
+        glUniform1i(pbr_.has_lightmap, mat.lightmap ? 1 : 0);
+        glUniform1i(pbr_.blend, int(mat.blend));
+        glUniform3fv(pbr_.diffuse, 1, glm::value_ptr(mat.diffuse));
+        glUniform1i(pbr_.vertex_diffuse, mat.vertex_diffuse ? 1 : 0);
+        int lights = 0;
+        if (!mat.unlit && pass == 0) {
+            glm::vec4 pos_range[kMaxDrawLights];
+            glm::vec3 color[kMaxDrawLights], att[kMaxDrawLights];
+            for (int i = 0; i < std::min<int>(d.light_count, kMaxDrawLights); ++i) {
+                if (d.lights[i] >= point_lights_.size()) continue;
+                const PointLight& p = point_lights_[d.lights[i]];
+                pos_range[lights] = glm::vec4(p.position, p.range);
+                color[lights] = p.color;
+                att[lights++] = p.attenuation;
+            }
+            if (lights) {
+                glUniform4fv(pbr_.light_pos_range, lights, glm::value_ptr(pos_range[0]));
+                glUniform3fv(pbr_.light_color, lights, glm::value_ptr(color[0]));
+                glUniform3fv(pbr_.light_att, lights, glm::value_ptr(att[0]));
+            }
+        }
+        glUniform1i(pbr_.light_count, lights);
+        const bool bump = mat.bump && mat.bump_scale != 0.0f;
+        glUniform1f(pbr_.bump_scale, bump ? mat.bump_scale : 0.0f);
+        MaterialMaps maps;
+        if (const auto mt = material_maps_.find(mat.albedo.id); mt != material_maps_.end()) maps = mt->second;
+        if (is_terrain(mat)) maps.cls = MaterialClass::Terrain;
+        glUniform1i(pbr_.cls, int(maps.cls));
+        glUniform4i(pbr_.maps, maps.normal ? 1 : 0, maps.roughness ? 1 : 0, maps.metal ? 1 : 0, maps.ao ? 1 : 0);
+        bind_unit(7, texture(maps.ao));
+        bind_unit(6, texture(maps.metal));
+        bind_unit(5, texture(maps.roughness));
+        bind_unit(4, texture(maps.normal));
+        if (bump) bind_unit(3, texture(mat.bump));
+        bind_unit(2, texture(mat.lightmap));
+        bind_unit(1, texture(mat.layer2));
+        bind_unit(0, texture(mat.albedo));
+        glBindVertexArray(m.vao);
+        const std::uint32_t first = std::min(d.first_index, m.index_count);
+        const std::uint32_t count = d.index_count ? std::min(d.index_count, m.index_count - first) : m.index_count - first;
+        glDrawElements(GL_TRIANGLES, GLsizei(count), GL_UNSIGNED_INT, reinterpret_cast<void*>(std::size_t(first) * 4));
+    }
+
+    void fullscreen(GLuint program, GLuint fbo, glm::ivec2 size) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, size.x, size.y);
+        glUseProgram(program);
+        glBindVertexArray(fill_vao_);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    void draw_scene_remaster(const FrameData& f) {
+        const glm::ivec4 vp = f.view.viewport.z > 0 ? f.view.viewport : glm::ivec4(0, 0, target_size_.x, target_size_.y);
+        const glm::ivec2 output(vp.z, vp.w), scene = scene_size(gfx_, output);
+        ensure_remaster_programs();
+        ensure_remaster_targets(scene, output);
+        ensure_shadow_map();
+        ensure_env(f.lighting);
+        const Lighting& l = f.lighting;
+        point_lights_ = l.point_lights;
+        const RemasterFrame rf = build_remaster_frame(gfx_, f, scene, output, env_levels_, history_);
+        glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof rf, &rf);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_FRAMEBUFFER_SRGB);  // float/UNORM targets; the final pass writes encoded bytes
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_TRUE);
+        glUseProgram(pbr_.program);
+        bind_unit(8, 0);  // the shadow map is written below; nothing samples it before the scene pass
+        bind_unit(9, texture(env_radiance_));
+        bind_unit(10, texture(env_irradiance_));
+
+        // Sun shadow map: every lit opaque/alpha-tested draw except the terrain (its lightmap already holds
+        // the baked terrain shading), slope-scaled bias + normal offset in the receiver.
+        if (shadow_tex_) {
+            glBindFramebuffer(GL_FRAMEBUFFER, shadow_fbo_);
+            glViewport(0, 0, gfx_.shadow_map_size, gfx_.shadow_map_size);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(1.5f, 2.0f);
+            for (const DrawItem& d : f.draws)
+                if (casts_sun_shadow(d.material)) draw_pbr(d, 1);
+            glDisable(GL_POLYGON_OFFSET_FILL);
+        }
+        bind_unit(8, shadow_tex_);
+
+        // Opaque + alpha-tested into HDR colour + ambient, stencil as the original (volumes fallback).
+        glBindFramebuffer(GL_FRAMEBUFFER, rt_.fbo_opaque);
+        glViewport(0, 0, scene.x, scene.y);
+        const glm::vec4 cc = l.clear_color, zero(0.0f);
+        glClearBufferfv(GL_COLOR, 0, glm::value_ptr(cc));
+        glClearBufferfv(GL_COLOR, 1, glm::value_ptr(zero));
+        glStencilMask(0xff);
+        glClearStencil(0);
+        glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        blended_.clear();
+        volumes_.clear();
+        glEnable(GL_STENCIL_TEST);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        int receive = -1;
+        for (const DrawItem& d : f.draws) {
+            const BlendMode b = d.material.blend;
+            if (b == BlendMode::ShadowVolume) volumes_.push_back(&d);
+            else if (b == BlendMode::AlphaBlend || b == BlendMode::Additive) blended_.push_back(&d);
+            else {
+                if (int(d.material.receive_shadow) != receive)
+                    receive = d.material.receive_shadow, glStencilFunc(GL_ALWAYS, receive ? 128 : 0, 0xff);
+                draw_pbr(d, 0);
+            }
+        }
+        if (!shadow_tex_ && !volumes_.empty() && l.shadow_color.a > 0.0f) {
+            const GLenum first_only[2] = {GL_COLOR_ATTACHMENT0, GL_NONE};
+            glDrawBuffers(2, first_only);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glDepthMask(GL_FALSE);
+            glStencilFunc(GL_ALWAYS, 0, 0xff);
+            glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR);
+            glStencilOpSeparate(GL_BACK, GL_KEEP, GL_KEEP, GL_DECR);
+            for (const DrawItem* d : volumes_) draw_pbr(*d, 0);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDepthMask(GL_TRUE);
+            glStencilFunc(GL_LESS, 128, 0xff);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(fill_program_);
+            glUniform4fv(fill_color_, 1, glm::value_ptr(shadow_fill_color(l.shadow_color)));
+            glBindVertexArray(fill_vao_);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glDisable(GL_BLEND);
+            glEnable(GL_DEPTH_TEST);
+            const GLenum both[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            glDrawBuffers(2, both);
+        }
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+
+        if (gfx_.ssao) {
+            bind_unit(13, rt_.depth);
+            fullscreen(prog_ssao_, rt_.fbo_ao, scene);
+            bind_unit(12, rt_.ambient);
+            bind_unit(14, rt_.ao);
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+            glBlendFunc(GL_ONE, GL_ONE);
+            fullscreen(prog_ao_apply_, rt_.fbo_hdr, scene);
+            glBlendEquation(GL_FUNC_ADD);
+            glDisable(GL_BLEND);
+            bind_unit(13, 0);
+        }
+
+        // Translucent back to front (same order as the Original path), no depth writes.
+        glBindFramebuffer(GL_FRAMEBUFFER, rt_.fbo_trans);
+        glViewport(0, 0, scene.x, scene.y);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glDepthMask(GL_FALSE);
+        glUseProgram(pbr_.program);
+        const glm::vec3 cam = f.view.camera_position;
+        std::sort(blended_.begin(), blended_.end(), [&](const DrawItem* a, const DrawItem* b) {
+            const glm::vec3 pa(a->model[3]), pb(b->model[3]);
+            return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
+        });
+        for (const DrawItem* d : blended_) {
+            glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+            draw_pbr(*d, 0);
+        }
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+
+        // Post chain.
+        bind_unit(11, rt_.hdr);
+        bind_unit(13, rt_.depth);
+        fullscreen(prog_composite_, rt_.fbo_ldr, scene);
+        GLuint src = rt_.ldr;
+        if (gfx_.aa == AntiAliasing::Taa) {
+            const int w = int(history_.frame & 1u), r = 1 - w;
+            bind_unit(15, rt_.ldr);
+            bind_unit(16, rt_.hist[r]);
+            fullscreen(prog_taa_, rt_.fbo_hist[w], scene);
+            src = rt_.hist[w];
+        }
+        if (gfx_.upscale == Upscaler::Fsr1 && scene != output) {
+            bind_unit(17, src);
+            fullscreen(prog_easu_, rt_.fbo_easu, output);
+            src = rt_.easu;
+        }
+        bind_unit(19, src);
+        for (int unit : {17, 16, 15, 13}) bind_unit(unit, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        const GLint y = target_size_.y - vp.y - vp.w;  // top-left origin -> GL bottom-left
+        glViewport(vp.x, y, vp.z, vp.w);
+        glUseProgram(prog_rcas_);
+        glBindVertexArray(fill_vao_);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        bind_unit(19, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glEnable(GL_FRAMEBUFFER_SRGB);
+    }
+
+    static bool casts_sun_shadow(const Material& m) {
+        return !m.unlit && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m);
+    }
+
+    // Optional GPU timing of the scene (JOA_GPU_TIMING=1): timestamp pair around draw_scene*, read one frame late.
+    bool timing_begin() {
+        if (!timing_.enabled) return false;
+        if (!timing_.queries[0]) glGenQueries(2, timing_.queries);
+        else if (timing_.pending) {
+            GLuint64 a = 0, b = 0;
+            glGetQueryObjectui64v(timing_.queries[0], GL_QUERY_RESULT, &a);
+            glGetQueryObjectui64v(timing_.queries[1], GL_QUERY_RESULT, &b);
+            timing_.scene_ms += double(b - a) * 1e-6;
+            ++timing_.frames;
+        }
+        glQueryCounter(timing_.queries[0], GL_TIMESTAMP);
+        timing_.pending = true;
+        return true;
+    }
+
     SDL_Window* window_;
     SDL_GLContext context_ = nullptr;
     MeshProgram mesh_{};
@@ -541,6 +971,25 @@ private:
     GLint fill_color_ = -1;
     std::span<const PointLight> point_lights_;  // of the frame being drawn
     std::vector<UiVertex> ui_vertices_;
+
+    GraphicsSettings gfx_{};
+    bool remaster_ = false;
+    std::unordered_map<std::uint32_t, MaterialMaps> material_maps_;  // by albedo texture id
+    PbrProgram pbr_{};
+    GLuint prog_ssao_ = 0, prog_ao_apply_ = 0, prog_composite_ = 0, prog_taa_ = 0, prog_easu_ = 0, prog_rcas_ = 0, ubo_ = 0;
+    RemasterTargets rt_{};
+    GLuint shadow_tex_ = 0, shadow_fbo_ = 0;
+    TextureHandle env_radiance_{}, env_irradiance_{};
+    std::uint64_t env_key_ = 0;
+    int env_levels_ = 1;
+    RemasterHistory history_{};
+    struct {
+        bool enabled = std::getenv("JOA_GPU_TIMING") != nullptr;
+        bool pending = false;
+        GLuint queries[2]{};
+        double scene_ms = 0;
+        std::uint64_t frames = 0;
+    } timing_;
 };
 
 }  // namespace

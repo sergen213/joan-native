@@ -1,9 +1,9 @@
 // Headless: loads S1L1 (terrain, objects, lighting, Joan) through a renderer stub and checks counts.
 // Exit 77 (skip) without the original data.
 #include "check.hpp"
+#include "engine/attach_items.hpp"
 #include "engine/character_actor.hpp"
 #include "engine/world_scene.hpp"
-#include "engine/world_view.hpp"
 
 #include <cstdlib>
 #include <string>
@@ -68,10 +68,6 @@ int main() {
     std::fprintf(stderr, "objects within 40 units of the ground: %d / %zu\n", near, world.objects().size());
     CHECK(near * 10 >= int(world.objects().size()) * 7);
 
-    // Scripted start (S1L1.sce set_unit_pos 15021, 12684; set_unit_dir 115).
-    CHECK_NEAR(world.start_position().x, 15021.0f, 0.5f);
-    CHECK_NEAR(world.start_position().z, -12684.0f, 0.5f);
-    CHECK_NEAR(glm::degrees(world.start_yaw()), 115.0f, 1e-3f);
     const Lighting l = world.lighting();
     CHECK(l.sun_direction.y < -0.99f);       // Normal_12: VDir 90 = straight down
     CHECK(l.ambient.r > 0.4f && l.fog_end > l.fog_start);
@@ -100,26 +96,16 @@ int main() {
     for (int i = 0; i < sector129.light_count; ++i)
         light11 |= glm::distance(l.point_lights[sector129.lights[std::size_t(i)]].position, to_engine(8370.42f, 482.69f, 1424.0f)) < 1.0f;
     CHECK(light11);
-    CHECK(world.units().size() == 2 + 71);  // Joan + Jean de Metz (S1L1.sce), then the S1L1.uni CreateUnit blocks
-    CHECK(s.map_units == 71);
-    bool jean = false;
-    for (const auto& u : world.units())
-        if (u.code == "JEAN_DE_METZ") jean = std::abs(u.position.x - 14934.0f) < 0.5f && std::abs(glm::degrees(u.heading) - 295.0f) < 1e-3f;
-    CHECK(jean);
     CHECK(WorldScene(assets, "S1L1", 60.0f).stats().stage == "Normal_Night");  // 1400 + 160 min wraps past midnight
+    CHECK(world.nodes().size() == 1 && world.nodes()[0].map.origin == glm::vec2(0.0f));
     Character joan(assets, "unit/Joan_of_Arc.AM1", "anim/joan_of_arc.am2");
-    CHECK(joan.play("f_run"));
-    CHECK(!joan.play("no_such_clip"));
+    CHECK(joan.play("anim/joan_of_arc.am2", "f_run"));
+    CHECK(!joan.play("anim/joan_of_arc.am2", "no_such_clip"));
+    CHECK(!joan.play("anim/no_such_file.am2", "f_run"));
     CHECK(joan.clip().name == "f_run");
     joan.pose(0.0f);
     CHECK(joan.height() > 60.0f && joan.height() < 100.0f);
-    const float t0 = joan.time_ms(1.0f);
-    joan.tick(1.0f / 30.0f);
-    CHECK_NEAR(joan.time_ms(1.0f) - t0, 1000.0f / 30.0f, 1e-3f);
-    CHECK_NEAR(joan.time_ms(0.5f) - t0, 500.0f / 30.0f, 1e-3f);
-    for (int i = 0; i < 30; ++i) joan.tick(1.0f / 30.0f);  // f_run is 800 ms: wraps
-    CHECK(joan.time_ms(1.0f) < joan.clip().end - joan.clip().start);
-    CHECK(joan.time_ms(0.0f) >= 0.0f);
+    CHECK_NEAR(joan.clip_length(), 800.0f, 40.0f);  // f_run
     std::vector<DrawItem> draws;
     joan.build(glm::mat4(1.0f), draws);
     CHECK(draws.size() == 6);  // six submeshes
@@ -167,19 +153,5 @@ int main() {
         outward = outward && glm::dot(glm::cross(b - a, c - a), out) > 0.0f;
     }
     CHECK(outward);
-
-    // Whole client world: every start unit placed with its idle clip and equipment.
-    Options o;
-    o.game_dir = dir ? dir : ".";
-    o.scenario = "S1L1";
-    const WorldView view(r, o);
-    CHECK(view.water().count() == 5 && view.water().bump_count() == 2 && view.water().bump_frames() == 65);
-    // Emitters: 2 .stg CreateParticle (waterfall mist) + 9 TorchStand .pro HasEmitter slots.
-    CHECK(view.particles().emitter_count() == 11 && view.particles().stage_emitters() == 2 &&
-          view.particles().item_emitters() == 9 && view.particles().missing() == 0);
-    const auto& u = view.unit_stats();
-    std::fprintf(stderr, "units placed=%d missing=%d items=%d items_missing=%d\n", u.placed, u.missing, u.items, u.items_missing);
-    CHECK(u.placed == 72 && u.missing == 0);  // Jean de Metz + 71 .uni units
-    CHECK(u.items >= 73 && u.items_missing == 0);
     return test_result();
 }

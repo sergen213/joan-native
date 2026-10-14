@@ -1,9 +1,12 @@
 #include "game/campaign.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <type_traits>
 
 #include "formats/vfs_fs.hpp"
+#include "game/unitclass_db.hpp"
 
 namespace joa::game {
 
@@ -43,6 +46,11 @@ void copy_persistent_unit(const Unit& s, Unit& d) {
     d.ts_ep_regen = s.ts_ep_regen, d.str = s.str, d.dex = s.dex, d.def = s.def, d.lead = s.lead;
     d.armor_level = s.armor_level, d.armor_item = s.armor_item, d.loyalty = s.loyalty, d.morale = s.morale;
     d.reputation = s.reputation, d.mode = s.mode, d.attack_behaviour = s.attack_behaviour;
+    // 0x3b bytes at +0x16f (skill ints archery..mountain + 15 unmodelled bytes)
+    d.archery = s.archery, d.horse_riding = s.horse_riding, d.swimming = s.swimming;
+    d.elephant_riding = s.elephant_riding, d.wide_animal = s.wide_animal, d.preaching = s.preaching;
+    d.power_jump = s.power_jump, d.disguise = s.disguise, d.persuade = s.persuade;
+    d.lock_picking = s.lock_picking, d.mountain = s.mountain;
     d.upgrades = s.upgrades;  // FUN_00531230
     d.inv = s.inv;            // FUN_00497a10
 }
@@ -137,6 +145,179 @@ bool CampaignProfile::load(formats::ByteReader& r) {
     }
     gold = r.i32(), play_ms = r.u32(), command_points = r.i32(), difficulty = r.i32();
     return r.ok();
+}
+
+// ---- Save/Player.dat (CONTAINERS_WORLD_SAVES.md §7.2) ----------------------------------------
+namespace {
+using formats::PlayerBytes;
+
+// Unit image fields carried by the profile (copy_persistent_unit subset; offsets CONFIRMED,
+// GAMEPLAY_CHARACTER_COMBAT.md Part A §1). size 2 = short (sign-extended on import).
+struct Field {
+    std::uint16_t off;
+    std::uint8_t size;
+    int Unit::*m;
+};
+constexpr Field kFields[] = {
+    {0x031, 2, &Unit::team}, {0x104, 4, &Unit::rank}, {0x108, 2, &Unit::kingdom}, {0x10a, 2, &Unit::race},
+    {0x11c, 4, &Unit::max_lives}, {0x120, 4, &Unit::lives}, {0x124, 2, &Unit::level}, {0x126, 4, &Unit::xp},
+    {0x12a, 2, &Unit::skill_points}, {0x12c, 2, &Unit::attr_points}, {0x131, 4, &Unit::ts_level},
+    {0x135, 4, &Unit::hp}, {0x139, 4, &Unit::hp_trail}, {0x13d, 4, &Unit::base_max_hp}, {0x145, 4, &Unit::ep},
+    {0x149, 4, &Unit::base_max_ep}, {0x151, 4, &Unit::ts_ep_regen}, {0x155, 2, &Unit::str}, {0x157, 2, &Unit::dex},
+    {0x159, 2, &Unit::def}, {0x15b, 2, &Unit::lead}, {0x15d, 2, &Unit::armor_level}, {0x15f, 2, &Unit::armor_item},
+    {0x161, 2, &Unit::loyalty}, {0x163, 2, &Unit::morale}, {0x165, 2, &Unit::reputation}, {0x167, 4, &Unit::mode},
+    {0x16b, 4, &Unit::attack_behaviour},
+    {0x16f, 4, &Unit::archery}, {0x173, 4, &Unit::horse_riding}, {0x177, 4, &Unit::swimming},
+    {0x17b, 4, &Unit::elephant_riding}, {0x17f, 4, &Unit::wide_animal}, {0x183, 4, &Unit::preaching},
+    {0x187, 4, &Unit::power_jump}, {0x18b, 4, &Unit::disguise}, {0x18f, 4, &Unit::persuade},
+    {0x193, 4, &Unit::lock_picking}, {0x197, 4, &Unit::mountain},
+};
+
+void put(PlayerBytes& b, std::size_t off, std::int32_t v, std::size_t size) { std::memcpy(b.data() + off, &v, size); }
+std::int32_t get(const PlayerBytes& b, std::size_t off, std::size_t size) {
+    if (size == 2) {
+        std::int16_t v;
+        std::memcpy(&v, b.data() + off, 2);
+        return v;
+    }
+    std::int32_t v;
+    std::memcpy(&v, b.data() + off, 4);
+    return v;
+}
+void put_str(PlayerBytes& b, std::size_t off, const std::string& s, std::size_t n) {  // strncpy, NUL kept
+    std::memcpy(b.data() + off, s.data(), std::min(s.size(), n - 1));
+}
+std::string get_str(const PlayerBytes& b, std::size_t off, std::size_t n) {
+    return formats::ByteReader::cstr(std::span(b).subspan(off, n));
+}
+
+// Bag geometry (0x457290 args: rows 1, cell bytes = width, cols = height) for inventory +0x12/+0x16/+0x1a.
+constexpr int kBagW[3] = {4, 6, 6}, kBagH[3] = {1, 8, 4};
+
+// FUN_004575a0 first fit (y outer, x inner) + FUN_00458090 grid fill + FUN_004576f0 append.
+bool place(formats::PlayerItemBag& bag, int g, const ItemInstance& it, int w, int h) {
+    const int W = kBagW[g], H = kBagH[g];
+    auto free = [&](int x, int y) {
+        for (int yy = y; yy < y + h; ++yy)
+            for (int xx = x; xx < x + w; ++xx)
+                if (bag.grid[size_t(yy * W + xx)]) return false;
+        return true;
+    };
+    for (int y = 0; y <= H - h; ++y)
+        for (int x = 0; x <= W - w; ++x) {
+            if (!free(x, y)) continue;
+            const auto idx = std::uint8_t(bag.items.size() + 1);
+            for (int yy = y; yy < y + h; ++yy)
+                for (int xx = x; xx < x + w; ++xx) bag.grid[size_t(yy * W + xx)] = idx;
+            PlayerBytes r(0x18, 0);
+            put(r, 0, it.item, 2), put(r, 2, it.quantity, 2), put(r, 4, it.level, 2);
+            r[0x12] = std::uint8_t(w), r[0x13] = std::uint8_t(h), r[0x15] = std::uint8_t(x), r[0x16] = std::uint8_t(y);
+            r[0x17] = idx;
+            bag.items.push_back(std::move(r));
+            return true;
+        }
+    return false;
+}
+
+formats::PlayerUnit export_unit(const Unit& u, const GameData& gd) {
+    formats::PlayerUnit p;
+    p.raw.assign(0x432, 0);
+    put(p.raw, 0x3b, u.cls + 1, 2);
+    put_str(p.raw, 0x3d, u.name, 0x42);
+    put_str(p.raw, 0xc1, u.title, 0x41);
+    p.raw[0x130] = u.level_arrow;
+    for (const auto& f : kFields) put(p.raw, f.off, u.*f.m, f.size);
+    p.block_16f.assign(p.raw.begin() + 0x16f, p.raw.begin() + 0x1aa);
+    if (!u.upgrades.empty()) {
+        p.upgrade_ptr = 1;  // any non-zero value: the reader allocates a fresh list
+        put(p.raw, 0x1aa, 1, 4);
+        for (const auto& e : u.upgrades)
+            p.upgrades.push_back({std::int16_t(e.upitem + 1), std::int16_t(e.unlocked), std::int16_t(e.applied),
+                                  std::int16_t(e.combo_level)});
+    }
+    put(p.raw, 0x1c1, 1, 4);
+    auto& inv = p.inv.emplace();
+    inv.raw.assign(0x1e, 0);
+    put(inv.raw, 0, u.inv.weapon_mode, 2);
+    const ItemInstance* slots[4] = {&u.inv.melee[0], &u.inv.melee[1], &u.inv.ranged, &u.inv.ammo};
+    for (size_t s = 0; s < 4; ++s) {
+        if (!slots[s]->item) continue;
+        put(inv.raw, 2 + 4 * s, 1, 4);
+        inv.slots[s].assign(0x12, 0);
+        put(inv.slots[s], 0, slots[s]->item, 2), put(inv.slots[s], 2, slots[s]->quantity, 2);
+        put(inv.slots[s], 4, slots[s]->level, 2);
+    }
+    for (int g = 0; g < 3; ++g) {
+        put(inv.raw, size_t(0x12 + 4 * g), 1, 4);
+        inv.bags[size_t(g)].grid.assign(size_t(kBagW[g] * kBagH[g]), 0);
+    }
+    for (const auto& it : u.inv.bag) {
+        if (it.item <= 0 || it.item >= int(gd.items.size())) continue;
+        const ItemDef& d = gd.items[size_t(it.item)];
+        // ponytail: items that fit nowhere are dropped, as the original's add-item fails for them.
+        if (d.item_class == "ENHANCER") place(inv.bags[0], 0, it, d.width, d.height);
+        else if (!place(inv.bags[1], 1, it, d.width, d.height)) place(inv.bags[2], 2, it, d.width, d.height);
+    }
+    return p;
+}
+
+Unit import_unit(const formats::PlayerUnit& p) {
+    Unit u;
+    u.cls = get(p.raw, 0x3b, 2) - 1;
+    u.name = get_str(p.raw, 0x3d, 0x42);
+    u.title = get_str(p.raw, 0xc1, 0x41);
+    u.level_arrow = p.raw[0x130] != 0;
+    for (const auto& f : kFields) u.*f.m = get(p.raw, f.off, f.size);
+    for (const auto& e : p.upgrades) u.upgrades.push_back({e[0] - 1, e[1], e[2], e[3]});
+    if (!p.inv) return u;
+    const auto& inv = *p.inv;
+    u.inv.weapon_mode = get(inv.raw, 0, 2);
+    ItemInstance* slots[4] = {&u.inv.melee[0], &u.inv.melee[1], &u.inv.ranged, &u.inv.ammo};
+    for (size_t s = 0; s < 4; ++s)
+        if (inv.slots[s].size() == 0x12) *slots[s] = {get(inv.slots[s], 0, 2), get(inv.slots[s], 2, 2), get(inv.slots[s], 4, 2)};
+    for (const auto& bag : inv.bags)
+        for (const auto& r : bag.items)
+            if (r.size() == 0x18) u.inv.bag.push_back({get(r, 0, 2), get(r, 2, 2), get(r, 4, 2)});
+    return u;
+}
+}  // namespace
+
+formats::PlayerProfile to_player_dat(const CampaignProfile& p, const GameData& gd, std::string_view name) {
+    formats::PlayerProfile f;
+    f.header.assign(0x48, 0);
+    put_str(f.header, 0, std::string(name), 0x20);
+    put(f.header, 0x20, std::int32_t(p.heroes.size()), 4);
+    put(f.header, 0x28, std::int32_t(p.item_hints_a.size()), 4);
+    put(f.header, 0x30, std::int32_t(p.item_hints_b.size()), 4);
+    put(f.header, 0x38, p.gold, 4);
+    put(f.header, 0x3c, std::int32_t(p.play_ms), 4);
+    put(f.header, 0x40, p.command_points, 4);
+    f.block2.assign(f.header.begin(), f.header.begin() + 0x20);
+    for (const auto& h : p.heroes) {
+        formats::PlayerEntry e;
+        e.head.assign(0x20, 0);
+        put_str(e.head, 0, h.code, 0x21);  // FUN_004c80c0 strncpy 0x21; only 0x20 bytes are written
+        e.head2 = e.head;
+        e.unit = export_unit(h.unit, gd);
+        f.entries.push_back(std::move(e));
+    }
+    f.list_a = p.item_hints_a, f.list_b = p.item_hints_b;
+    f.trailing = std::uint16_t(p.command_points);
+    return f;
+}
+
+CampaignProfile from_player_dat(const formats::PlayerProfile& f, const GameData& gd) {
+    CampaignProfile p;
+    for (const auto& e : f.entries) {
+        HeroRecord h{e.code(), import_unit(e.unit)};
+        if (h.unit.cls < 0 || h.unit.cls >= int(gd.units.size())) h.unit.cls = gd.unit_index(h.code);
+        p.heroes.push_back(std::move(h));
+    }
+    p.item_hints_a = f.list_a, p.item_hints_b = f.list_b;
+    p.gold = f.gold();
+    p.play_ms = f.play_ms();
+    p.command_points = std::int16_t(f.trailing);  // FUN_004c8bb0 overwrites +0x40 with the trailing short
+    return p;
 }
 
 }  // namespace joa::game

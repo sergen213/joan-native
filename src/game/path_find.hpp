@@ -19,6 +19,7 @@ struct PathQuery {
     float radius = 64.0f;        // Unit_move_to default BODY_R*2; < 200 treated as 0 for narrow polys
     int start_poly = -1;         // -1 = find_poly / nearest_poly
     int max_expand = 100;        // every game caller passes 100
+    float body_r = 32.0f;        // BODY_R: the world-mesh leg (NavWorld) plans with radius BODY_R / 32
 };
 
 // Deterministic: no RNG, integer A* costs as in the original.

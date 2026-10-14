@@ -44,6 +44,14 @@ struct FollowCamera {
     glm::mat4 view() const;
 };
 
+// A rendered camera: engine space (camera.hpp axes, original units via to_engine), looking eye -> target.
+// fov_k = the original CameraState FOV parameter (+0x20, 1.0 = 45 deg vertical); Hor+ keeps it at any aspect.
+struct CameraPose {
+    glm::vec3 eye{0.0f, 100.0f, 100.0f};
+    glm::vec3 target{0.0f};
+    float fov_k = 1.0f;
+};
+
 // UI placement. The original interface is authored for a 4:3 1024x768 canvas (HIGH CONFIDENCE:
 // MENU1024/LD1024* strings, docs/CAMERA_AND_WIDESCREEN.md). Elements anchor either to the centred
 // 4:3 safe area (menus, dialogs) or to the real viewport edges (HUD corners on ultrawide).

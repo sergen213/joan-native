@@ -38,6 +38,7 @@ joa-install [--json] [--dest GAME_ROOT] verify
 joa-install [--json] [--dest GAME_ROOT] repair <source> [--use-wine]
 joa-install [--json] [--dest GAME_ROOT] uninstall
 joa-install manifest <dir> --id ID --label LABEL      # dev: prints a known_versions.json document
+joa-install [--json] [--dest GAME_ROOT] hd-import <dir> [--name N]   # HD texture pack, see below
 ```
 
 `GAME_ROOT` defaults to `$XDG_DATA_HOME/joan-native/game`. Exit: 0 ok, 1 failure (or verify/detect not ok), 2 usage.
@@ -47,7 +48,17 @@ Progress: stderr lines `progress <0-100> <message>` (deduplicated per percent). 
 - import: `{"ok":true,"installed","current","version","desktop_entry"}`
 - verify / repair: `{"ok","version","checked","missing":[],"mismatched":[]}`
 - uninstall: `{"ok":true,"removed"}`
+- hd-import: `{"ok":true,"pack","name","copied","identical_skipped"}`
 - any error: `{"ok":false,"error":"…"}`
+
+## HD texture packs (`hd-import`)
+
+`hd-import <dir>` copies the `texture/**` `.dds`/`.png` files of an already-extracted HD pack (e.g. the
+user's own download of the community HD Update) into `<GAME_ROOT>/../hd/<N>` (default
+`$XDG_DATA_HOME/joan-native/hd/hd-update`, where the engine's `hd_packs=<N>` looks). Files byte-identical
+to `GAME_ROOT/current` (case-insensitive path) are skipped; executables, `CONFIG.DAT`, models and `int8x6/`
+are never copied. Staged in `hd/.<N>.staging`, then renamed; an existing `<N>` is refused (never
+overwritten). The source is only read. Layout, priority and rights: `docs/HD_ASSETS.md`.
 
 ## Known versions
 

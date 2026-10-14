@@ -4,7 +4,7 @@
 #include <set>
 
 #include "game/ai_system.hpp"
-#include "game/nav_mesh.hpp"
+#include "game/multimap_nav.hpp"
 
 namespace joa::game {
 
@@ -188,7 +188,7 @@ void AiSystem::toggle_hold(Unit& u, bool recurse) {  // Unit_toggle_hold 0x5121c
             if (Unit* mu = w_.unit(m)) toggle_hold(*mu, false);
 }
 
-int AiSystem::recruit_nearby(Unit& p) {  // 0x43c210 -> 0x48dfb0(100)
+int AiSystem::find_recruitable(Unit& p) {  // 0x48dfb0(100)
     if (p.team == 0 || !is_leader(p) || w_.dead(p) || int(p.members.size()) >= max_troop_size(p)) return 0;
     int best = 0;
     float bd = 0;
@@ -201,6 +201,11 @@ int AiSystem::recruit_nearby(Unit& p) {  // 0x43c210 -> 0x48dfb0(100)
         if (dd > 100.0f * 100.0f || std::fabs(w_.rel_angle(p, o.pos)) > 90.0f) continue;
         if (!best || dd < bd) { best = o.id; bd = dd; }
     }
+    return best;
+}
+
+int AiSystem::recruit_nearby(Unit& p) {  // 0x43c210
+    const int best = find_recruitable(p);
     if (!best) return 0;
     Unit& o = *w_.unit(best);
     leave_team(o);

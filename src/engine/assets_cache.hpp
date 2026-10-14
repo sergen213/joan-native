@@ -1,6 +1,7 @@
 #pragma once
 // Bridge from original assets (joa_formats parsers) to renderer resources, cached by lowercase name.
 // Texture lookup and mesh layout: docs/formats/MODELS_AND_ANIMATION.md.
+#include "engine/hd_pack.hpp"
 #include "engine/renderer.hpp"
 #include "formats/anim_clip.hpp"
 #include "formats/dds.hpp"
@@ -49,7 +50,8 @@ MeshData build_mesh_data(const formats::Mesh& mesh, std::span<const std::vector<
 
 class AssetCache {
 public:
-    AssetCache(const formats::Vfs& vfs, IRenderer& renderer);
+    // hd_packs: resolved HD pack directories (resolve_hd_packs), first wins; docs/HD_ASSETS.md.
+    AssetCache(const formats::Vfs& vfs, IRenderer& renderer, std::vector<std::filesystem::path> hd_packs = {});
     ~AssetCache();
     AssetCache(const AssetCache&) = delete;
     AssetCache& operator=(const AssetCache&) = delete;
@@ -60,10 +62,13 @@ public:
     // Engine texture rule: drop the extension, match the base name case-insensitively in
     // INT8X6\, INT8X6\ITEM\, SAVE\, TEXTURE\ and TEXTURE\{ITEM,UNIT,TERRAIN,PARTICLE,MISC}\ (first wins).
     // ponytail: .DDS only (every model reference that resolves at all has a .dds); TGA/BMP-only names count as missing.
+    // An HD pack file at the same relative path (.dds/.png) replaces the pixels; companions and the
+    // material class go to IRenderer::set_material_maps for every loaded texture.
     const TextureInfo* texture(std::string_view name, bool repeat = true);
-    // Decoded base level (RGBA8) of a texture found by the same rule; empty if missing.
+    // Decoded base level (RGBA8) of a texture found by the same rule (HD override first); empty if missing.
     formats::DdsImage texture_pixels(std::string_view name) const;
-    std::filesystem::path texture_path(std::string_view name) const;
+    std::filesystem::path texture_path(std::string_view name) const;  // original file
+    std::size_t hd_overrides() const { return hd_overrides_; }  // textures loaded from an HD pack
 
     // Static model (.SMO), or .AM1 posed with `anim_am2` at time 0 (static props such as boxes).
     // Returns nullptr when the file is missing or malformed. Cached by lowercase path.
@@ -81,9 +86,15 @@ public:
 
 private:
     void index_textures() const;
+    // Decodes the original file's HD override (falls back to the original if unreadable), else the original.
+    bool load_texture(const std::filesystem::path& original, formats::DdsTexture& dds, std::uint32_t max_mips, HdOverride* hd) const;
+    TextureHandle companion(const std::filesystem::path& file, bool repeat);
 
     const formats::Vfs& vfs_;
     IRenderer& renderer_;
+    HdPacks hd_;
+    std::size_t hd_overrides_ = 0;
+    std::vector<TextureHandle> companions_;
     mutable std::unordered_map<std::string, std::filesystem::path> texture_index_;  // lowercase stem -> file
     mutable bool indexed_ = false;
     std::unordered_map<std::string, std::unique_ptr<TextureInfo>> textures_;

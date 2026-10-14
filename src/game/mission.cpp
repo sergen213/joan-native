@@ -2,7 +2,7 @@
 
 #include "formats/pfd_mesh.hpp"
 #include "formats/world_text.hpp"
-#include "game/nav_mesh.hpp"
+#include "game/multimap_nav.hpp"
 #include "game/orders_queue.hpp"
 #include "game/script_host.hpp"
 
@@ -45,7 +45,8 @@ std::vector<WorldNode> world_nodes(const formats::Vfs& vfs, const std::string& m
             const double hd = b.number("HD") * 0.017453292, cx = b.number("X") * 32.0, cy = b.number("Y") * 32.0;
             const double hw = b.number("WIDTH") * 16.0, hl = b.number("LENGTH") * 16.0;
             const double c = std::fabs(std::cos(hd)), s = std::fabs(std::sin(hd));
-            nodes.push_back({*n, float(int(float(cx - (c * hw + s * hl)))), float(int(float(cy - (s * hw + c * hl))))});
+            const double ex = c * hw + s * hl, ey = s * hw + c * hl;
+            nodes.push_back({*n, float(int(float(cx - ex))), float(int(float(cy - ey))), float(cx + ex), float(cy + ey)});
         }
     if (nodes.empty()) nodes.push_back({step.script_file});
     return nodes;
@@ -95,9 +96,13 @@ static void load_units(Mission& m, const formats::BlockText& uni, const WorldNod
         const Vec3 pos{float(b.number("X")) + node.ox, float(b.number("Y")) + node.oy, float(b.number("Z"))};
         const std::string* kingdom = b.get("Kingdom");
         const int nation = kingdom ? gd.nation_id(*kingdom) : 0;
-        const int id = w.spawn_unit(upper(*file), nation, pos, float(b.number("HD")));
+        const int id = m.add_unit(upper(*file));  // UnitArray_add: a CONTINUE-profile hero is restored
         Unit* u = w.unit(id);
         if (!u) continue;
+        u->rank = gd.units[u->cls].ranking;  // Unit_set_rank(class +0x149)
+        u->nation = nation;
+        u->pos = {pos.x, pos.y, w.terrain() ? w.terrain()->height(pos.x, pos.y) : pos.z};
+        w.set_yaw_now(*u, float(b.number("HD")));
         u->ai_controlled = true;  // +0x102 = 1
         if (const std::string* n = b.get("UnitName")) u->name = *n;
         if (const std::string* n = b.get("UnitShortName"); n && !n->empty()) u->short_name = *n;
@@ -142,8 +147,8 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
     const std::string dir = map_dir();
     const auto nodes = world_nodes(vfs_, dir, cm.step);
 
-    // Terrain: every world node's .gri at its origin. Nav mesh: single-node worlds use the node's
-    // .pfd; multi-node worlds run without one (straight-line movement, see the doc's gaps).
+    // Terrain: every world node's .gri at its origin. Path meshes: every node's .pfd at its origin
+    // plus the world-level <world>.pfd for cross-node routes (NavWorld).
     if (nodes.size() == 1) {
         if (auto t = GriTerrain::load_scenario(vfs_.root().string(), nodes.front().name)) terrain_ = std::move(t);
     } else {
@@ -155,9 +160,20 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
     if (!terrain_) terrain_ = std::make_unique<FlatTerrain>();
     world_ = std::make_unique<World>(gd_, terrain_.get(), seed);
     world_->difficulty = profile_.difficulty;
-    if (nodes.size() == 1)
-        if (auto pfd = vfs_.read(dir + "\\" + nodes.front().name + ".pfd"))
-            if (auto mesh = formats::parse_pfd(*pfd)) nav_ = std::make_unique<NavMesh>(*mesh);
+    auto read_pfd = [&](const std::string& stem) -> std::optional<NavMesh> {
+        if (auto b = vfs_.read(dir + "\\" + stem + ".pfd"))
+            if (auto mesh = formats::parse_pfd(*b)) return NavMesh(*mesh);
+        return std::nullopt;
+    };
+    if (nodes.size() == 1) {
+        if (auto mesh = read_pfd(nodes.front().name)) nav_ = std::make_unique<NavWorld>(std::move(*mesh));
+    } else {
+        std::vector<NavLevel> levels;
+        for (const auto& n : nodes)
+            if (auto mesh = read_pfd(n.name)) levels.push_back({std::move(*mesh), n.ox, n.oy, n.x1, n.y1});
+        const std::string& wf = cm.step.world_file;  // "scenario5\S5L1w" (S9L1 reuses scenario 5's world)
+        if (!levels.empty()) nav_ = std::make_unique<NavWorld>(std::move(levels), read_pfd(wf.substr(wf.find_last_of("\\/") + 1)));
+    }
     ai_ = std::make_unique<AiSystem>(*world_, nav_.get());
     phys_ = std::make_unique<CharPhysics>(nav_.get());  // navmesh walls, step-up, unit pushes, gravity
     world_->set_physics(phys_.get());
@@ -194,14 +210,55 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
                 if (const Unit* l = world_->unit(lid); l && ai_->is_leader(*l) && l->team == u->team) ai_->join_team(*u, lid);
         }
     }
-    // Profile restore (FUN_004728f0 / FUN_00472c40, gold, play time, command points).
+    restore_profile();
+    last_finish_ = 0;
+    // Script init pass of Battle::load_world (vtbl[0xc] exec of the root before tick 1).
+    vm_->load_pass();
+    return true;
+}
+
+// Battle_load_world 0x41c810 profile restore (FUN_004728f0 / FUN_00472c40, gold, play time,
+// command points).
+void Mission::restore_profile() {
     state_.item_hints_a = profile_.item_hints_a;
     state_.item_hints_b = profile_.item_hints_b;
     state_.gold = profile_.gold;
     state_.play_ms = profile_.play_ms;
     world_->command_points = profile_.command_points;
+}
+
+bool Mission::continue_in_world(const CampaignMission& cm, std::string* err) {
+    info_ = cm;
+    ai_->chapter = cm.no;
+    // Game_deinit keep path: enabled, finished, non-imperative objectives are dropped
+    // (Game_drop_end_condition 0x471f90 frees the texts; the record stays and is ignored) and the
+    // per-unit scenario counters (+0x1b0 +0x1b2 +0x1b5 +0x1b7 +0x1b9 +0x1bb) are cleared.
+    for (auto& r : state_.end)
+        if (r.enabled && r.finish && r.type != EndCondition::Imperative) r.has_des = false, r.des.clear(), r.territory_link.clear();
+    for (Unit& u : world_->units()) u.kills = u.officer_kills = u.crit_count = u.crit_kills = u.troop_lost = u.troop_kills = 0;
+    // Game_deinit closes every dialog / message / interface / cut scene (unconditional part);
+    // Game_init_arrays clears the win delay and the cut-scene flag; Battle_start_scenario clears
+    // DAT_00a5ba64. The engine-side UI settings stay.
+    MissionUi ui;
+    ui.auto_advance = ui_.auto_advance, ui.auto_ms = ui_.auto_ms, ui.auto_choice = ui_.auto_choice;
+    ui.key_name = std::move(ui_.key_name);
+    ui_ = std::move(ui);
+    state_.win_delay_ms = 0, state_.win_start_ms = 0, state_.cut_scene = false, world_->cut_scene = false;
+    state_.charmove_detect_block = 0;
+    // Scenario_deinit + script compile: a fresh script tree; game clock and engine RNG continue.
+    auto host = std::make_unique<MissionHost>(*this);
+    auto vm = std::make_unique<Vm>(vfs_source_loader(vfs_), *host, seed_);
+    vm->continue_from(*vm_);
+    vm_ = std::move(vm);
+    host_ = std::move(host);
+    world_->use_rng(&vm_->rng());
+    if (!vm_->load_scenario(cm.step)) {
+        if (err) *err = "script load failed: " + (vm_->errors().empty() ? std::string() : vm_->errors().front());
+        return false;
+    }
+    restore_profile();
     last_finish_ = 0;
-    // Script init pass of Battle::load_world (vtbl[0xc] exec of the root before tick 1).
+    force_objectives_ = false;
     vm_->load_pass();
     return true;
 }
@@ -213,6 +270,7 @@ void Mission::tick(const InputFrame& in) {
         state_.passed_ms += kTickMs;
     }
     advance_clock(state_, kTickMs);  // GameClock 0x476bb0
+    if (nav_) nav_->stream(*world_);  // level streaming + unit (de)activation (World_draw 0x44c800)
     objects_.tick(*this);
     // World events feed the engine-side objective counters, in the phase that produced them.
     std::size_t seen = world_->events().size();
@@ -274,6 +332,17 @@ int Mission::load_hero(std::string_view code, std::string_view nation) {
     return id;
 }
 
+int Mission::add_unit(std::string_view code) {
+    if (const int id = load_hero(code, {})) {
+        Unit& h = *world_->unit(id);
+        world_->set_hp(h, world_->max_hp(h));
+        world_->set_ep(h, world_->max_ep(h));
+        h.troop_kills = h.troop_lost = 0;  // +0x1bb / +0x1b9
+        return id;
+    }
+    return world_->spawn_unit(code, 0, {}, 0);
+}
+
 void Mission::store_profile() {
     for (int i = int(world_->units().size()); i >= 1; --i) {  // FUN_0051ff00
         Unit* u = world_->unit(i);
@@ -329,6 +398,7 @@ SaveFile Mission::save() const {
     section("OBJS", [&](ByteWriter& w) { objects_.save(w); });
     section("PLCS", [&](ByteWriter& w) { places_.save(w); });
     section("UIST", [&](ByteWriter& w) { ui_.save(w); });
+    if (nav_ && nav_->levels().size() > 1) f.add("NAVL", nav_->save_levels());  // level load states
     return f;
 }
 
@@ -362,6 +432,11 @@ bool Mission::load(const SaveFile& f, std::string* err) {
     if (!section("OBJS", [&](formats::ByteReader& r) { return objects_.load_state(r); })) return fail("bad OBJS section");
     if (!section("PLCS", [&](formats::ByteReader& r) { return places_.load_state(r); })) return fail("bad PLCS section");
     if (!section("UIST", [&](formats::ByteReader& r) { return ui_.load_state(r); })) return fail("bad UIST section");
+    if (nav_ && nav_->levels().size() > 1) {
+        const auto* s = f.find("NAVL");
+        if (!s || !nav_->load_levels(s->data)) return fail("bad NAVL section");
+        nav_->resync(*world_);
+    }
     return true;
 }
 

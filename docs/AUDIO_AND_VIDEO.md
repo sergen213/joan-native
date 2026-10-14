@@ -141,10 +141,60 @@ The install prefix must not contain whitespace (FFmpeg's `pkgconfig_generate.sh`
 
 ## 8. Gaps
 
-- Game integration is not wired yet: nobody calls `play_sound` from animations (`ANIMATE` `SOUND`/`SOUND_TIME`, `SOUND2`/`SOUNDTIME2`), the projectile `ARROW` loop, scripts, or the UI, and `MusicDirector` is not fed by a game loop (needs the mood inputs above: enemy within BATTLE_R, church, game over/won).
-- Environment selection (slot 0 by time of day/rain, side sounds every 30–60 s) is documented, and the API exists (`play_env`, `MusicTable::by_time`), but there is no director for it.
-- Map ambient emitters (`FUN_004c0680`, culling radius, source stealing) are not ported; the native mixer drops the sound when all 12 Sfx voices are busy.
+- In-game gaps (§9): footstep surface is always `GROUND`; rain environment variant; source stealing for ambient emitters (the native mixer drops a sound when all 12 Sfx voices are busy); `PICKUP` (no world pickup event yet), gate/wall/box hit sounds (`FUN_004950a0` with ItemRes sound ids: the map-object layer emits no events for them), the RTS death voice in `Unit_die`; the church mood (`8`) needs `Territory::scale == 4`, untested on data.
 - `A_WAVE1/2.RES` (2D `ilib\se.cpp` set) users are not traced; CONFIG 0x3E is used for the Voice bus only as a HYPOTHESIS; movie audio uses master volume only (HYPOTHESIS).
 - After `--movie-time` seeks, audio restarts at the first packet after the shown frame (≈ 1 packet of drift). Movie frames are uploaded with destroy + create per frame (30 Hz); add `IRenderer::update_texture` if it ever shows in profiles.
 - `WAVE.RES` (80 MB) is read into memory on first `play_sound`.
 - The minimal LGPL build has no PNG decoder, so `video_decode_test` skips its reference-capture comparison there (it runs with the system FFmpeg).
+
+## 9. In-game audio (`engine/game_audio.{hpp,cpp}`)
+
+`GameAudio` turns one session tick into audio. The app calls `on_tick(mission, world events, mission
+events, current snapshot)` after each 33 ms step, `frame(camera pose, dt)` every rendered frame
+(listener at `pose.eye`, forward `target − eye`, up +Y; then `AudioSystem::update()`), `menu()` on menu
+screens (MUSIC type `M` until the next `on_tick`; the director keeps running from `frame()`), and
+`stop()` when the mission is left, retried or replaced by a load. `voice_active()` feeds
+`GameUiBridge::voice_active`. It only reads the mission. Positions: `to_engine(UnitView::pos)`.
+
+World events (`GameEvent`) → 3D sounds at the unit / projectile:
+
+| Event | Sound | Original | Confidence |
+|---|---|---|---|
+| `Ev::Sound`, unit cue (move-record `SOUND`/`SOUND2`) | the code; `MAIN_CHAR` codes only for the player's unit; variant `recno % WF_RANDMAX` | `FUN_0050db80` | CONFIRMED |
+| `Ev::Sound`, code `TS_*` | `<code>_<surface>` footstep (surface = `GROUND` here); not in cut scenes; `SOUND_TIME == -1` steps only for the player outside RTS; one step per unit per composite `SOUNDTIME` | `AnimGrp_load` (`TS_` → id −99), `FUN_0050db80` | HIGH (surface: gap) |
+| `Ev::Sound` with a projectile (`other`) | at its last position; `EXPLOSIVEHIT` → `EXPLOSIVEHIT1..3` | `ThrowItem_on_hit_actor`, `ThrowItem_update` | CONFIRMED |
+| projectile types 0–2 in the snapshot | looping `ARROW` that follows the projectile, stopped when it disappears | `ThrowItem_launch`, `ThrowItem_update` (+0x10) | CONFIRMED |
+| `Ev::Blocked` | `GUARD` (melee) / `GUARDARR` (ranged) at the defender | `Melee_tryHit`, `Ranged_tryHit` | CONFIRMED |
+| `Ev::LevelUp` (player) / `Ev::Effect "EXPUP"` | `LEVELUP` / `EXPUP` | `Unit_check_level_up`, `Unit_add_exp` | CONFIRMED |
+
+Map `.stg` `PLAY_SOUND` / `PLAY_AMB_SOUND` triggers (`MapObjects::triggers()`, e.g. `CAMPFIRE`,
+`BLACKSMITH`, `WATER_F`): the emitter plays at its position while the player unit is inside its radius
+and stops when the player leaves (`SE_play_trigger 0x4c0680`). Hits, deaths and knockdowns have no
+sound call of their own: their reaction animations carry the `SOUND` cue.
+
+Mission events: `Sound` with `b == 0` (`OBJECTIVE_ADD/UPDATE/FINISH`, `ATTENTION_CALL`) plays at the
+listener. Dialog voices: a dialog box with a voice (`add_dialog` text tag or `set_dialog_voice`) starts
+`play_voice(<script stem>, "%04d")` once, when the letterbox is fully shown (`cs.status == 2`, fade 255:
+`FUN_0063b5e0`, the same gate as the typing); `Dialog` (id reuse after `del_all_dialog`) and
+`DialogClosed` stop it. Attention voices start when the message enters state 4 (`FUN_004ace90`) and stop
+when it leaves. CONFIRMED.
+
+Music (`MusicDirector`, §4) gets the mood each tick (`GameAudio::mood`, `Music_process` 0x4e6fe0):
+battle when the scenario mode is BATTLE (step +0x1ae == 3), when a hostile unit is within
+`BATTLE_R = 1500` of the player (or of the player's leader): `Unit_search_for_unit("E", 1500, 1)`, the
+type string read from `0x9cfc2c` (CONFIRMED), or when the player stands in a territory whose owner is
+hostile (`FUN_00509590`) or that is under attack; church (8) inside a territory of scale 4; game over
+/ won from `game_finish` 2 / 1; endings 9 / 10 (HYPOTHESIS: `show_ending` id 0 is the good one). The
+native search is read-only (no sticky target, no sim RNG) and has no line-of-sight test (deviation).
+
+Environment (3 streams): slot 0 loops the `E` track for `MissionState::minute` (`by_time`); slot 1 plays
+a side sound every 30–60 s in a city (`S` / E_TYPE I at war, C at peace) or during battle elsewhere
+(E_TYPE W); slot 2 plays bells (B) in cities every 30–60 s, elsewhere — only while
+`MissionUi::music_side_env` (`set_music_side_environment_enable`) — an `S` track of the current time
+track's E_TYPE every 60–120 s. A changed track fades out over 5 s first; everything stops at game over
+or an ending. Side-sound timing and variants use GameAudio's own RNG, never the simulation's.
+
+Verified by `engine.game_audio` (mission 1, offline mixer): Joan's scripted attacks produce 3D voices;
+an injected dialog with `S1L1_tactic:0014` makes `voice_active()` true for 4.4 s, then false; `menu()`
+selects `MAIN_BACK`; a spawned English archer beside Joan switches normal → battle music after the
+8 s fade, the battle track holds through 7.6 s of calm and fades back to normal after > 8 s.

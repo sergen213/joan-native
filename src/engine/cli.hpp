@@ -1,4 +1,6 @@
 #pragma once
+#include "engine/preset.hpp"
+
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,14 +28,26 @@ struct Options {
     bool vk_validation = false;      // enable VK_LAYER_KHRONOS_validation + debug messenger
     bool gpu_timing = false;         // log GPU timestamp means at exit (Vulkan)
     PresentMode present_mode = PresentMode::Fifo;
-    std::string scenario;            // original map to load (e.g. S1L1); empty = procedural demo scene
+    std::string scenario;            // original map to play (e.g. S1L1: its campaign mission, menus skipped); empty = demo
     bool free_camera = false;        // fly camera instead of following Joan
     std::vector<float> camera_pose;  // free camera X,Y,Z[,heading[,pitch]] in original units/degrees
-    std::string anim;                // force Joan's animation clip (e.g. f_run)
+    // Game flow shortcuts (docs/PLAYING.md): start a mission / load a save directly, skipping movies and menus.
+    bool new_game = false;           // --new-game
+    int mission = 1;                 // --mission N (campaign number 1..8)
+    int difficulty = -1;             // --difficulty 0..3 (-1 = options.ini / CONFIG.DAT)
+    std::string load;                // --load FILE (.jsav native or original .SAV)
+    std::string autoplay;            // --autoplay-script FILE (session_autoplay.hpp)
+    unsigned seed = 0;               // --seed N: World/VM RNG seed of a new game (0 = random)
+    bool no_movies = false;          // --no-movies: skip enlight.wmv / intro.wmv at startup
+    bool rts_unlocked = false;       // --rts-unlocked: allow F2 before scenario 5 (test hook)
+    bool camera_fix = false;         // --camera-fix / [controller] camera_fix: Camera Fix Patch turn rate (5x)
+    // settings.ini [audio] master/music/sound/environment volumes 0..100 (-1 = options.ini values).
+    int master_volume = -1, music_volume = -1, sound_volume = -1, environment_volume = -1;
     std::string ui_screen;           // --ui-screen: original 2D interface screen (ui_screens.hpp names)
     std::string movie;               // --play-movie: original movie (e.g. movie/intro.wmv) instead of the game
     double movie_time = 0;           // --movie-time: start offset in seconds (with --screenshot: frame shown then)
     bool help = false;
+    GraphicsConfig graphics;         // [renderer] preset, [graphics] keys, --preset/--graphics/--hd-packs (preset.hpp)
 };
 
 const char* usage();

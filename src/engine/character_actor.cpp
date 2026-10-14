@@ -66,33 +66,19 @@ Character::~Character() {
     assets_.renderer().destroy_mesh(shadow_gpu_);
 }
 
-bool Character::play(std::string_view name) {
-    for (std::size_t i = 0; i < anim_->clips.size(); ++i)
-        if (lower(anim_->clips[i].name) == lower(name)) {
-            if (i != clip_) clip_ = i, prev_ms_ = cur_ms_ = 0;
+bool Character::play(std::string_view am2, std::string_view name) {
+    const formats::Animation* anim = assets_.animation(am2);
+    if (!anim) return false;
+    for (std::size_t i = 0; i < anim->clips.size(); ++i)
+        if (lower(anim->clips[i].name) == lower(name)) {
+            anim_ = anim, clip_ = i;
             return true;
         }
     return false;
 }
 
-void Character::tick(float dt) {
-    const float len = std::max(clip().end - clip().start, 1.0f);
-    prev_ms_ = cur_ms_;
-    cur_ms_ += dt * 1000.0f;
-    if (cur_ms_ >= len) {
-        cur_ms_ = std::fmod(cur_ms_, len);
-        prev_ms_ -= len;  // keep prev < cur so interpolation runs forward across the loop
-    }
-}
-
-float Character::time_ms(float alpha) const {
-    const float t = prev_ms_ + (cur_ms_ - prev_ms_) * std::clamp(alpha, 0.0f, 1.0f);
-    const float len = std::max(clip().end - clip().start, 1.0f);
-    return t < 0 ? t + len : t;
-}
-
-void Character::pose(float alpha) {
-    bones_ = formats::sample_pose(*anim_, clip().start + time_ms(alpha));
+void Character::pose(float clip_ms) {
+    bones_ = formats::sample_pose(*anim_, clip().start + std::clamp(clip_ms, 0.0f, clip_length()));
     std::vector<std::vector<formats::MeshVertex>> posed;
     posed.reserve(mesh_->submeshes.size());
     float top = 0;

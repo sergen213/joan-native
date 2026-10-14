@@ -52,7 +52,8 @@ int main() {
     std::string err;
     auto p = parse_player_dat(*player, &err);
     CHECK(p, err);
-    CHECK(p->name == "Player" && p->name2 == "Player" && p->header_38 == 100 && p->entry_count == 0, "Player.dat fields");
+    CHECK(p->name() == "Player" && p->gold() == 100 && p->entries.empty() && write_player_dat(*p) == *player,
+          "Player.dat fields / byte-exact rewrite");
 
     // Truncated header must fail cleanly.
     auto sav = read_file(*vfs.resolve("save\\Mission1-AutoSave.SAV"));
