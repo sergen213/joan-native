@@ -41,6 +41,8 @@ float ingame_backdrop_time(const MenuModel& m) { return m.ingame_backdrop_closed
 // the title parts (fade out at 10/s at once).
 void ingame_backdrop_back(Ui& ui, float t, float e) {
     const bool out = e >= 0.0f;
+    ui.sound_at("MENU_SLIDE_IN", t, 0.0f);         // FUN_006f24d0, only while the backdrop is down (t = 1e9 once up)
+    if (out) ui.sound_at("MENU_SLIDE_OUT", e, 0.0f);  // FUN_006f26e0
     const float side = out ? 512.0f - ui_slide(e, 0.1f, 512, 5120, 0) : ui_slide(t, 0.1f, 512, 5120, 0);
     const glm::vec4 c{1, 1, 1, out ? 1.0f - ui_fade(e, 0.1f, 5) : ui_fade(t, 0, 5)};
     ui.sprite("INGAME_B", "woodtex", {0, 0}, c);
@@ -177,6 +179,7 @@ void menu_ingame(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
         return;
     }
     const float t = m.time;
+    if (!exiting) ui.sound_at("BUTTON_SLIDE_MANY", t, 0.0f);  // FUN_006f43e0 slide-in start
     const bool live = !exiting && t >= 8 * kRowOut + ui_slide_time(600);  // input once every row has landed
     auto row_y = [&](int i) {
         const float settled = float(114 + 68 * i);
@@ -210,8 +213,8 @@ void menu_ingame(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     ingame_backdrop_front(ui, bt, be);
     if (!live) return;
     if (hit == 4 || hit == 6 || hit == 7) m.ingame_confirm = hit == 4 ? 3 : hit == 6 ? 2 : 1;  // popup, no slide
-    else if (hit >= 0) m.ingame_exit = hit, m.ingame_exit_time = t;
-    else if (back || ui.key(SDL_SCANCODE_ESCAPE)) m.ingame_exit = 8, m.ingame_exit_time = t;
+    else if (hit >= 0) m.ingame_exit = hit, m.ingame_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");  // FUN_006f38a0
+    else if (back || ui.shortcut(SDL_SCANCODE_ESCAPE)) m.ingame_exit = 8, m.ingame_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");
 }
 
 }  // namespace joa::engine

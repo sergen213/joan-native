@@ -56,6 +56,7 @@ struct Consts {
     float aim_r = 25, aim_mxd = 2500, aim_ha = 60, turn_ang = 6;
     float stop_cc = 0.3f;   // UNIT STOP_CC 0xa3cce4 (rider stop 0x4533e0)
     int jumpmaxd = 100, chainpro = 200, cri_time = 10000;
+    int crit_fade_in1 = 200, crit_fade_in2 = 200, crit_glow_in[3] = {200, 200, 200};   // {CRITICAL} FADE_IN1/2, GLOW_IN1..3 (Crit_drawHUD 0x45fae0)
     float diff_d[4] = {0.7f, 1.0f, 1.5f, 2.0f};   // EASY_D..VDIFF_D (damage of player-hostile units)
     float diff_a[4] = {0.5f, 1.0f, 1.5f, 2.0f};   // EASY_A..VDIFF_A (BLOCKPER / guard chance)
 };
@@ -81,6 +82,11 @@ struct ItemDef {
     bool use_immediately = false;        // +0x23d UseImmediately (POTION)
     bool show_armory = false;            // +0x1e8 ShowArmoryInterface
     int width = 1, height = 1;           // +0x24 / +0x26 Width / Height: bag-grid footprint (0x4577a0)
+    int defense = 0;                     // +0x56 Defense (ARMOR: armour level reached, 0x6d8ac0)
+    int price = 0;                       // +0x2e Price (GOLD: value per piece, Unit_auto_pickup 0x49da30)
+    bool pickable = false;               // +0x1c4 Pickable (Unit_auto_pickup 0x49da30)
+    std::string message;                 // +0x18 MessageName: SMS pickup / gift text (FUN_005a6660 format, %1 = quantity)
+    std::string description, detail_file;  // Description (tooltip, "\n" = break) / DetailDescriptionFilename (item_des/)
     // 0x4a4200: value of `effect` for an instance of `level` (nullopt if the item lacks it).
     std::optional<int> effect_value(int effect, int level) const;
     int base_damage(int level) const { return damage + (level - min_level) * inc_damage; }  // 0x4a41c0
@@ -97,7 +103,20 @@ struct AnimScript {
 struct ClipInfo {
     float length_ms = 0;
     std::vector<formats::AnimEvent> events;  // times relative to clip start
+    // Root track (FUN_00417f20, built at move-table load for clips of root_motion_action records):
+    // "Bip01" model-space x/y relative to the key at the clip start, keys {ms from clip start, dx, dy}
+    // after the colinear merge of 0x418820 (|error| <= 1 unit), at most 50 (0x25c-byte record).
+    // The original also overwrites those Bip01 keys' x/y with the start key's, so the drawn clip
+    // stays in place while the unit body moves (renderers subtract root_offset).
+    std::vector<std::array<float, 3>> root;
+    bool root_built = false;
 };
+// Actions whose clips carry root motion: FUN_00415090 list == Unit_process_movement 0x52daa0 list
+// (CHAIN, ATTACK, JATTACKB, ENGATK..ENGATK4, ATTACKED, ATTKED2, ATTKEDR, THROW, THROWN, STANDUP,
+// RUSH, DOWNATK, JUMP_B/R/L).
+bool root_motion_action(int action);
+// FUN_00418a00: root offset at t ms (linear from 0 before the first key, held after the last).
+void root_offset(const ClipInfo& c, float t, float& x, float& y);
 
 // One animgrp record (0x99 bytes; columns of STD.SET <UNIT> table).
 struct MoveRecord {
@@ -132,6 +151,7 @@ struct UnitClass {
     int height = 0;              // +0x109
     float walk = 0, run = 0, shift_l = 0, shift_r = 0, shift_b = 0;
     int hp = 0, ep = 0, life = 0, experience = 0, gold = 0;
+    int resource = 0;            // RecruitWorkshop: +0x165 Resource (SIEGE_WEAPON only): iron / wood workshop cost
     int earmor_id = 0, earmor_item = 0, pweapon = 0, sweapon = 0, prange = 0, srange = 0;  // items: 1-based, 0 none
     std::string drop_list, upgrade_list;
     int str = 0, dex = 0, def = 0, lead = 0;
@@ -147,7 +167,7 @@ struct UnitClass {
 
 struct UpItem {
     int type = 0;                // 1 STRENGTH .. 0x10 HORSE_ATTACK_B (0x531ba0)
-    std::string code, para1, require;
+    std::string code, para1, require, desc;   // desc = UPITEM DESC (combo page name, 0x6ef9e0)
     int p1 = 0, cost = 0;
     bool skill() const { return type >= 8 && type <= 16; }   // paid with skill points (0x531ed0)
 };
@@ -189,6 +209,7 @@ private:
     std::map<std::string, std::shared_ptr<formats::Animation>> am2_;
     std::map<std::string, std::string> animate_;  // ANIMATE code -> DBF name
     int load_clip(const std::string& file, const std::string& name);
+    void build_root(int clip, const std::string& file, const std::string& name);   // FUN_00417f20
 };
 
 }  // namespace joa::game

@@ -7,6 +7,7 @@
 // The OPTMENU/OPTMENUB/OPTMENUF tables are loaded (0x73c740) but none of their records is ever drawn.
 // Page switches slide the old page out and the new one in (start = reset positions 0x73ded0/0x74b6b0/...,
 // targets/delays = the enter/leave functions); closed form on model.time since the switch.
+#include "engine/game_input.hpp"  // joypad_index (pad remap capture)
 #include "engine/menu_options_store.hpp"
 #include "engine/menu_saveload.hpp"
 #include "engine/ui_screens.hpp"
@@ -98,15 +99,15 @@ void row_label(Ui& ui, std::string_view s, glm::vec2 p, bool hot, float a) {
     }
 }
 
-// 0x6211d0 sprite button (ot / ov hover / dw held). Returns true on release inside; `held` = pressed now.
-bool arrow(Ui& ui, const char* base, glm::vec2 p, float a, bool* held = nullptr) {
+// 0x6211d0 sprite button (ot / ov hover / dw held). Returns true on release inside while `live`; `held` = pressed now.
+bool arrow(Ui& ui, const char* base, glm::vec2 p, float a, bool* held = nullptr, bool live = true) {
     const UiSprite* ot = ui.sprite("COMMELE2", std::string(base) + "_ot");
     if (!ot) return false;
     const glm::vec4 r{p.x, p.y, ot->size.x, ot->size.y};
     const bool down = ui.hover(r) && ui.input().mouse_down;
     if (held) *held = down;
     ui.sprite("COMMELE2", std::string(base) + (down ? "_dw" : ui.hover(r) ? "_ov" : "_ot"), p, white(a));
-    return ui.clicked(r);
+    return live && ui.clicked(r);
 }
 
 // Slider 0x760050 (values 0..steps-1): PAGE_OT/PAGE_OV box (464x52), arrows only while highlighted,
@@ -130,6 +131,7 @@ int slider(Ctx& c, glm::vec2 p, int v, int steps, bool hot, float a) {
                 c.m.slider_repeat_ms -= interval;
             }
         }
+        v += ui.nav_adjust();  // GamepadPlay: pad left/right on the focused row step the slider
         v = std::clamp(v, 0, range);
     }
     if (ui.input().mouse_down && ui.hover({p.x + 0x50, p.y + 0xc, 300, 24}))
@@ -148,8 +150,9 @@ int slider(Ctx& c, glm::vec2 p, int v, int steps, bool hot, float a) {
 int combo(Ui& ui, glm::vec2 p, std::initializer_list<std::string_view> items, int index, bool hot, float a) {
     const int n = int(items.size());
     ui.sprite("COMMELE2", hot ? "page_ov" : "page_ot", p, white(a));
-    if (arrow(ui, "aw_l", p + glm::vec2(0x23, 0xb), a)) index = index < 2 ? n : index - 1;
-    if (arrow(ui, "aw_r", p + glm::vec2(0x186, 0xb), a)) index = index < n ? index + 1 : 1;
+    if (arrow(ui, "aw_l", p + glm::vec2(0x23, 0xb), a, nullptr, hot)) index = index < 2 ? n : index - 1;  // hot: not a leaving page
+    if (arrow(ui, "aw_r", p + glm::vec2(0x186, 0xb), a, nullptr, hot)) index = index < n ? index + 1 : 1;
+    if (const int d = hot ? ui.nav_adjust() : 0) index = (index - 1 + d + n) % n + 1;  // GamepadPlay: pad left/right cycle
     index = std::clamp(index, 1, n);
     if (const UiFont* f = button_font(ui)) {
         const std::string_view s = items.begin()[index - 1];
@@ -214,8 +217,10 @@ void set_page(MenuModel& m, OptionsTab tab) {
 }
 
 // Original combos/sliders write the config on every change; the game applies and persists on OptionsChanged.
+// The page's leave function (0x74c2e0/0x7420e0/0x7480e0/0x7433d0) plays BUTTON_SLIDE_MANY.
 void leave_page(Ctx& c) {
     set_page(c.m, OptionsTab::Root);
+    c.ui.sound("BUTTON_SLIDE_MANY");
     c.out.push_back({UiCommand::Type::OptionsChanged, 0, {}, {}});
 }
 
@@ -239,12 +244,14 @@ void root_page(Ctx& c) {
             ui.sprite("MENU_B", "diamond", {p.x - 32 + float((512 - w) / 2), p.y + 17}, white(a));
             ui.sprite("MENU_B", "diamond", {p.x + 10 + float((512 + w) / 2), p.y + 17}, white(a));
         }
-        if (c.in && ui.clicked(r)) set_page(c.m, OptionsTab(1 + i));
+        // 0x73d830: IF_SETTING_BUTTON_CLICK, then 0x73cc00 case 0 (root leave) BUTTON_SLIDE_MANY.
+        if (c.in && ui.clicked(r)) set_page(c.m, OptionsTab(1 + i)), ui.sound("IF_SETTING_BUTTON_CLICK"), ui.sound("BUTTON_SLIDE_MANY");
     }
-    if (text_button(c, 0x1ce, 0x232, ui.text("OPTMENU", 39)) || (c.in && ui.key(SDL_SCANCODE_ESCAPE))) {
-        c.m.screen = c.m.previous;
-        c.m.options_tab = OptionsTab::Root;
-        c.m.options_prev = -1;  // the next opening slides the LONGBARs in again
+    // BACK / Esc -> 0x73ca80 -> 0x73cc00(6): root leave (case 0) and close (case 6) each play BUTTON_SLIDE_MANY;
+    // the close slide runs in options_screen, the screen switches when it ends.
+    if (text_button(c, 0x1ce, 0x232, ui.text("OPTMENU", 39)) || (c.in && ui.shortcut(SDL_SCANCODE_ESCAPE))) {
+        c.m.options_closing = true, c.m.options_prev = 0, c.m.time = 0;
+        ui.sound("BUTTON_SLIDE_MANY"), ui.sound("BUTTON_SLIDE_MANY");
     }
 }
 
@@ -275,7 +282,7 @@ void video_page(Ctx& c) {
         o.draw_distance = d.draw_distance, o.dynamic_grass = d.dynamic_grass, o.grass_distance = d.grass_distance;
         o.grass_density = d.grass_density;
     }
-    if (text_button(c, 0x219, 0x27d, opt(39)) || (c.in && c.ui.key(SDL_SCANCODE_ESCAPE))) leave_page(c);
+    if (text_button(c, 0x219, 0x27d, opt(39)) || (c.in && c.ui.shortcut(SDL_SCANCODE_ESCAPE))) leave_page(c);
 }
 
 void audio_page(Ctx& c) {
@@ -290,15 +297,16 @@ void audio_page(Ctx& c) {
         o.music_volume = d.music_volume, o.environment_volume = d.environment_volume, o.sound_volume = d.sound_volume;
         o.sound_3d = d.sound_3d;
     }
-    if (text_button(c, 0x219, 0x27d, opt(39)) || (c.in && c.ui.key(SDL_SCANCODE_ESCAPE))) leave_page(c);
+    if (text_button(c, 0x219, 0x27d, opt(39)) || (c.in && c.ui.shortcut(SDL_SCANCODE_ESCAPE))) leave_page(c);
 }
 
 void input_page(Ctx& c) {
     GameOptions& o = c.m.options;
     auto opt = [&](int i) { return c.ui.text("OPTMENU", i); };
-    // Gamepad/Joystick is only listed when a pad is present (0x7435e0); no pad support here unless configured.
-    o.input_method = (o.input_method == 2 ? combo_row(c, 0, 5, opt(15), {opt(12), opt(13), opt(14)}, 3)
-                                          : combo_row(c, 0, 5, opt(15), {opt(12), opt(13)}, o.input_method + 1)) - 1;
+    // Gamepad/Joystick is only listed when a pad is present (0x7435e0).
+    o.input_method = (o.input_method == 2 || c.ui.input().pad.connected
+                          ? combo_row(c, 0, 5, opt(15), {opt(12), opt(13), opt(14)}, o.input_method + 1)
+                          : combo_row(c, 0, 5, opt(15), {opt(12), opt(13)}, o.input_method + 1)) - 1;
     int s = ftol(double(o.mouse_sensitivity) * 10 + 10);
     if (int n = slider_row(c, 1, 5, opt(16), s, 21); n != s) o.mouse_sensitivity = float(n - 10) / 10.0f;
     o.invert_mouse = combo_row(c, 2, 5, opt(17), {opt(9), opt(10)}, o.invert_mouse + 1) == 2;
@@ -315,7 +323,8 @@ void input_page(Ctx& c) {
         c.m.remap_backup = c.m.bindings;
         c.m.remap_selected = -1;
         c.m.screen = MenuScreen::Remap;
-    } else if (text_button(c, 0x296, 0x32c, opt(39)) || (c.in && c.ui.key(SDL_SCANCODE_ESCAPE))) {
+        c.ui.sound("BUTTON_SLIDE_MANY");  // input page leave 0x7480e0
+    } else if (text_button(c, 0x296, 0x32c, opt(39)) || (c.in && c.ui.shortcut(SDL_SCANCODE_ESCAPE))) {
         leave_page(c);
     }
 }
@@ -325,7 +334,7 @@ void game_page(Ctx& c) {
     auto opt = [&](int i) { return c.ui.text("OPTMENU", i); };
     o.difficulty = combo_row(c, 0, 2, opt(46), {opt(6), opt(7), opt(8), opt(51)}, o.difficulty + 1) - 1;
     o.melee_auto_target = combo_row(c, 1, 2, opt(55), {opt(1), opt(2)}, o.melee_auto_target ? 1 : 2) == 1;
-    if (text_button(c, 0x1ce, 0x232, opt(39)) || (c.in && c.ui.key(SDL_SCANCODE_ESCAPE))) leave_page(c);
+    if (text_button(c, 0x1ce, 0x232, opt(39)) || (c.in && c.ui.shortcut(SDL_SCANCODE_ESCAPE))) leave_page(c);
 }
 
 void remap_page(Ctx& c) {
@@ -339,8 +348,9 @@ void remap_page(Ctx& c) {
     // Category combo drops from (116, 62) to (116, 236 + lc) last (1050 ms, 0x748540); rows = DEFAULTK ids per
     // category (0x7478a0) whose current binding name is neither "Not Available" nor "Escape", 10 slots max.
     const glm::vec2 cp = c.pos({0x74, float(0x3e + c.l)}, {0x74, float(0xec + c.l)}, 1050, 0);
-    const int cat = combo(ui, cp, {opt(40), opt(41), opt(42), opt(43), opt(44), opt(50), opt(56)}, m.remap_category + 1,
-                          c.in && ui.hover({0, cp.y, 1024, 52}), c.alpha(1050, 0, 6)) - 1;
+    int cat = combo(ui, cp, {opt(40), opt(41), opt(42), opt(43), opt(44), opt(50), opt(56)}, m.remap_category + 1,
+                    c.in && ui.hover({0, cp.y, 1024, 52}), c.alpha(1050, 0, 6)) - 1;
+    if (c.in && m.remap_selected < 0) cat = (cat + ui.nav_page() + 7) % 7;  // GamepadPlay: LB / RB change the category
     if (cat != m.remap_category) m.remap_category = cat, m.remap_selected = -1;
     constexpr int kFirst[7] = {1, 0xb, 0x16, 0x23, 0x2a, 0x2f, 0x35}, kLast[7] = {10, 0x15, 0x20, 0x29, 0x2e, 0x33, 0x37};
     std::vector<KeyBindingRow*> rows;
@@ -398,7 +408,13 @@ void remap_page(Ctx& c) {
                         : sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL ? 0x1d
                         : sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_RALT   ? 0x38
                                                                                : 0;
-        if (ui.key(SDL_SCANCODE_ESCAPE)) {
+        if (in.pad.button >= 0 && (scheme == 1 || in.pad.button == SDL_GAMEPAD_BUTTON_START)) {
+            // GamepadPlay, the original's joystick capture (0x745b10 device 1): a pad button binds J_JOYPAD in the
+            // Gamepad/Joystick scheme; Start (fixed Main Game Menu) cancels; other schemes ignore pad buttons.
+            const int n = joypad_index(SDL_GamepadButton(in.pad.button));
+            if (in.pad.button == SDL_GAMEPAD_BUTTON_START) m.remap_selected = -1;
+            else if (scheme == 1 && n) remap_assign(ui.vfs(), m.bindings, 1, action, 1, n - 1), m.remap_selected = -1;
+        } else if (ui.key(SDL_SCANCODE_ESCAPE)) {
             m.remap_selected = -1;
         } else if (mod) {
             remap_assign(ui.vfs(), m.bindings, 3, action, 0, mod);
@@ -416,6 +432,7 @@ void remap_page(Ctx& c) {
     if (text_button(c, 0xd4, 0x16a, opt(31))) {  // CONFIRM: RemapKey_save_config, back to the input page
         m.screen = MenuScreen::Options;
         m.options_prev = kRemap;
+        ui.sound("BUTTON_SLIDE_MANY");  // remap leave 0x748830
         c.out.push_back({UiCommand::Type::OptionsChanged, 0, {}, {}});
     }
     if (text_button(c, 0x1b5, 0x24b, opt(33)))  // DEFAULT: RemapKey_reset_scheme(current scheme)
@@ -424,10 +441,11 @@ void remap_page(Ctx& c) {
             else if (method == 2) r.code[1] = r.def[1], r.code[2] = r.def[2];
             else r.code[3] = r.def[3], r.code[4] = r.def[4];
         }
-    if (text_button(c, 0x296, 0x32c, opt(32)) || (c.in && ui.key(SDL_SCANCODE_ESCAPE))) {  // CANCEL: KeyMap_apply_config
+    if (text_button(c, 0x296, 0x32c, opt(32)) || (c.in && ui.shortcut(SDL_SCANCODE_ESCAPE))) {  // CANCEL: KeyMap_apply_config
         if (!m.remap_backup.empty()) m.bindings = m.remap_backup;
         m.screen = MenuScreen::Options;
         m.options_prev = kRemap;
+        ui.sound("BUTTON_SLIDE_MANY");
     }
 }
 
@@ -448,40 +466,55 @@ constexpr int kFrameY[6] = {-0x1c0, 0x6c, -100, -0x30, -0xcc, -0x1c0};
 constexpr int kFrameOut[6] = {0, 400, 200, 250, 100, 0};
 
 // Backdrop, FRAME, LONGBARs + title, the leaving page, the page, the foreground (0x73d2c0 order).
+// Close (BACK/Esc on the root page, 0x73cc00 case 6, MenuModel::options_closing): the root buttons leave as on a
+// page switch (0..150 ms), BACK fades out at 6/s at once, the LONGBARs slide out to x = -1024 / +1024 after
+// 200 ms; 0x73db40 switches screens once the bottom root button is up and faded and both bars are out.
 void options_screen(Ui& ui, MenuModel& m, std::vector<UiCommand>& out, int page, int prev) {
     const int l = m.in_game ? -48 : 0;
     const float t = m.time;
+    const bool closing = m.options_closing;
     if (!ui.input().mouse_down) m.slider_hold_ms = m.slider_repeat_ms = 0;
+    if (m.in_game && m.ingame_backdrop_closed && ingame_backdrop_time(m) >= kIngameBackdropIn) m.ingame_backdrop_closed = false;
     if (m.in_game) ingame_backdrop_back(ui, ingame_backdrop_time(m));  // INGAME_B layer 0; layer 1 on top later
     else menu_frontend_backdrop(ui, m);
+    // BUTTON_SLIDE_MANY: opening (0x73c9d0 -> 0x73cc00 case 0 leave) and once the entered page's first widget
+    // delay runs out (ticks 0x73db40 / 0x74b550 / 0x741960 / 0x746ff0 / 0x742ee0: 500 ms; remap row 0: 1000 ms).
+    if (!closing && prev < 0) ui.sound_at("BUTTON_SLIDE_MANY", t, 0.0f);
+    if (!closing) ui.sound_at("BUTTON_SLIDE_MANY", t, page == kRemap ? 1.0f : 0.5f);
 
     const int from = prev < 0 ? 0 : prev;
     const int fdelay = page != 0 && page != kRemap ? 500 : kFrameOut[from];
     sprite_clipped(ui, "COMMELE2", "frame", slide({0x1cc, float(kFrameY[from] + l)}, {0x1cc, float(kFrameY[page] + l)}, t, fdelay, false));
     // LONGBARs at (0, 180 + lc) / (0, 712 + lc); on opening they come in from x = -1024 / +1024 after 250 ms.
-    const float bx = prev < 0 ? slide({-1024, 0}, {0, 0}, t, 250, false).x : 0;
+    const float bx = closing ? slide({0, 0}, {-1024, 0}, t, 200, false).x : prev < 0 ? slide({-1024, 0}, {0, 0}, t, 250, false).x : 0;
     sprite_clipped(ui, "COMMELE2", "longbar", {bx, float(180 + l)});
     text_in_rect(ui, ui.font("Goudy_bold_18"), ui.text("OPTMENU", page == kRemap ? 34 : 34 + page),
                  {bx, float(180 + l), bx + 1024, float(210 + l)}, kUiWhite);
     sprite_clipped(ui, "COMMELE2", "longbar", {-bx, float(712 + l)});
 
-    if (prev >= 0 && prev != page && t < 2.0f) {  // the old page slides out on a scratch copy (no effects)
+    if (closing || (prev >= 0 && prev != page && t < 2.0f)) {  // the old page slides out on a scratch copy (no effects)
         MenuModel ghost = m;
         std::vector<UiCommand> sink;
         Ctx g{ui, ghost, sink, l, t, false};
-        draw_page(g, prev);
+        draw_page(g, closing ? 0 : prev);
     }
-    Ctx c{ui, m, out, l, t, true};
-    draw_page(c, page);
+    if (!closing) {
+        Ctx c{ui, m, out, l, t, true};
+        draw_page(c, page);
+    }
 
     // Layers above the page: in game the INGAME_B stone/title layer (en2d layer 1); front end (0x70a8b0) the
     // logo bar and stone ring overlays (the options page is drawn between gold_r and logo_bar).
-    if (m.in_game) return ingame_backdrop_front(ui, ingame_backdrop_time(m));
-    ui.sprite("MENU1024", "logo_bar", {0, 16});
-    ui.sprite("MENU1024", "logo", {288, 26});
-    ui.sprite("MENU1024", "alab_s", {0, 0});
-    ui.sprite("MENU1024", "alab_l", {0, 0});
-    ui.sprite("MENU1024", "alab_r", {836, 0});
+    if (m.in_game) {
+        ingame_backdrop_front(ui, ingame_backdrop_time(m));
+    } else {
+        ui.sprite("MENU1024", "logo_bar", {0, 16});
+        ui.sprite("MENU1024", "logo", {288, 26});
+        ui.sprite("MENU1024", "alab_s", {0, 0});
+        ui.sprite("MENU1024", "alab_l", {0, 0});
+        ui.sprite("MENU1024", "alab_r", {836, 0});
+    }
+    if (closing && t >= 0.2f + ui_slide_time(1024)) m.screen = m.previous, m.options_closing = false, m.options_prev = -1;
 }
 
 }  // namespace

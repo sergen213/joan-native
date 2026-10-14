@@ -1,0 +1,41 @@
+#version 460
+// Ray-traced sun visibility per scene pixel (docs/RAYTRACING.md): `rays_per_pixel` shadow rays per frame inside
+// the sun cone (contact-hardening penumbra), alpha-tested foliage, terrain excluded as for the shadow map.
+// Writes the raw visibility into image 0 (r); rt_denoise.comp accumulates and filters it.
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#include "common.glsl"
+#include "remaster_vk.glsl"
+#include "../common/remaster_common.glsl"
+#include "rt_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+TEX(6) sampler2D u_depth;
+layout(set = 3, binding = 9, rgba16f) uniform writeonly image2D u_img[10];
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(px, ivec2(R.screen.xy)))) return;
+    float d = texelFetch(u_depth, px, 0).r;
+    if (d >= 1.0) {
+        imageStore(u_img[0], px, vec4(1.0));
+        return;
+    }
+    vec2 pixel = vec2(px) + 0.5;
+    vec3 p = world_from_depth(pixel * R.screen.zw, d);
+    vec4 g = texelFetch(u_gbuffer, px, 0);
+    vec3 n = oct_decode(g.xy);
+    if (dot(n, R.camera_pos.xyz - p) < 0.0) n = -n;  // two-sided foliage seen from behind
+    vec3 l = -R.sun_dir.xyz;
+    vec3 t = normalize(cross(abs(l.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), l)), b = cross(l, t);
+    vec3 o = p + n * (0.3 + g.w * 1.5e-3);  // depth-buffer precision grows with distance
+    int rays = int(RT.params.x);
+    float vis = 0.0;
+    for (int k = 0; k < rays; ++k) {
+        vec2 xi = rt_xi(pixel, uint(k));
+        float r = sqrt(xi.x) * RT.effects.w, a = xi.y * 6.2831853;  // uniform disk in the cone's tangent plane
+        vis += rt_visibility(o, normalize(l + (t * cos(a) + b * sin(a)) * r), 6000.0, kRtMaskShadow);
+    }
+    imageStore(u_img[0], px, vec4(vis / float(rays), 0.0, 0.0, 1.0));
+}

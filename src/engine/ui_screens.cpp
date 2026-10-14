@@ -8,6 +8,8 @@ namespace joa::engine {
 void ui_menu(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     const MenuScreen before = m.screen;
     ui.frame(Anchor::Center);
+    // GamepadPlay: every menu screen is a focus scope (options page and popup state included).
+    if (m.screen != MenuScreen::None) ui.nav_modal(1000 + int(m.screen) * 64 + int(m.options_tab) * 8 + std::max(m.save_state, m.ingame_confirm));
     switch (m.screen) {
         case MenuScreen::None: break;
         case MenuScreen::Main: menu_main(ui, m, out); break;
@@ -25,13 +27,13 @@ void ui_menu(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
 void ui_hud(Ui& ui, HudModel& model, std::vector<UiCommand>& out) { hud_game(ui, model, out); }
 
 namespace {
-constexpr std::array<std::string_view, 29> kNames{"main",  "difficulty", "credits", "options", "video",  "audio",
+constexpr std::array<std::string_view, 31> kNames{"main",  "difficulty", "credits", "options", "video",  "audio",
                                                   "input", "game",       "remap",   "load",    "save",   "ingame",
                                                   "ingame-options", "hud", "msglog", "brief", "brief-background",
                                                   "brief-objectives", "brief-townships", "brief-townships-2",
                                                   "brief-commanders", "brief-commanders-2", "brief-battleground",
                                                   "brief-battleground-2d", "brief-strategy", "brief-siege", "quickload",
-                                                  "objective", "attention"};
+                                                  "objective", "attention", "hud-target", "hud-interact"};
 
 void sample_hud(HudModel& h) {
     // State of work/reference/shots/s04_04_mission1_hud.png (mission 1 start, Normal). Player position and the
@@ -42,6 +44,7 @@ void sample_hud(HudModel& h) {
     h.player = {"Joan of Arc", "Joan1", 1.0f, 1.0f, 60, 60, 30, 30, 1, 0.0f};
     HudUnit joan = h.player, jean = {"Jean de Metz", "jeanc1", 1.0f, 1.0f, 60, 60, 30, 30, 1, 0.0f};
     joan.portrait = "Joanc2";  // JOAN_ARMOR_LV1
+    joan.world = {14971.0f, 12698.0f}, jean.world = {14725.0f, 12944.0f};  // inside the minimap view: full alpha
     h.party = {joan, jean};
     jean.screen = {488.0f, 266.0f};
     jean.on_screen = true;
@@ -54,8 +57,8 @@ void sample_hud(HudModel& h) {
     for (glm::vec2 g : {glm::vec2{11428, 13742}, {12657, 13435}, {11919, 10936}, {11469, 9204}, {13160, 8806}})
         for (glm::vec2 d : {glm::vec2{0, 0}, {-41, 0}, {41, 0}, {0, -41}, {0, 41}})
             h.map_icons.push_back({g + d, "", HudMapIcon::Dot::Red});
-    h.objectives = {"Safely reach and enter Orl\xe9" "ans.", "Eliminate all enemies along the path."};
-    h.objectives_main = 1;
+    h.objective_list = {{1, -1, 0, 0.0f, 0, true, "Safely reach and enter Orl\xe9" "ans."},
+                        {2, -1, 0, 0.0f, 2, true, "Eliminate all enemies along the path."}};
     h.mission_time = h.total_time = 56;
     h.mission = 1;
     // Mission-brief runtime lists at mission 1 start (S1L1_des.sce enabled end conditions; commanders in unit-id
@@ -137,6 +140,17 @@ bool ui_sample_state(std::string_view name, MenuModel& menu, HudModel& hud, bool
         hud.show_quickload_prompt = name == "quickload";
         hud.show_objective = name == "objective";
         if (name == "attention") hud.messages = {hud.message_log.back()};  // s04_05_after_moves
+        if (name == "hud-target") {  // HudGaps: work/reference/video/s08_combat.mp4 at 37 s (target hit, Jean flashing)
+            hud.player.hp = 38.0f / 60.0f, hud.player.hp_value = 38;
+            hud.target = {true, true, false, "ENGLIC", "English Light Infantry Captain (1)", 100, 100};
+            hud.party.back().hit_ms = 150;
+            hud.party.front().danger = true, hud.clock_ms = 400;
+        }
+        if (name == "hud-interact") {  // HudGaps: GMSG box (gate Description) + bribe offer under the minimap
+            hud.interact.line = 0, hud.interact.key = "R", hud.interact.item_text = "Press R to open the gate.";
+            hud.interact.bribe_line = 3, hud.interact.bribe_name = "English Archer", hud.interact.bribe_cost = 45;
+            hud.interact.gold = 120;
+        }
     } else {
         return false;
     }

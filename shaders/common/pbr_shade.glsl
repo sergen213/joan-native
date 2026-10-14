@@ -6,8 +6,10 @@
 // shadow map). Metallic-roughness specular (GGX sun + prefiltered sky environment) is added on top.
 
 TEX(1) sampler2DShadow u_shadow;  // sun shadow map, compare LEQUAL
+#ifndef RT_COMMON  // shaders/vk/rt_common.glsl (ray-traced variant) declares these itself
 TEX(2) sampler2D u_env;           // equirect sky radiance, mip = roughness (pbr_env.cpp)
 TEX(3) sampler2D u_irradiance;    // equirect cosine-convolved sky, rgb / average in a
+#endif
 
 // MaterialClass (renderer.hpp)
 const int kClassGeneric = 0, kClassTerrain = 1, kClassCharacter = 2, kClassItem = 3, kClassBuilding = 4, kClassVegetation = 5,
@@ -84,7 +86,9 @@ float sun_shadow(vec3 p, vec3 ng, vec2 pixel) {
     return mix(lit, 1.0, fade);
 }
 
+#ifndef RT_COMMON
 vec2 equirect_uv(vec3 d) { return vec2(atan(d.z, d.x) * (0.5 / kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi); }
+#endif
 
 // Karis' analytic environment BRDF approximation (UE4 mobile).
 vec3 env_brdf(vec3 f0, float roughness, float nv) {
@@ -113,10 +117,18 @@ vec3 shade(Surface s, vec2 pixel, out vec3 ambient_out) {
     vec3 total_lin = to_linear(min(R.ambient.rgb + sun_g + point_g, vec3(1.0)));
     vec3 direct_lin = max(total_lin - amb_lin, vec3(0.0));
     float sun_share = luma(sun_g) / max(luma(sun_g) + luma(point_g), 1e-4);
+#ifdef RT_COMMON  // ray-traced sun visibility for the prepass surface, the shadow map for everything else
+    float shadow = mix(1.0, rt_screen && RT.effects.y != 0.0 ? rt_screen_shadow(pixel) : sun_shadow(s.p, s.ng, pixel), s.shadow_strength);
+#else
     float shadow = mix(1.0, sun_shadow(s.p, s.ng, pixel), s.shadow_strength);
+#endif
     vec3 direct = direct_lin * mix(1.0, shadow, sun_share);
 
     vec3 ambient = amb_lin;
+#ifdef RT_COMMON
+    if (RT.effects.z != 0.0) ambient = rt_gi(s.p, s.n, v);  // DDGI probes, already at the Original ambient scale
+    else
+#endif
     if (R.ambient.w != 0.0) {  // directional sky light with the same average
         vec4 irr = textureLod(u_irradiance, equirect_uv(s.n), 0.0);
         ambient *= irr.rgb / max(irr.a, 1e-3);
@@ -138,6 +150,9 @@ vec3 shade(Surface s, vec2 pixel, out vec3 ambient_out) {
         if (R.ambient.w != 0.0) {
             vec3 r = reflect(-v, s.n);
             vec3 env = textureLod(u_env, equirect_uv(r), s.roughness * (R.env.x - 1.0)).rgb;
+#ifdef RT_COMMON
+            env = rt_screen_reflection(env, s.roughness, pixel);
+#endif
             // Sky radiance scaled to the scene's ambient level; occluded like the ambient light.
             ambient_out += env * env_brdf(f0, s.roughness, nv) * s.ao;
         }

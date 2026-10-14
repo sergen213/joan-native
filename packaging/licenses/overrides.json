@@ -1,0 +1,13 @@
+{
+  "_comment": "Bundled-library license facts where Arch's package-level metadata is non-SPDX, covers other programs of the package, or ships no license file. 'license' replaces the package expression for the bundled library; 'texts' (repo paths, fetched from the upstream tag) are shipped in addition to the package's own license directory.",
+  "e2fsprogs": {"license": "LicenseRef-MIT-SIPB", "note": "only libcom_err.so.2 (lib/et) is bundled; MIT-style per its source headers (NOTICE)",
+                "texts": ["packaging/licenses/e2fsprogs/NOTICE", "packaging/licenses/e2fsprogs/libcom_err-LICENSE.txt"]},
+  "lz4": {"license": "BSD-2-Clause", "note": "liblz4 (lib/LICENSE); the GPL-2.0-or-later in Arch metadata covers the lz4 CLI",
+          "texts": ["packaging/licenses/lz4/LICENSE"]},
+  "xz": {"license": "0BSD", "note": "liblzma is 0BSD (COPYING)", "texts": ["packaging/licenses/xz/COPYING.0BSD"]},
+  "libidn2": {"license": "LGPL-3.0-or-later OR GPL-2.0-or-later", "note": "Arch metadata 'GPL2 LGPL3' (non-SPDX)", "texts": []},
+  "libunistring": {"license": "LGPL-3.0-or-later OR GPL-2.0-or-later", "note": "library dual license (README)", "texts": []},
+  "keyutils": {"license": "LGPL-2.1-or-later", "note": "libkeyutils; GPL-2.0-or-later covers the keyctl tools", "texts": []},
+  "acl": {"license": "LGPL-2.1-or-later", "note": "libacl; GPL-2.0-or-later covers the tools", "texts": []},
+  "zstd": {"license": "BSD-3-Clause OR GPL-2.0-only", "note": "upstream dual license", "texts": []}
+}

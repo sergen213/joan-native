@@ -5,6 +5,7 @@
 #include "engine/game_ui_bridge.hpp"
 
 #include "engine/menu_saveload.hpp"
+#include "engine/hud_effects.hpp"
 #include "engine/ui_screens.hpp"
 
 #include <SDL3/SDL_scancode.h>
@@ -104,6 +105,8 @@ bool GameUiBridge::blocking(game::Mission& m) const {
 void GameUiBridge::draw(Ui& ui, game::Mission& m, HudModel& hud, std::vector<UiCommand>& out) {
     ui.frame(Anchor::Center);
     game::MissionUi& mui = m.ui();
+    post_effects(ui, m);  // HudGaps: bribe_no_gold attention message (needs the t_interf text)
+    if (!hud.show_mission_brief && !hud.show_message_log) sms_line(ui, m), ui.frame(Anchor::Center);
     if (mui.cs.active) letterbox(ui, m);
     dialog_box(ui, m);
     if (mui.title.active) title_screen(ui, m);
@@ -159,6 +162,7 @@ void GameUiBridge::dialog_box(Ui& ui, game::Mission& m) {
     if (!d) return void(typed_id_ = 0);
     if (d->id != typed_id_) typed_id_ = d->id, typed_ = 0.0f;
     if (mui.cs.status != 2 || mui.cs.fade != 255.0f) return;
+    ui.nav_modal(3000 + (d->done && d->has_choices));  // GamepadPlay: South advances / picks the focused choice
     const UiFont* f = ui.font("Goudy14(22) white");
     if (!f) return;
     const glm::vec2 mgr{0x68, 768 - 0x69};
@@ -222,6 +226,7 @@ void GameUiBridge::win_message(Ui& ui, game::Mission& m, std::vector<UiCommand>&
     const EndFrame fr = end_frame(win_time_);
     end_title(ui, "VICT", kG100, {256, 320}, {256, 320}, fr.bits);
     end_text(ui, ui.text("VICTS", m.scenario_no()), fr.text);
+    if (fr.text == 4) ui.nav_modal(3102);  // GamepadPlay focus scope
     if (fr.text == 4 && mbut(ui, ui.text("VICT", 4), {412, 694})) end_menu_ = true;
 }
 
@@ -230,6 +235,7 @@ void GameUiBridge::win_message(Ui& ui, game::Mission& m, std::vector<UiCommand>&
 // ponytail: the topic list (De-brief page 7, Objectives ...) is not drawn here; button row positions HYPOTHESIS.
 void GameUiBridge::game_end_menu(Ui& ui, game::Mission&, HudModel& hud, std::vector<UiCommand>& out) {
     const std::string_view title = ui.text("OBJMENU", 14);
+    ui.nav_modal(3103);  // GamepadPlay focus scope
     ingame_backdrop_back(ui);
     menu_heading_bars(ui, -48, upper(title));
     ingame_backdrop_front(ui, 1e9f, -1.0f, title);
@@ -256,6 +262,7 @@ void GameUiBridge::game_over(Ui& ui, game::Mission& m, std::vector<UiCommand>& o
     end_title(ui, "GAMEOVER", kG100, {212, 344}, {192, 324}, fr.bits);
     end_text(ui, m.state().game_over_text, fr.text);
     if (fr.text != 4) return;
+    ui.nav_modal(3101);  // GamepadPlay focus scope
     if (mbut(ui, ui.text("GAMEOVER", 1), {412, 564})) out.push_back(command(UiCommand::Type::RestartMission));
     if (mbut(ui, ui.text("GAMEOVER", 2), {412, 604})) out.push_back(command(UiCommand::Type::LoadMenu));
     if (mbut(ui, ui.text("GAMEOVER", 3), {412, 644})) out.push_back(command(UiCommand::Type::QuitToMain));
@@ -305,6 +312,78 @@ void GameUiBridge::draw_loading(Ui& ui, int mission_no, float progress) {
         ui.text(ui.font("Goudy_bold_18"), ui.text("SCELOAD", 1), {450, 744}, white(a));
     }
     if (load_stage_ >= 7) ui.fill(window_rect(ui), black(load_stage_ == 7 ? 255.0f * k : 255.0f));
+}
+
+}  // namespace joa::engine
+
+namespace joa::engine {
+
+// ---- SMS line (interfac\i_sms.cpp) ----------------------------------------------------------------------
+// FUN_006e5700(text, jump, type) queues a line; FUN_006e5280 slides the front one: the QSAVE "QLC_BAR" bar at
+// (x, 0x204) and the Goudy14(22) text, black (FUN_0042a260(0,0,0,0xff)), at (x, 0x206) (setup FUN_006e4f10)
+// start at x = -text width, alpha 0; move to x 0 (2700 px/s, -1000 px/s^2) while fading in at 1.5/s; hold
+// +0x17c = 3000 ms; the text leaves (v0 0, +1600 px/s^2, fade out 1.5/s) and the bar follows once the text is
+// 20 % out; then the next line. Drawn by FUN_006e5140 in game (not in cut scenes / full-screen pages).
+bool GameUiBridge::sms_event(const game::MissionEvent& e) {
+    if (e.kind != game::MissionEvent::Kind::Ui || !(e.text.starts_with("sms_") || e.text == "food_blocked")) return false;
+    sms_events_.push_back(e);
+    return true;
+}
+
+void GameUiBridge::sms_line(Ui& ui, game::Mission& m) {
+    const auto& items = m.data().items;
+    for (const game::MissionEvent& e : sms_events_) {
+        if (e.text == "food_blocked") {  // Unit_auto_pickup S7_food* without set_food_can_be_picked: 0x4ad710(MESSAGE 3)
+            m.ui().add_attention_message(m, std::string(ui.text("MESSAGE", 3)), "M0000", 0, "", 0);
+            continue;
+        }
+        std::string text;
+        int type = 0;
+        if (e.text == "sms_gold_crates") {  // FUN_004dd8a0 (SMS 11) / FUN_004dd8e0(count) (SMS 12), type 1
+            text = ui_format(ui.text("SMS", e.a == 1 ? 11 : 12), {std::to_string(e.a)}), type = 1;
+        } else if (e.text == "sms_siege_built") {  // RecruitWorkshop: workshop process 0x46a040 -> 0x6e5700(WORKSHOP 17)
+            text = ui.text("WORKSHOP", 17);
+        } else if (e.a > 0 && e.a < int(items.size())) {
+            // 0x5a6660(MessageName +0x18, quantity / gold) then SMS 3 (FUN_004dd6a0) / SMS 4 (FUN_004dd6e0).
+            const std::string what = ui_format(items[std::size_t(e.a)].message, {std::to_string(e.b)});
+            text = ui_format(ui.text("SMS", e.text.starts_with("sms_given") ? 4 : 3), {what});
+        }
+        if (text.empty()) continue;
+        bool restart = sms_.empty();
+        if (type == 1) {  // param_3 == 1 drops the queued counter lines; jump (front is one): shown at once
+            restart = restart || sms_.front().type == 1;
+            std::erase_if(sms_, [](const Sms& s) { return s.type == 1; });
+        }
+        if (restart) sms_.push_front({text, type}), sms_state_ = 0, sms_time_ = 0.0f;
+        else sms_.push_back({text, type});
+    }
+    sms_events_.clear();
+    if (sms_.empty() || blocking(m)) return;
+
+    const UiFont* f = ui.font("Goudy14(22) white");
+    const float w = f ? float(f->metrics.measure(sms_.front().text)) : 0.0f;
+    sms_time_ += ui.dt();
+    const float t = sms_time_;
+    float text_x = -w, bar_x = -w, text_a = 0.0f, bar_a = 0.0f;
+    if (sms_state_ == 0) {  // states 0-2
+        text_x = bar_x = -w + ui_slide(t, 0.0f, w, 2700.0f, -1000.0f);
+        text_a = bar_a = ui_fade(t, 0.0f, 1.5f);
+        if (text_a >= 1.0f && text_x >= 0.0f) sms_state_ = 1, sms_time_ = 0.0f;
+    } else if (sms_state_ == 1) {  // state 3
+        text_x = bar_x = 0.0f, text_a = bar_a = 1.0f;
+        if (t >= 3.0f) sms_state_ = 2, sms_time_ = 0.0f;
+    } else {  // states 4-5
+        const float bar_t = ui_slide_time(0.2f * w, 0.0f, 1600.0f);
+        text_x = -ui_slide(t, 0.0f, w, 0.0f, 1600.0f), text_a = 1.0f - ui_fade(t, 0.0f, 1.5f);
+        bar_x = -ui_slide(t, bar_t, w, 0.0f, 1600.0f), bar_a = 1.0f - ui_fade(t, bar_t, 1.5f);
+        if (bar_x <= -w && text_x <= -w) {  // FUN_006e5d00: next line
+            sms_.pop_front(), sms_state_ = 0, sms_time_ = 0.0f;
+            return;
+        }
+    }
+    ui.frame(Anchor::BottomLeft);
+    ui.sprite("QSAVE", "qlc_bar", {bar_x, 0x204}, {1, 1, 1, bar_a});
+    if (f) ui.text(f, sms_.front().text, {text_x, 0x206}, ui_rgba(0, 0, 0, int(255.0f * text_a)));
 }
 
 }  // namespace joa::engine

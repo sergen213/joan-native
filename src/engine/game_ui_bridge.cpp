@@ -5,6 +5,9 @@
 #include "engine/game_ui_bridge.hpp"
 
 #include "engine/assets_cache.hpp"
+#include "engine/game_camera.hpp"  // hold_voice
+#include "engine/hud_crit.hpp"
+#include "engine/hud_mapobj.hpp"
 #include "engine/menu_saveload.hpp"
 #include "engine/session.hpp"
 #include "formats/save_sav.hpp"
@@ -206,10 +209,14 @@ void GameUiBridge::reset(game::Mission& m, HudModel& hud) {
     typed_id_ = 0, typed_ = 0.0f;
     win_time_ = over_time_ = -1.0f;
     end_menu_ = false;
+    hit_start_.clear(), interact_shown_ = bribe_no_gold_ = false, target_ = 0;  // HudGaps
+    bar_unit_ = char_unit_ = 0;  // HudFinish: FUN_00703750 snaps the panel bars on the next fill
+    sms_events_.clear(), sms_.clear(), sms_state_ = 0, sms_time_ = 0.0f;  // FUN_006e50c0 / 0x6e5e00
     hud.messages.clear();
     hud.show_mission_brief = hud.show_message_log = hud.show_objective = hud.show_quickload_prompt = false;
     hud.brief_page = 0;
     hud.mission = m.scenario_no();
+    hud_mapobj_reset(m, hud);  // HudGaps mapobj: objective panel list / state
 }
 
 void GameUiBridge::on_events(const std::vector<game::MissionEvent>& events, game::Mission& m, HudModel& hud) {
@@ -223,8 +230,8 @@ void GameUiBridge::on_events(const std::vector<game::MissionEvent>& events, game
                     live_messages_.erase(it);
                 }
                 break;
-            case K::ObjectiveShow: hud.show_objective = true; break;
-            case K::ObjectiveHide: hud.show_objective = false; break;
+            case K::ObjectiveAdd: case K::ObjectiveUpdate: case K::ObjectiveFinish: case K::ObjectiveFail:
+            case K::ObjectiveShow: case K::ObjectiveHide: hud_mapobj_event(e, m, hud); break;  // HudGaps mapobj
             case K::Brief:
                 if (e.text == "close") {  // headless auto-close
                     if (brief_shown_) hud.show_mission_brief = false;
@@ -234,7 +241,9 @@ void GameUiBridge::on_events(const std::vector<game::MissionEvent>& events, game
                     hud.brief_page = 0;
                 }
                 break;
-            default: break;
+            default:
+                if (!sms_event(e)) effects_event(e, m);  // SMS line, else HudGaps: interact indicator / item_hit target
+                break;
         }
 }
 
@@ -277,31 +286,48 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
             h.portrait = party_portrait(m, u);
             h.holding = m.ai().is_holding(u);
             h.selected = id == w.player_id();
+            party_effects(m, u, h);  // HudGaps
             hud.party.push_back(std::move(h));
             party_.push_back(id);
         }
 
     // ---- name bars (FUN_00520e80 text + FUN_00520270 LifeBarre at head + 95) ----
     hud.name_bars.clear();
+    // Projects a 16x2-unit LifeBarre billboard centred at p: false when off screen.
+    auto billboard = [&](const glm::vec3& p, HudUnit& h) {
+        const glm::vec4 c = view_proj * glm::vec4(p, 1.0f);
+        if (c.w <= 1.0f) return false;
+        const glm::vec3 ndc = glm::vec3(c) / c.w;
+        if (std::abs(ndc.x) > 1.05f || std::abs(ndc.y) > 1.05f || ndc.z > 1.0f) return false;
+        // Billboard size: design px per world unit (vertical, 16 units up) / the reference 54 px per 16 units.
+        const glm::vec4 c2 = view_proj * glm::vec4(p + glm::vec3(0, 16, 0), 1.0f);
+        const float px = std::abs(c2.y / c2.w - ndc.y) * 0.5f * 768.0f;
+        h.screen = {viewport.x + (ndc.x * 0.5f + 0.5f) * viewport.z, viewport.y + (0.5f - ndc.y * 0.5f) * viewport.w};
+        h.bar_scale = std::clamp(px / 54.0f, 0.25f, 1.5f);
+        h.on_screen = h.bar_scale > 0.3f;  // ponytail: far bars dropped by size; the original cull distance is unknown
+        return true;
+    };
     if (show_names && !mui.game_cut_scene && viewport.z > 0 && viewport.w > 0)
         for (const game::UnitView& v : snap.units) {
             if (v.dead || v.id == w.player_id()) continue;
             const game::Unit* u = w.unit(v.id);
             if (!u || u->deleted || u->name.empty()) continue;
-            const glm::vec3 head = to_engine(v.pos.x, v.pos.y, v.pos.z + 95.0f);
-            const glm::vec4 c = view_proj * glm::vec4(head, 1.0f);
-            if (c.w <= 1.0f) continue;
-            const glm::vec3 ndc = glm::vec3(c) / c.w;
-            if (std::abs(ndc.x) > 1.05f || std::abs(ndc.y) > 1.05f || ndc.z > 1.0f) continue;
-            // Billboard size: design px per world unit (vertical, 16 units up) / the reference 54 px per 16 units.
-            const glm::vec4 c2 = view_proj * glm::vec4(head + glm::vec3(0, 16, 0), 1.0f);
-            const float px = std::abs(c2.y / c2.w - ndc.y) * 0.5f * 768.0f;
             HudUnit h = hud_unit(m, *u);
             h.hp = std::clamp(float(v.hp) / float(std::max(1, v.max_hp)), 0.0f, 1.0f);
-            h.screen = {viewport.x + (ndc.x * 0.5f + 0.5f) * viewport.z, viewport.y + (0.5f - ndc.y * 0.5f) * viewport.w};
-            h.bar_scale = std::clamp(px / 54.0f, 0.25f, 1.5f);
-            h.on_screen = h.bar_scale > 0.3f;  // ponytail: far bars dropped by size; the original cull distance is unknown
-            hud.name_bars.push_back(std::move(h));
+            if (billboard(to_engine(v.pos.x, v.pos.y, v.pos.z + 95.0f), h)) hud.name_bars.push_back(std::move(h));
+        }
+    // Workshop build bar (FUN_0046ba20 LifeBarre + bar_workshop at the facility + 200 z, shown by 0x46c4d0 while the
+    // current weapon builds, fill = clamp(elapsed / build ms) by 0x46c540): a scene object, not tied to the names.
+    if (!mui.game_cut_scene && viewport.z > 0 && viewport.w > 0)
+        for (const game::Facility& f : m.places().facilities()) {
+            if (f.kind != game::Facility::Workshop || f.current < 0 || f.current >= int(f.builds.size())) continue;
+            const game::Facility::Build& b = f.builds[std::size_t(f.current)];
+            const std::uint32_t now = std::uint32_t(w.now());
+            if (now >= b.start_ms + std::uint32_t(b.ms)) continue;   // 0x46c460 hides it when done
+            HudUnit h;
+            h.workshop_bar = true;
+            h.hp = std::clamp(float(now - b.start_ms) / float(std::max(1, b.ms)), 0.0f, 1.0f);
+            if (billboard(to_engine(f.pos.x, f.pos.y, f.pos.z + 200.0f), h)) hud.name_bars.push_back(std::move(h));
         }
 
     // ---- minimap ----
@@ -310,6 +336,7 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
         hud.map_size = glm::vec2(float(g->grid().cells_x), float(g->grid().cells_y)) * formats::TerrainGrid::kCellSize;
     hud.brief_rotation = mui.minimap_rotation;
     hud.map_icons.clear();
+    hud.minimap_waypoints.clear();
     if (map_icons_key_ != m.map_dir() + hud.scenario)
         map_icons_key_ = m.map_dir() + hud.scenario, map_icons_ = load_map_icons(vfs_, m.map_dir(), hud.scenario);
     for (const auto& [name, icon] : map_icons_) {
@@ -320,11 +347,13 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
         if (wp.type == 0) continue;
         glm::vec2 p{wp.pos[0], wp.pos[1]};
         if (const game::Unit* f = wp.follow ? w.unit(wp.follow) : nullptr) p = {f->pos.x, f->pos.y};
-        hud.map_icons.push_back({p, "wp_" + std::to_string(std::clamp(int(wp.type), 1, 7))});  // MAPICON wp_1..wp_7
+        hud.minimap_waypoints.push_back({p, "wp_" + std::to_string(std::clamp(int(wp.type), 1, 7))});  // MAPICON wp_1..wp_7
     }
+    hud_mapobj_fill(m, hud);  // HudGaps mapobj: vision mask sources, objective lines
     for (const game::Unit& u : w.units()) {  // FUN_0070fbe0
         if (u.deleted || w.dead(u) || u.id == w.player_id()) continue;
         const glm::vec2 p{u.pos.x, u.pos.y};
+        if (!hud_vision_visible(hud, p)) continue;  // HudGaps mapobj: dot only on a set mask pixel
         if (w.hostile_to_player(u)) {
             hud.map_icons.push_back({p, "", HudMapIcon::Dot::Red});
             continue;
@@ -337,19 +366,15 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
         else hud.map_icons.push_back({p, "", HudMapIcon::Dot::Green});
     }
 
-    // ---- objectives (end conditions with a description; main = Win records first) ----
-    hud.objectives.clear();
+    // ---- objectives (brief: end conditions with a description, Win records first; HUD panel: hud_mapobj) ----
     hud.brief_objectives.clear();
     const auto& ends = m.state().end;
     for (int pass = 0; pass < 2; ++pass)
         for (const game::EndCondition& e : ends) {
             if (!e.has_des || !e.enabled || e.type == game::EndCondition::Lose) continue;
             if ((e.type == game::EndCondition::Win) != (pass == 0)) continue;
-            hud.objectives.push_back(e.des);
             hud.brief_objectives.push_back({e.type, e.finish, e.des, e.territory_link, e.gold, e.exp, e.awarded != 0});
         }
-    hud.objectives_main = int(std::count_if(hud.brief_objectives.begin(), hud.brief_objectives.end(),
-                                            [](const BriefObjective& o) { return o.type == 0; }));
     hud.mission_time = int(m.state().passed_ms / 1000);
     hud.total_time = int(m.state().play_ms / 1000);
     hud.brief_strategy = hud.brief_siege = m.scenario_no() >= 5;
@@ -387,6 +412,8 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
             h.age = a.len > 0 ? a.typed / float(a.len) * float(h.text.size()) / 40.0f : 0.0f;  // hud_game reveals age*40 chars
             hud.messages.push_back(std::move(h));
         }
+    fill_effects(m, hud);  // HudGaps: interact indicator, target HUD, effect clock
+    hud_crit_fill(m, hud);  // HudGaps crit: crit sequence/banner, kill interface counters
 }
 
 bool GameUiBridge::handle(const UiCommand& c, game::Mission& m) {
@@ -394,15 +421,8 @@ bool GameUiBridge::handle(const UiCommand& c, game::Mission& m) {
     switch (c.type) {
         case UiCommand::Type::HoldResume:
             if (c.value >= 0 && c.value < int(party_.size()))
-                if (game::Unit* u = w.unit(party_[std::size_t(c.value)])) m.ai().toggle_hold(*u, true);  // Unit_toggle_hold 0x5121c0
-            return true;
-        case UiCommand::Type::MinimapClick:
-            // FUN_00717240: right button = move order for the RTS selection; left = camera jump (GameCamera).
-            if (c.value != 1) return false;
-            if (rts_selection && !rts_selection->empty()) {
-                const float z = w.terrain() ? w.terrain()->height(c.world.x, c.world.y) : 0.0f;
-                m.ai().rts_move(*rts_selection, {c.world.x, c.world.y, z}, false);
-            }
+                if (game::Unit* u = w.unit(party_[std::size_t(c.value)]))  // Unit_toggle_hold 0x5121c0 (+ its voice)
+                    m.ai().toggle_hold(*u, true), hold_voice(m, *u);
             return true;
         default: return false;
     }

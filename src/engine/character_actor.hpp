@@ -29,7 +29,9 @@ public:
     float clip_length() const { return std::max(clip().end - clip().start, 1.0f); }
     // Skins the clip at `clip_ms` (clamped to the clip, so a finished one-shot holds its last frame)
     // and uploads the vertices. Call before begin_frame.
-    void pose(float clip_ms);
+    // `root_x/y` (model space, original units) is subtracted from every bone translation: root-motion clips
+    // whose Bip01 x/y travel the game layer moves the body by (game::root_offset).
+    void pose(float clip_ms, float root_x = 0.0f, float root_y = 0.0f);
 
     // Hangs `model` on the skeleton node named `bone` (case-insensitive). False if the bone is unknown.
     // `shadow` (the item's #s.SMO, optional) casts its own volume next to the body's.

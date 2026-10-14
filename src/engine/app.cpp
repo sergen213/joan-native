@@ -74,6 +74,11 @@ int run_demo(const Options& o) {
     UiInputTracker ui_input;
     if (!o.ui_screen.empty()) {
         ui = std::make_unique<UiRunner>(ui_vfs, *renderer, o.ui_screen);
+        if (!capture) {  // UI sound effects (Sfx bus = options Sound Volume)
+            AudioSettings a;
+            a.sfx = float(ui->menu.options.sound_volume) / 100.0f;
+            ui->audio = std::make_unique<AudioSystem>(ui_vfs, a);
+        }
         SDL_HideCursor();
     }
 

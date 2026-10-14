@@ -185,9 +185,9 @@ int main() {
         q.in.feed(q.raw, 0.016f);
         CHECK(q.in.pressed(34));
         q.raw.pad_buttons.reset(), q.raw.pad_buttons.set(SDL_GAMEPAD_BUTTON_BACK);
-        CHECK(q.tick().pressed[IN_RTS_TOGGLE]);
+        CHECK(!q.tick().pressed[IN_RTS_TOGGLE]);  // Back is the pad layer modifier: the toggle fires on a lone tap's release
         q.raw.pad_buttons.reset();
-        q.tick();
+        CHECK(q.tick().pressed[IN_RTS_TOGGLE]);
         // Right stick X turns like the mouse: 150°/s at full deflection.
         q.raw.pad_axes[SDL_GAMEPAD_AXIS_RIGHTX] = 1;
         int total = 0;

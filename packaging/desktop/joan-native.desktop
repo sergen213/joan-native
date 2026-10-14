@@ -7,3 +7,8 @@ Icon=joan-native
 Terminal=false
 Categories=Game;StrategyGame;
 StartupWMClass=joa-launcher
+Actions=Play;
+
+[Desktop Action Play]
+Name=Play
+Exec=joa-launcher --play

@@ -5,6 +5,10 @@
 // quick-load prompt = G_POPUP box FUN_006d3cb0. Positions are the exe's 1024x768 constants (H-n / W-n
 // expressions anchored to that edge); evidence and measurements: work/ui/notes_HudGame.md.
 #include "engine/hud_brief.hpp"
+#include "engine/hud_crit.hpp"
+#include "engine/hud_effects.hpp"
+#include "engine/hud_exp.hpp"
+#include "engine/hud_mapobj.hpp"
 #include "engine/menu_saveload.hpp"
 #include "engine/ui_screens.hpp"
 
@@ -27,12 +31,12 @@ void text_right(Ui& ui, const UiFont* f, std::string_view s, int x, int y, glm::
 }
 
 // Horizontal part of a bar sprite: `frac` of its width, kept from the left (or from the right for CHP).
-void bar(Ui& ui, const UiSprite* s, glm::vec2 pos, float frac, bool keep_right = false) {
+void bar(Ui& ui, const UiSprite* s, glm::vec2 pos, float frac, bool keep_right = false, glm::vec4 color = kUiWhite) {
     if (!s) return;
     const float w = std::floor(s->size.x * std::clamp(frac, 0.0f, 1.0f));
     const float du = (s->uv1.x - s->uv0.x) * w / s->size.x;
-    if (keep_right) ui.image(s->texture, {pos.x + s->size.x - w, pos.y, w, s->size.y}, {s->uv1.x - du, s->uv0.y}, s->uv1);
-    else ui.image(s->texture, {pos.x, pos.y, w, s->size.y}, s->uv0, {s->uv0.x + du, s->uv1.y});
+    if (keep_right) ui.image(s->texture, {pos.x + s->size.x - w, pos.y, w, s->size.y}, {s->uv1.x - du, s->uv0.y}, s->uv1, color);
+    else ui.image(s->texture, {pos.x, pos.y, w, s->size.y}, s->uv0, {s->uv0.x + du, s->uv1.y}, color);
 }
 
 std::string strip_marks(std::string_view s) {
@@ -105,15 +109,31 @@ void sprite_rotated(Ui& ui, const UiSprite* s, glm::vec2 c, float angle) {
         }
 }
 
+// Minimap tile grid at the current zoom (z<zoom>r<row>c<col>, 200x200 px each; FUN_0071b6a0 takes the max row/col);
+// 0 = no minimap tiles.
+glm::ivec2 minimap_tiles(Ui& ui, const HudModel& m) {
+    const std::string table = m.scenario + "W";
+    char name[16];
+    auto has = [&](int r, int c) {
+        std::snprintf(name, sizeof name, "z%dr%02dc%02d", m.minimap_zoom, r, c);
+        return ui.has_sprite(table, name);
+    };
+    glm::ivec2 tiles{0};
+    while (has(1, tiles.x + 1)) ++tiles.x;
+    while (has(tiles.y + 1, 1)) ++tiles.y;
+    return tiles;
+}
+
 // ---- bottom-left player panel (FUN_006f9b60, param & 1 / & 4) ----
 void player_panel(Ui& ui, const HudModel& m) {
     ui.frame(Anchor::BottomLeft);
     const HudUnit& p = m.player;
     ui.sprite("MAINGAME", "panel", {0, 660});                          // (0, H-0x6c)
     if (!p.portrait.empty()) ui.sprite("MAINGAME", p.portrait, {15, 660});  // unit class name + "1"
-    bar(ui, ui.sprite("MAINGAME", "PHPBAR"), {141, 710}, p.hp);         // (0x8d, H-0x3a)
-    bar(ui, ui.sprite("MAINGAME", "PEPBAR"), {141, 726}, p.energy);     // (0x8d, H-0x2a)
-    if (p.level != 30) bar(ui, ui.sprite("MAINGAME", "PLVLBAR"), {141, 748}, p.xp);  // (0x8d, H-0x14), not at max level
+    // Bars: the shown values the HUD tick chases (FUN_006fd8b0); the texts below use the real ones.
+    bar(ui, ui.sprite("MAINGAME", "PHPBAR"), {141, 710}, p.hp_bar >= 0 ? p.hp_bar : p.hp);              // (0x8d, H-0x3a)
+    bar(ui, ui.sprite("MAINGAME", "PEPBAR"), {141, 726}, p.energy_bar >= 0 ? p.energy_bar : p.energy);  // (0x8d, H-0x2a)
+    if (p.level != 30) bar(ui, ui.sprite("MAINGAME", "PLVLBAR"), {141, 748}, p.xp_bar >= 0 ? p.xp_bar : p.xp);  // (0x8d, H-0x14)
     const UiFont* f = ui.font("verdana_12_regular_black_outline");      // font object 0xa50048
     char buf[32];
     std::snprintf(buf, sizeof buf, "%d/%d", p.hp_value, p.hp_max);
@@ -137,24 +157,57 @@ void party(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     static constexpr int kCountX[8] = {131, 223, 315, 407, 499, 591, 683, 775};  // DAT_009de6e4
     const int n = std::min(int(m.party.size()), 8);
     const UiFont* f = ui.font("verdana_12_regular_black_outline");
+    const glm::vec2 scale = hud_minimap_scale(ui, m);  // minimap px per world unit
     for (int i = 0; i < n; ++i) {
         const HudUnit& u = m.party[std::size_t(i)];
         const int k = 8 - n + i;
         const float x = float(kFrameX[k] + 224);  // table - 800 + W
+        // 0xffffffff, or 0x80ffffff when +0x2f / task-locked / outside the minimap view (FUN_00717a90: |d| < half the
+        // 200 px view; true without a minimap) - every sprite and the count text except the HOLD / RESUME buttons.
+        const glm::vec2 d = glm::abs(u.world - m.player_world) * scale;
+        const glm::vec4 a = u.busy || (scale.x > 0 && (d.x >= 100 || d.y >= 100)) ? ui_rgba(255, 255, 255, 0x80) : kUiWhite;
         if (u.name != m.player.name || m.rts_mode) {
-            ui.sprite("MAINGAME", "hr_frame", {x, 678});                                     // (.., H-0x5a)
+            ui.sprite("MAINGAME", "hr_frame", {x, 678}, a);                                  // (.., H-0x5a)
             // Button list 0x622cc0: HOLD_OT/DW/OV vs RESUMEOT/DW/OV (0x6f9b60 picks the set per unit state).
             const glm::vec4 r{x, 678, 24, 28};
             const bool hot = ui.hover(r), down = hot && ui.input().mouse_down;
             ui.sprite("MAINGAME", std::string(u.holding ? "hold_" : "resume") + (down ? "dw" : hot ? "ov" : "ot"), {x, 678});
             if (ui.clicked(r)) out.push_back({UiCommand::Type::HoldResume, i});
         }
-        if (u.units > 0) ui.sprite("MAINGAME", "cmbase", {float(kFrameX[k] + 224 + 2), 743});  // (-0x31e+W, H-0x19)
-        ui.sprite("MAINGAME", "cptop", {x, 668});                                            // (.., H-100)
-        bar(ui, ui.sprite("MAINGAME", "chp"), {float(kHpX[k] + 224), 739}, u.hp, true);     // drains from the left
-        if (!u.portrait.empty()) ui.sprite("MAINGAME", u.portrait, {x, 648});               // (.., H-0x78)
+        // HudGaps: hit flash / danger blink, RTS selection blink, morale pips, in the order of FUN_006f9b60.
+        static constexpr int kMoralX[6] = {60, 51, 42, 33, 24, 15};                  // DAT_009de6cc
+        const float ix = float(kFrameX[k] + 244), mx = float(kFrameX[k] + 230);      // t-0x30c+W (DICON) / t-0x31a+W (MHIT)
+        const bool troops = u.units > 0;
+        auto flash = [&](int idx) {  // DSWORD<idx> (1..9) at (.., H-0x8c); CHIT / MHIT <idx> for 1..3
+            ui.sprite("MAINGAME", "Dsword" + std::to_string(idx), {ix, 628}, a);
+            if (idx > 3) return;
+            ui.sprite("MAINGAME", "chit" + std::to_string(idx), {x, 668}, a);
+            if (troops) ui.sprite("MAINGAME", "mhit" + std::to_string(idx), {mx, 747}, a);
+        };
+        if (u.danger) {  // HP below INDANGER: frame steps every 100 ms, DICON hidden on every 3rd
+            const int s = m.clock_ms / 100 % 9;
+            ui.sprite("MAINGAME", "cptop", {x, 668}, a);
+            if (s % 3 != 0) ui.sprite("MAINGAME", "Dicon", {ix, 628}, a);
+            flash(s + 1);
+        } else if (u.hit_ms >= 0) {  // hit: 1000 ms flash
+            ui.sprite("MAINGAME", "Dicon", {ix, 628}, a);
+            flash(u.hit_ms / 100 % 9 + 1);
+        }
+        // (DAT_00a500b2 - +0x147) / 100 % 8 (real ms since the character window opened); frames 1..3 drawn
+        const int sel = int(std::max(0.0f, m.ui_ms - m.select_ms) / 100.0f) % 8;
+        if (sel >= 1 && sel <= 3) {
+            if (u.commander_selected) ui.sprite("MAINGAME", "cselect" + std::to_string(sel), {x, 668}, a);
+            if (troops && u.troops_selected) ui.sprite("MAINGAME", "mselect" + std::to_string(sel), {mx, 747}, a);
+        }
+        if (u.units > 0) ui.sprite("MAINGAME", "cmbase", {float(kFrameX[k] + 224 + 2), 743}, a);  // (-0x31e+W, H-0x19)
+        if (troops)
+            for (int p = 0; p < std::min(6, u.morale * 6 / 100); ++p)
+                ui.sprite("MAINGAME", "cmoral", {float(kMoralX[p] + kFrameX[k] + 224), 755}, a);  // (.. -800+W, H-0xd)
+        ui.sprite("MAINGAME", "cptop", {x, 668}, a);                                            // (.., H-100)
+        bar(ui, ui.sprite("MAINGAME", "chp"), {float(kHpX[k] + 224), 739}, u.hp, true, a);     // drains from the left
+        if (!u.portrait.empty()) ui.sprite("MAINGAME", u.portrait, {x, 648}, a);               // (.., H-0x78)
         if (u.units > 0)
-            ui_text_in_rect(ui, f, std::to_string(u.units), {kCountX[k] + 224, 768 - 0x23, kCountX[k] + 240, 768 - 0xc}, kUiWhite);
+            ui_text_in_rect(ui, f, std::to_string(u.units), {kCountX[k] + 224, 768 - 0x23, kCountX[k] + 240, 768 - 0xc}, a);
     }
 }
 
@@ -163,17 +216,10 @@ void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     ui.frame(Anchor::TopRight);
     constexpr float kX = 1024 - 0xd3, kY = 10, kW = 199, kH = 200;
     const std::string table = m.scenario + "W";
-    // Tile grid at this zoom (z<zoom>r<row>c<col>, 200x200 px each; FUN_0071b6a0 takes the max row/col).
-    char name[16];
-    auto has = [&](int r, int c) {
-        std::snprintf(name, sizeof name, "z%dr%02dc%02d", m.minimap_zoom, r, c);
-        return ui.has_sprite(table, name);
-    };
-    glm::ivec2 tiles{0};
-    while (has(1, tiles.x + 1)) ++tiles.x;
-    while (has(tiles.y + 1, 1)) ++tiles.y;
+    const glm::ivec2 tiles = minimap_tiles(ui, m);
     if (tiles.x == 0) return;
     const glm::vec2 px_per_world = glm::vec2(tiles * 200) / m.map_size;  // tile world size = map size / grid
+    char name[16];
     auto to_map = [&](glm::vec2 w) { return glm::vec2(w.x, m.map_size.y - w.y) * px_per_world; };  // FUN_0070fa70, y up
     const glm::vec2 off = glm::vec2(kX + 99.5f, kY + 100.0f) - to_map(m.player_world);            // screen = map + off
     // Clip a 200x200 tile (map px origin `o`) to the view. Outside the map: the "z<zoom>b" background tile.
@@ -211,10 +257,12 @@ void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     }
     // Player arrow (icon type 2): MAPICON "cursor" points up; rotate to the heading (y up in the world).
     sprite_rotated(ui, ui.sprite("MAPICON", "cursor"), glm::round(to_map(m.player_world) + off), 1.5707964f - m.player_heading);
+    hud_minimap_fog(ui, m, off, px_per_world);       // HudGaps mapobj: vision mask (FUN_0070e500 after the dots)
     ui.sprite("MAPICON", "frame", {1024 - 218, 6});  // measured in s04_04_mission1_hud (decomp W-0xd7 is clipped)
+    hud_minimap_waypoints(ui, m, off, px_per_world);  // HudGaps mapobj: FUN_00718540 after FRAME
     // RTS only (FUN_00717240 / Minimap_screen_to_world 0x717700): left click = camera jump, right click = move order.
     const glm::vec4 view{kX, kY, kW, kH};
-    if (m.rts_mode && ui.hover(view) && (ui.clicked(view) || ui.input().right_pressed)) {
+    if (m.rts_mode && ui.hover(view) && (ui.clicked(view, false) || ui.input().right_pressed)) {  // not an en2d button: no click SE
         const glm::vec2 p = (ui.mouse() - off) / px_per_world;
         out.push_back({UiCommand::Type::MinimapClick, ui.input().right_pressed ? 1 : 0, {}, {}, {p.x, m.map_size.y - p.y}});
     }
@@ -230,28 +278,16 @@ void name_bars(Ui& ui, const HudModel& m) {
         if (!u.on_screen) continue;
         const glm::vec2 c = glm::round(ui.to_design(u.screen));
         const float s = u.bar_scale;
-        const std::string label = u.name + " (" + std::to_string(u.level) + ")";
-        ui.text(f, label, {c.x, c.y - std::round(18 * s)}, u.hostile ? ui_rgba(0xf5, 0x41, 0x21) : ui_rgba(0x4c, 0x7f, 0xff),
-                TextAlign::Center, s);
+        if (!u.workshop_bar) {
+            const std::string label = u.name + " (" + std::to_string(u.level) + ")";
+            ui.text(f, label, {c.x, c.y - std::round(18 * s)}, u.hostile ? ui_rgba(0xf5, 0x41, 0x21) : ui_rgba(0x4c, 0x7f, 0xff),
+                    TextAlign::Center, s);
+        }
         ui.sprite(&frame, glm::vec4(c.x - 27 * s, c.y, 54 * s, 9 * s));
         const float w = std::floor(50.0f * s * std::clamp(u.hp, 0.0f, 1.0f));
-        ui.image(ui.texture(u.hostile ? "bar_english" : "bar_french"), {c.x - 25 * s, c.y + 2 * s, w, 5 * s}, {0, 0},
-                 {0.78125f * w / (50.0f * s), 0.625f});
+        ui.image(ui.texture(u.workshop_bar ? "bar_workshop" : u.hostile ? "bar_english" : "bar_french"), {c.x - 25 * s, c.y + 2 * s, w, 5 * s},
+                 {0, 0}, {0.78125f * w / (50.0f * s), 0.625f});
     }
-}
-
-// ---- objective lines, top-left (FUN_00704810): LIGHTBAR/DARKBAR alternate at (0, 0x94 + 20 i) ----
-void objectives(Ui& ui, const HudModel& m) {
-    ui.frame(Anchor::TopLeft);
-    const UiFont* f = ui.font("Goudy12 Bold Black");  // font object 0xa5d3c8
-    for (std::size_t i = 0; i < m.objectives.size() && i < 10; ++i) {
-        const float y = float(0x94 + 20 * int(i));
-        ui.sprite("MAINGAME", i % 2 ? "darkbar" : "lightbar", {0, y});
-        ui.text(f, m.objectives[i], {5, y + 3}, kUiWhite, TextAlign::Left, 1.0f, TextOp::Diffuse);  // white on the black atlas
-    }
-    // MAINGAME "line" (384x2) under the main objectives: measured at y = 0x94 + 20 n - 1 in s04_06_objective.
-    if (m.objectives_main > 0 && m.objectives_main < int(m.objectives.size()))
-        ui.sprite("MAINGAME", "line", {0, float(0x94 + 20 * m.objectives_main - 1)});
 }
 
 // ---- attention message panel above the bottom HUD (FUN_004d8c10, state 4/5) ----
@@ -329,8 +365,9 @@ void message_log(Ui& ui, HudModel& m) {
         ui.sprite("COMMELE2", std::string(base) + (hot && ui.input().mouse_down ? "_dw" : hot ? "_ov" : "_ot"), {r.x, r.y});
         return enabled && ui.clicked(r);
     };
-    if (arrow("aw_l", 0x78, m.message_log_page > 0)) m.message_log_page -= 2;
-    if (arrow("aw_r", 0x364, m.message_log_page + 2 < total)) m.message_log_page += 2;
+    const int pad_page = ui.nav_page();  // GamepadPlay: LB / RB turn the page
+    if (arrow("aw_l", 0x78, m.message_log_page > 0) || (pad_page < 0 && m.message_log_page > 0)) m.message_log_page -= 2;
+    if (arrow("aw_r", 0x364, m.message_log_page + 2 < total) || (pad_page > 0 && m.message_log_page + 2 < total)) m.message_log_page += 2;
     ui.sprite("COMMELE2", "longbar", {0, 712});
     if (ui_text_button(ui, page_font, ui.text("IGAMEMNU", 14), {462, 712, 561, 742}) || ui.key(SDL_SCANCODE_ESCAPE))
         m.show_message_log = false;
@@ -375,17 +412,29 @@ void mission_brief(Ui& ui, HudModel& m) {
 
 }  // namespace
 
+glm::vec2 hud_minimap_scale(Ui& ui, const HudModel& m) {
+    const glm::ivec2 tiles = minimap_tiles(ui, m);
+    return tiles.x ? glm::vec2(tiles * 200) / m.map_size : glm::vec2(0.0f);
+}
+
 void hud_game(Ui& ui, HudModel& m, std::vector<UiCommand>& out) {
-    if (m.show_message_log) return message_log(ui, m);
-    if (m.show_mission_brief) return m.brief_page ? hud_brief(ui, m) : mission_brief(ui, m);
+    m.ui_ms += ui.dt() * 1000.0f;  // DAT_00a500b2 (real ms): party selection blink
+    // GamepadPlay: the full-screen pages and the quick-load popup are pad focus scopes.
+    if (m.show_message_log) return ui.nav_modal(2001), message_log(ui, m);
+    if (m.show_mission_brief) return ui.nav_modal(2100 + m.brief_page), m.brief_page ? hud_brief(ui, m) : mission_brief(ui, m);
     name_bars(ui, m);
-    if (m.show_objective) objectives(ui, m);
+    hud_target(ui, m);  // HudGaps: TUI target HP (first in FUN_006f9b60)
+    if (m.show_objective) hud_objectives(ui, m);  // HudGaps mapobj: FUN_00704810 (fade, highlights, suffixes)
     if (!m.messages.empty()) attention(ui, m.messages.front());
     minimap(ui, m, out);
     player_panel(ui, m);
+    hud_exp(ui, m);  // FUN_006fe660 / FUN_006ffed0 / ComboHUD_update after the PLVLBAR
+    hud_crit(ui, m);  // HudGaps crit: Crit_drawHUD 0x45fae0 (after the panel text) + kill interface FUN_006df180
     party(ui, m, out);
+    hud_interact(ui, m);  // HudGaps: GMSG indicator (FUN_006d23b0, late in Sys_disp_frame)
     if (m.show_quickload_prompt) {
         ui.frame(Anchor::Center);
+        ui.nav_modal(2002);
         if (const int r = ui_confirm_popup(ui, ui.text("QSAVE", 1))) {
             out.push_back({r == 1 ? UiCommand::Type::QuickLoad : UiCommand::Type::QuickLoadCancel});
             m.show_quickload_prompt = false;

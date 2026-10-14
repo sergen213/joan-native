@@ -21,6 +21,7 @@ struct Options {
     std::string input_config;        // InputMap text file; empty = defaults (+ user config if present)
     float deadzone = -1.0f;          // < 0 = keep InputMap default
     float sensitivity = 1.0f;        // look sensitivity multiplier
+    bool rumble = true;              // [controller] rumble: pad rumble on the player's hits/damage (GamepadPlay)
     std::string screenshot;          // write PNG after `frames` frames, then exit
     int frames = 0;                  // 0 = run until quit (screenshot default 5, headless default 300)
     bool headless = false;           // simulation only, no window/renderer

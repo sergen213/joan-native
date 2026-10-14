@@ -42,8 +42,11 @@ struct RawInput {
     bool mouse_look = false;  // mouse motion drives Look* only while captured (MouseLook held)
     std::bitset<SDL_GAMEPAD_BUTTON_COUNT> pad_buttons;
     std::array<float, SDL_GAMEPAD_AXIS_COUNT> pad_axes{};  // normalised [-1,1], triggers [0,1]
+    std::string text;    // UTF-8 typed since last frame (SDL text input, only while a text field is active)
+    int key_repeat = 0;  // scancode of a key-repeat event while text input is active (typematic editing), 0 = none
+    bool pad_connected = false;  // GamepadPlay: a gamepad is open (Options -> Input lists Gamepad/Joystick, 0x7435e0)
 
-    void end_frame() { mouse_dx = mouse_dy = wheel = 0.0f; }
+    void end_frame() { mouse_dx = mouse_dy = wheel = 0.0f, text.clear(), key_repeat = 0; }
 };
 
 struct ActionState {

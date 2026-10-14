@@ -81,7 +81,7 @@ int page_front(Ui& ui, const HudModel& m, int heading, int back_x = 0x1ce, int e
     const bool back = ui_text_button(ui, f, ui.text("OBJMENU", 9), {back_x, 0x298, back_x + 0x64, 0x2b6}, a * ui_fade(m.brief_time, 0.2f, 6));
     const bool second = extra && ui_text_button(ui, f, ui.text("OBJMENU", extra), {extra_x, 0x298, extra_x + 0x64, 0x2b6}, a * ui_fade(m.brief_time, 0, 6));
     ingame_backdrop_front(ui, 1e9f, -1.0f, ui.text("OBJMENU", 15));
-    return back || (live && ui.key(SDL_SCANCODE_ESCAPE)) ? 1 : second ? 2 : 0;
+    return back || (live && ui.shortcut(SDL_SCANCODE_ESCAPE)) ? 1 : second ? 2 : 0;
 }
 
 // en2d sprite button (0x6211d0: ot / dw / ov records, 68x20 arrows); returns true on click.
@@ -358,8 +358,11 @@ std::string grouped(int v) {
 // (16 px font + 2 and the top line offset measured: first line at 300 for scroll -4), scroll from -4; OBJMENU
 // "mask" (wood with a soft window, layer 6) hides it outside y ~290..560. Arrows aw_u (0x1de,0xc0) while
 // scroll > -4, aw_d (0x1de,0x261) while scroll < lines - 10. Fade-in 4/s after 200 ms.
-// Gap: the MISSION_BRIEF_<n> voice-over (SE_play_by_name) and the 100 ms auto-repeat of a held arrow.
+// FUN_007246f0 plays SE MISSION_BRIEF_<mission 1..8> (the narrated background) when it opens the page with the
+// .OBJ file loaded. Gap: the 100 ms auto-repeat of a held arrow.
 void background(Ui& ui, HudModel& m) {
+    if (m.brief_mission >= 1 && m.brief_mission <= 8 && !m.brief_text.empty())
+        ui.sound_at("MISSION_BRIEF_" + std::to_string(m.brief_mission), m.brief_time, 0.0f);
     page_back(ui, false);
     const UiFont* f = ui.font("Goudy14(22) white");
     const float a = ui_fade(m.brief_time, 0.2f, 4);
@@ -844,33 +847,38 @@ void siege(Ui& ui, HudModel& m) {
     const int hit = page_front(ui, m, 63, 0x183, 75, 0x219, !m.brief_help);
     if (hit == 1) m.brief_page = 0;
     if (hit == 2) m.brief_help = true;
-    else if (m.brief_help) {
-        // G_POPUP box (FUN_006d3cb0, flags 4): width 0x25f, title OBJMENU 74 (goudy_bold_14) + goldbar, text, goldbar,
-        // CLOSE (G_POPUP 3); height = 0x30 + title + 0x14 + text + 0x14 + 0x24, centred.
-        const UiFont* tf = ui.font("goudy_bold_14");
-        const std::string help = text_of(ui.vfs().read("des/siege_help.txt"));
-        const float w = 0x25f, inner = w - 0x60;
-        const auto tl = tf ? wrap_text(tf->metrics, ui.text("OBJMENU", 74), int(inner)) : std::vector<std::string>{};
-        const auto bl = f12 ? wrap_text(f12->metrics, help, int(inner)) : std::vector<std::string>{};
-        const float th = tf ? float(tl.size()) * float(tf->metrics.line_height()) : 0, lh = f12 ? float(f12->metrics.line_height() + 2) : 0;
-        const float h = std::max(96.0f, 0x30 + th + 0x14 + float(bl.size()) * lh + 0x14 + 0x24);
-        const float x = std::floor((1024 - w) / 2), y = std::floor((768 - h) / 2);
-        gpopup_frame(ui, {x, y, w, h});
-        for (std::size_t l = 0; l < tl.size(); ++l)
-            ui.text(tf, tl[l], {x + w / 2, y + 0x18 + float(l) * float(tf->metrics.line_height())}, kUiWhite, TextAlign::Center, 1.0f, TextOp::Diffuse);
-        ui.sprite("GPOPUP", "goldbar", {x + 0x30, y + 0x18 + th + 8});
-        for (std::size_t l = 0; l < bl.size(); ++l)
-            ui.text(f12, bl[l], {x + 0x30, y + 0x18 + th + 0x14 + float(l) * lh}, kUiWhite, TextAlign::Left, 1.0f, TextOp::Diffuse);
-        ui.sprite("GPOPUP", "goldbar", {x + 0x30, y + h - 0x48});
-        const glm::vec4 b{x + (w - 172) / 2, y + h - 0x3c, 172, 36};
-        const bool hot = ui.hover(b);
-        ui.sprite("GPOPUP", hot && ui.input().mouse_down ? "b_dw" : hot ? "b_ov" : "b_ot", {b.x, b.y});
-        ui_text_in_rect(ui, f14, ui.text("G_POPUP", 3), {int(b.x), int(b.y), int(b.x) + 171, int(b.y) + 35}, kUiWhite);
-        if ((hot && ui.clicked(b)) || ui.key(SDL_SCANCODE_ESCAPE) || ui.key(SDL_SCANCODE_RETURN)) m.brief_help = false;
-    }
+    else if (m.brief_help && ui_text_popup(ui, ui.text("OBJMENU", 74), text_of(ui.vfs().read("des/siege_help.txt")), 0x25f))
+        m.brief_help = false;
 }
 
 }  // namespace
+
+// G_POPUP box (FUN_006d3cb0 with flags 4, body font 0xa5d3c8, title font 0xa47d88): title (goudy_bold_14) + goldbar,
+// body (at most 0x3ff chars, Goudy12 Bold Black), goldbar, CLOSE (G_POPUP 3); the box grows to fit the text (no
+// scrolling): height = 0x30 + title + 0x14 + text + 0x14 + 0x24, centred.
+bool ui_text_popup(Ui& ui, std::string_view title, std::string_view body, float w) {
+    const UiFont* tf = ui.font("goudy_bold_14");
+    const UiFont* f12 = ui.font("Goudy12 Bold Black");
+    const UiFont* f14 = ui.font("Goudy14(22) white");
+    const float inner = w - 0x60;
+    const auto tl = tf ? wrap_text(tf->metrics, title, int(inner)) : std::vector<std::string>{};
+    const auto bl = f12 ? wrap_text(f12->metrics, body.substr(0, 0x3ff), int(inner)) : std::vector<std::string>{};
+    const float th = tf ? float(tl.size()) * float(tf->metrics.line_height()) : 0, lh = f12 ? float(f12->metrics.line_height() + 2) : 0;
+    const float h = std::max(96.0f, 0x30 + th + 0x14 + float(bl.size()) * lh + 0x14 + 0x24);
+    const float x = std::floor((1024 - w) / 2), y = std::floor((768 - h) / 2);
+    gpopup_frame(ui, {x, y, w, h});
+    for (std::size_t l = 0; l < tl.size(); ++l)
+        ui.text(tf, tl[l], {x + w / 2, y + 0x18 + float(l) * float(tf->metrics.line_height())}, kUiWhite, TextAlign::Center, 1.0f, TextOp::Diffuse);
+    ui.sprite("GPOPUP", "goldbar", {x + 0x30, y + 0x18 + th + 8});
+    for (std::size_t l = 0; l < bl.size(); ++l)
+        ui.text(f12, bl[l], {x + 0x30, y + 0x18 + th + 0x14 + float(l) * lh}, kUiWhite, TextAlign::Left, 1.0f, TextOp::Diffuse);
+    ui.sprite("GPOPUP", "goldbar", {x + 0x30, y + h - 0x48});
+    const glm::vec4 b{x + (w - 172) / 2, y + h - 0x3c, 172, 36};
+    const bool hot = ui.hover(b);
+    ui.sprite("GPOPUP", hot && ui.input().mouse_down ? "b_dw" : hot ? "b_ov" : "b_ot", {b.x, b.y});
+    ui_text_in_rect(ui, f14, ui.text("G_POPUP", 3), {int(b.x), int(b.y), int(b.x) + 171, int(b.y) + 35}, kUiWhite);
+    return (hot && ui.clicked(b)) || ui.key(SDL_SCANCODE_ESCAPE) || ui.key(SDL_SCANCODE_RETURN);
+}
 
 void hud_brief(Ui& ui, HudModel& m) {
     if (m.brief_mission != m.mission) brief_content(ui.vfs(), m.mission, m);

@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "game/ai_system.hpp"
+#include "game/mount_ride.hpp"
 #include "game/multimap_nav.hpp"
 
 namespace joa::game {
@@ -68,21 +69,33 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
     if (!u.m.active) return;
     if (s.path.empty()) { s.stuck_since = -1; s.last_pos = u.pos; return; }
     const int a = u.action;
-    if (is_knocked_ext(a) || is_flinch(a) || is_attacking(a) || a == DIE || a == STANDUP || u.airborne) {
+    // Riders keep steering during H_RUN / H_ATTACK: 0x52daa0 runs the path step for every live unit and
+    // only skips the gear call while H_RUN; the horse carries the rider (mount_sync).
+    if (is_knocked_ext(a) || is_flinch(a) || (is_attacking(a) && !u.mount) || a == DIE || a == STANDUP || u.airborne ||
+        (u.mount && !u.ride_ready)) {
         s.last_pos = u.pos;
         return;
     }
+    const Unit* horse = u.mount ? w_.unit(u.mount) : nullptr;
+    // Mounted: the horse's gait is the locomotion; arrival / stuck end in Unit_rider_stop (0x4533e0).
+    const bool moving = horse ? (horse->action == WALK || horse->action == RUN || horse->action == MOVE_B) : is_locomotion(a);
+    auto halt = [&] {
+        if (horse) rider_stop(w_, u);
+        else w_.stop(u);
+    };
     const int now = w_.now();
     const int cls = class_of(u);
     const int base = w_.data().c.reach_dt;
     float R = float(base);
     if (cls == 8 || u.mount) R *= u.lod_tier <= 1 ? 5.0f : 10.0f;
     else if (u.lod_tier > 1) R *= 5.0f;
+    // Last waypoint (0x52daa0): 2 x REACH_DT for riders / siege / LOD > 1 (it replaces the 5x/10x radius),
+    // REACH_DT for LARGE_WEAPON_PUSH, else the running radius.
     auto radius_for = [&](int i) {
         float r = R;
         if (i == int(s.path.size()) - 1) {
+            if (cls == 8 || u.mount || u.lod_tier > 1) r = 2.0f * float(base);
             if (s.task.id == task::LARGE_WEAPON_PUSH) r = float(base);
-            else if (cls == 8 || u.mount || u.lod_tier > 1) r *= 2.0f;
         }
         return r;
     };
@@ -91,7 +104,7 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
         clear_path(u);
         s.wait_len = s.wait_cnt = kInitWaitCount;
         s.stuck_since = -1;
-        if (is_locomotion(u.action)) w_.stop(u);
+        if (moving) halt();
         return;
     }
     // Blocked handling: stuck > 500 ms -> wait countdown -> sidestep once, then replan.
@@ -128,11 +141,11 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
         s.stuck_since = -1;
         return;
     }
-    if (!moved && is_locomotion(u.action)) {
+    if (!moved && moving) {
         if (s.stuck_since < 0) s.stuck_since = now;
         else if (now - s.stuck_since > kStuckMs) {
             --s.wait_cnt;  // enter waiting
-            w_.stop(u);
+            halt();
             return;
         }
     } else {
@@ -142,6 +155,10 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
     // walk when the whole path is shorter than WK_DIST, else run.
     const Vec3& wp = s.path[std::size_t(s.wp)];
     w_.set_yaw(u, std::atan2(wp.y - u.pos.y, wp.x - u.pos.x) / 0.017453292f);
+    if (horse) {  // 0x52daa0: mounted -> FUN_00466d50 (run gear) unless the rider is in H_RUN
+        if (a != H_RUN) horse_gear(w_, u, 2);
+        return;
+    }
     const int gait = float(kWkDist) < s.path_len ? RUN : WALK;
     if (u.action != gait && (w_.can_act(u) || is_locomotion(u.action))) w_.set_action(u, gait);
 }

@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "runtime": {
+    "name": "runtime-x86_64",
+    "url": "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64",
+    "asset_url": "https://api.github.com/repos/AppImage/type2-runtime/releases/assets/596078161",
+    "sha256": "156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074",
+    "size": 944632,
+    "commit": "8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa",
+    "license": "MIT",
+    "static_dependencies": {"libfuse": "LGPL-2.1-only", "squashfuse": "BSD-2-Clause", "musl": "MIT", "zstd": "BSD-3-Clause", "zlib": "Zlib", "mimalloc": "MIT"},
+    "trust": "Digest of the immutable official GitHub release asset 596078161 (same pin as the CitroenC4Robot packaging). The 'continuous' download URL moves: download via asset_url with Accept: application/octet-stream and the sha256 check fails closed."
+  },
+  "sources": [
+    {"name": "type2-runtime-8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa.tar.gz", "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa", "sha256": "c449eb42c2190820872631f5e22f8e15b1e985a36dc4a9e2de3585bb7536c785"},
+    {"name": "fuse-3.15.0.tar.xz", "url": "https://api.github.com/repos/libfuse/libfuse/releases/assets/111992533", "sha256": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0"},
+    {"name": "squashfuse-0.5.2.tar.gz", "url": "https://codeload.github.com/vasi/squashfuse/tar.gz/refs/tags/0.5.2", "sha256": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3"},
+    {"name": "musl-1.2.5.tar.gz", "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz", "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"},
+    {"name": "zstd-794ea1b0afca0f020f4e57b6732332231fb23c70.tar.gz", "url": "https://codeload.github.com/facebook/zstd/tar.gz/794ea1b0afca0f020f4e57b6732332231fb23c70", "sha256": "33eaa5611d330dbc037e32554521d4e4a8edf2358df7d9b74d586c510a4bcec6"},
+    {"name": "zlib-da607da739fa6047df13e66a2af6b8bec7c2a498.tar.gz", "url": "https://codeload.github.com/madler/zlib/tar.gz/da607da739fa6047df13e66a2af6b8bec7c2a498", "sha256": "b9258cf6254e7f7c37f1cd61dba943a1c5ea3cff5718c789834dac359094f5f7"},
+    {"name": "mimalloc-8c532c32c3c96e5ba1f2283e032f69ead8add00f.tar.gz", "url": "https://codeload.github.com/microsoft/mimalloc/tar.gz/8c532c32c3c96e5ba1f2283e032f69ead8add00f", "sha256": "5b419de5ed9273f63b8537d26ff9d49549808224036f483589ed8524a56461f7"}
+  ],
+  "source_scope": "The runtime statically links patched libfuse (LGPL-2.1): its complete source (type2-runtime commit incl. patches/libfuse/mount.c.diff and build scripts) and the pinned dependency archives ship in the release's third-party source tarball. musl/zstd/zlib/mimalloc are the upstream snapshots of the versions upstream's Alpine 3.21 build used; exact distro patch revisions are unknown upstream."
+}

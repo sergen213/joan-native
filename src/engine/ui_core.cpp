@@ -5,10 +5,13 @@
 #include "formats/save_sav.hpp"  // parse_bmp_header
 #include "formats/res_archive.hpp"
 
+#include <SDL3/SDL_scancode.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace joa::engine {
 namespace {
@@ -89,7 +92,8 @@ TextureHandle Ui::bitmap(std::string_view game_path, bool reload) {
         textures_.erase(it);
     }
     std::pair<TextureHandle, glm::ivec2> entry{};
-    const auto bytes = vfs_.read(game_path);
+    const bool native = std::filesystem::path(game_path).is_absolute();  // native save thumbnail (Session::save)
+    const auto bytes = native ? formats::read_file(std::filesystem::path(game_path)) : vfs_.read(game_path);
     const auto info = bytes ? formats::parse_bmp_header(*bytes) : std::nullopt;
     if (info && (info->bpp == 24 || info->bpp == 32) && info->width > 0 && info->height != 0) {
         const int w = info->width, h = std::abs(info->height), bpp = info->bpp / 8;
@@ -252,6 +256,76 @@ void Ui::begin(glm::ivec4 viewport, std::vector<UiQuad>& out, const UiInput& inp
     input_ = input;
     dt_ = dt;
     frame_ = Anchor::Center;
+    sounds.clear();
+    click_sounded_ = false;
+
+    // GamepadPlay: last-used device; roll the focus ring of the previous frame over.
+    const bool woke = input.pad.used && !pad_mode_;  // the first pad input only shows the focus (no step)
+    if (input.pad.used) pad_mode_ = true;
+    else if (input.mouse_pressed || input.right_pressed || (input.mouse.x >= 0 && glm::distance(input.mouse, last_mouse_) > 2.0f))
+        pad_mode_ = false;
+    last_mouse_ = input.mouse;
+    nav_prev_.swap(nav_rects_);
+    nav_rects_.clear();
+    nav_live_ = std::exchange(nav_open_, false);
+    nav_sealed_ = false;
+    adjustable_prev_ = std::exchange(adjustable_, false);
+    adjust_dx_ = page_ = 0;
+    if (!pad_focus()) return;
+    if (focus_scope_ != nav_scope_) {
+        focus_scope_ = nav_scope_, focus_ = 0, focus_moved_ = false;
+    } else if (focus_moved_) {  // a chosen widget is followed when others appear/vanish (until then: the first one)
+        const auto same = std::find(nav_prev_.begin(), nav_prev_.end(), focus_rect_);
+        if (same != nav_prev_.end()) focus_ = int(same - nav_prev_.begin());
+    }
+    page_ = input.pad.page;
+    if (input.pad.back && !input_.key_pressed) input_.key_pressed = SDL_SCANCODE_ESCAPE;
+    if (input.pad.activate) input_.mouse_released = true;  // the "click" (dialog text advance needs no focus)
+    if (nav_prev_.empty()) return;
+    focus_ = std::clamp(focus_, 0, int(nav_prev_.size()) - 1);
+    glm::ivec2 d = woke ? glm::ivec2(0) : input.pad.dir;
+    if (adjustable_prev_ && d.x) adjust_dx_ = d.x, d.x = 0;
+    if (d != glm::ivec2(0)) {
+        // Nearest rect whose centre lies in that direction; the gap across the direction weighs 4x.
+        const glm::vec4 f = nav_prev_[std::size_t(focus_)];
+        const glm::vec2 fc{f.x + f.z / 2, f.y + f.w / 2};
+        float best = 1e30f;
+        int to = focus_;
+        for (int i = 0; i < int(nav_prev_.size()); ++i) {
+            const glm::vec4 r = nav_prev_[std::size_t(i)];
+            const glm::vec2 c{r.x + r.z / 2, r.y + r.w / 2};
+            const float along = d.x ? (c.x - fc.x) * float(d.x) : (c.y - fc.y) * float(d.y);
+            const float across = d.x ? std::max({0.0f, r.y - (f.y + f.w), f.y - (r.y + r.w)}) : std::max({0.0f, r.x - (f.x + f.z), f.x - (r.x + r.z)});
+            if (along >= 1.0f && along + 4 * across < best) best = along + 4 * across, to = i;
+        }
+        focus_moved_ |= to != focus_;
+        focus_ = to;
+    }
+    focus_rect_ = nav_prev_[std::size_t(focus_)];
+}
+
+void Ui::nav_modal(int scope) {
+    nav_open_ = true, nav_sealed_ = false;
+    nav_scope_ = scope;
+    nav_rects_.clear();
+}
+
+int Ui::nav_adjust() {
+    if (!pad_focus()) return 0;
+    adjustable_ = true;
+    return std::exchange(adjust_dx_, 0);
+}
+
+int Ui::nav_index(glm::vec4 design) const {
+    const glm::vec4 p = rect_pixels(design);
+    if (p.z <= 0 || p.w <= 0 || nav_sealed_) return -1;
+    for (std::size_t i = 0; i < nav_rects_.size(); ++i) {
+        const glm::vec4 q = nav_rects_[i];
+        if (p == q) return int(i);
+        if (p.x >= q.x && p.y >= q.y && p.x + p.z <= q.x + q.z && p.y + p.w <= q.y + q.w) return -1;  // arrow inside its row
+    }
+    nav_rects_.push_back(p);
+    return int(nav_rects_.size()) - 1;
 }
 
 void Ui::frame(Anchor anchor) { frame_ = anchor; }
@@ -347,10 +421,21 @@ int Ui::text_block(const UiFont* f, std::string_view s, glm::vec4 rect, glm::vec
 // ---------------------------------------------------------------- hit testing
 
 bool Ui::hover(glm::vec4 r) const {
+    const int i = nav_open_ ? nav_index(r) : -1;
+    if (pad_focus()) return i >= 0 && i == focus_;
     const glm::vec2 m = mouse();
     return m.x >= r.x && m.y >= r.y && m.x < r.x + r.z && m.y < r.y + r.w;
 }
-bool Ui::clicked(glm::vec4 r) const { return input_.mouse_released && hover(r); }
+bool Ui::clicked(glm::vec4 r, bool sound) {
+    const bool hit = input_.mouse_released && hover(r);
+    if (hit && sound && !std::exchange(click_sounded_, true)) this->sound("IF_BUTTON_MOUSE_DOWN");
+    return hit;
+}
+bool Ui::shortcut(int scancode) {
+    const bool hit = key(scancode);
+    if (hit && !std::exchange(click_sounded_, true)) sound("IF_BUTTON_MOUSE_DOWN");
+    return hit;
+}
 bool Ui::pressed(glm::vec4 r) const { return input_.mouse_pressed && hover(r); }
 
 // ---------------------------------------------------------------- cursor
@@ -387,7 +472,7 @@ void Ui::cursor(int index) {
         }
         if (cursors_.empty()) std::fprintf(stderr, "ui: cursor resources unavailable\n");
     }
-    if (!out_ || cursors_.empty() || input_.mouse.x < 0.0f) return;
+    if (!out_ || cursors_.empty() || input_.mouse.x < 0.0f || pad_focus()) return;
     const auto& [tex, hot] = cursors_[std::size_t(std::clamp(index, 0, int(cursors_.size()) - 1))];
     const float s = layout_.scale;
     const glm::vec2 p = glm::round(input_.mouse - hot * s);

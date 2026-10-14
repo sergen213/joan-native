@@ -52,10 +52,17 @@ void GameInput::configure(const std::vector<KeyBindingRow>& rows, const GameOpti
             map_[std::size_t(kMouse + (m == 1 ? SDL_BUTTON_LEFT : m == 2 ? SDL_BUTTON_RIGHT : SDL_BUTTON_MIDDLE))].set(std::size_t(a));
         if (const SDL_GamepadButton b = joypad_button(r.code[2]); b != SDL_GAMEPAD_BUTTON_INVALID) map_[std::size_t(kPad + b)].set(std::size_t(a));
     }
-    // Fixed pad controls (no DEFAULTK column): Start = Main Game Menu, Back = RTS toggle, RT/LT = light/heavy attack,
-    // left stick = move/strafe (partial tilt = walk).
+    // Fixed pad controls (no DEFAULTK column): Start = Main Game Menu, Back tap = RTS toggle, RT/LT = light/heavy
+    // attack, left stick = move/strafe (partial tilt = walk), and the Back layer (game_input.hpp).
     map_[kPad + SDL_GAMEPAD_BUTTON_START].set(34);
-    map_[kPad + SDL_GAMEPAD_BUTTON_BACK].set(game::IN_RTS_TOGGLE);
+    map_[kBackTap].set(game::IN_RTS_TOGGLE);
+    static constexpr std::pair<int, int> kLayer[] = {
+        {SDL_GAMEPAD_BUTTON_SOUTH, 24},         {SDL_GAMEPAD_BUTTON_EAST, 43},       {SDL_GAMEPAD_BUTTON_WEST, 15},
+        {SDL_GAMEPAD_BUTTON_NORTH, 46},         {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 53}, {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 54},
+        {SDL_GAMEPAD_BUTTON_DPAD_UP, 48},       {SDL_GAMEPAD_BUTTON_DPAD_DOWN, 49},  {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 50},
+        {SDL_GAMEPAD_BUTTON_DPAD_LEFT, 51},     {SDL_GAMEPAD_BUTTON_LEFT_STICK, 45}, {SDL_GAMEPAD_BUTTON_RIGHT_STICK, 44},
+        {SDL_GAMEPAD_BUTTON_START, 40},         {SDL_GAMEPAD_BUTTON_COUNT, 55},      {SDL_GAMEPAD_BUTTON_COUNT + 1, 41}};
+    for (const auto& [b, a] : kLayer) map_[std::size_t(kChord + b)].set(std::size_t(a));
     map_[kRT].set(game::IN_ATTACK_A);
     map_[kLT].set(game::IN_ATTACK_B);
     map_[kStickUp].set(game::IN_FORWARD);
@@ -80,11 +87,18 @@ void GameInput::feed(const RawInput& raw, float dt) {
             if (const int d = norm_dik(sdl_to_dik(int(s))); d > 0 && !never_held(d)) now.set(std::size_t(d));
     for (int b = 1; b < 8; ++b)
         if (raw.mouse_buttons[std::size_t(b)]) now.set(std::size_t(kMouse + b));
-    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-        if (raw.pad_buttons[std::size_t(b)]) now.set(std::size_t(kPad + b));
+    // Back layer: while Back is held the other buttons/triggers are chords; Back released without one = tap.
+    const bool back = raw.pad_buttons[SDL_GAMEPAD_BUTTON_BACK];
+    if (back && !back_down_) chord_used_ = false;
     const auto axis = [&](SDL_GamepadAxis a) { return raw.pad_axes[std::size_t(a)]; };
-    now.set(kLT, axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0.5f);
-    now.set(kRT, axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f);
+    const bool lt = axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0.5f, rt = axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f;
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+        if (raw.pad_buttons[std::size_t(b)] && b != SDL_GAMEPAD_BUTTON_BACK) now.set(std::size_t((back ? kChord : kPad) + b));
+    now.set(back ? kChord + SDL_GAMEPAD_BUTTON_COUNT : kLT, lt);
+    now.set(back ? kChord + SDL_GAMEPAD_BUTTON_COUNT + 1 : kRT, rt);
+    if (back && (lt || rt || (raw.pad_buttons.count() > 1))) chord_used_ = true;
+    now.set(kBackTap, !back && back_down_ && !chord_used_);
+    back_down_ = back;
     float lx = axis(SDL_GAMEPAD_AXIS_LEFTX), ly = axis(SDL_GAMEPAD_AXIS_LEFTY);
     if (const float r = stick(lx, ly, pad_.deadzone); r > 0) {
         constexpr float s = 0.3827f;  // sin 22.5°: eight 45° sectors
@@ -94,7 +108,8 @@ void GameInput::feed(const RawInput& raw, float dt) {
     }
     float rx = axis(SDL_GAMEPAD_AXIS_RIGHTX), ry = axis(SDL_GAMEPAD_AXIS_RIGHTY);
     stick(rx, ry, pad_.deadzone);
-    pad_yaw_deg_ += rx * kPadYawDegPerSec * pad_.sensitivity * dt;
+    // Right stick yaw follows the in-game Mouse Sensitivity like mouse yaw (k / k(0), take()).
+    pad_yaw_deg_ += rx * kPadYawDegPerSec * pad_.sensitivity * ((std::clamp(opt_.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f) / 0.9f * dt;
     dy_ += ry * kPadPitchCountsPerSec * pad_.sensitivity * dt;
     dx_ += raw.mouse_dx, dy_ += raw.mouse_dy;
 
@@ -114,6 +129,7 @@ void GameInput::feed(const RawInput& raw, float dt) {
     wheel_ = raw.wheel;
     wheel_acc_ += raw.wheel;
     alt_ = raw.keys[SDL_SCANCODE_LALT] || raw.keys[SDL_SCANCODE_RALT];
+    shift_ = raw.keys[SDL_SCANCODE_LSHIFT] || raw.keys[SDL_SCANCODE_RSHIFT];  // DAT_00a51800 & 3 (commander hold keys)
 }
 
 game::InputFrame GameInput::take() {

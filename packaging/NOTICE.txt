@@ -1,0 +1,49 @@
+joan-native - native Linux port of Wars and Warriors: Joan of Arc
+==================================================================
+
+This package contains only the port's own programs (joan-native, joa-launcher,
+joa-install, joa-updater) and the third-party libraries they need. It contains
+NO original game data and no third-party mod files: Wars and Warriors: Joan of
+Arc is proprietary (Enlight Software); you must import your own copy with the
+launcher or `joa-install import <dir>`. HD texture packs are imported by you,
+never redistributed (docs/ASSET_RIGHTS.md, docs/HD_ASSETS.md).
+
+Third-party components
+----------------------
+share/doc/joan-native/THIRD_PARTY_INVENTORY.json lists every bundled file with
+its SHA-256, the upstream project / distribution package and version it came
+from, its SPDX license expression and the license texts shipped for it under
+share/licenses/. Components compiled into the programs (GLM, nlohmann/json,
+Vulkan-Headers, AMD FidelityFX FSR 1 algorithms) are listed there as well.
+Host-provided libraries (glibc, libstdc++, GPU drivers and the Vulkan/OpenGL
+loaders, X11/Wayland client and font libraries) are NOT bundled.
+
+LGPL libraries and your right to replace them
+---------------------------------------------
+FFmpeg (libavcodec, libavformat, libavutil, libswresample, libswscale;
+LGPL-2.1-or-later, built WITHOUT any GPL/nonfree/version3 component), Qt 6
+(LGPL-3.0-only) and the other LGPL libraries listed in the inventory are
+dynamically linked shared libraries in lib/. You may replace any of them with
+an interface-compatible build of your own: the programs find lib/ through a
+relative $ORIGIN/../lib search path, so dropping a modified library (keeping
+its SONAME) next to the others is enough. In the AppImage, extract it first
+(`./JoanNative-*.AppImage --appimage-extract`) and run squashfs-root/AppRun.
+
+Corresponding source
+--------------------
+- FFmpeg: the release asset joan-native-<version>-third-party-source.tar holds
+  the byte-exact official ffmpeg-<version>.tar.xz, its upstream OpenPGP
+  signature and signing key, the exact build recipe (build_ffmpeg.py) and its
+  lock (configure flags). Rebuild: python3 build_ffmpeg.py --prefix DIR
+  --tools-dir CACHE.
+- AppImage runtime (type2-runtime, MIT; statically links libfuse LGPL-2.1,
+  squashfuse, musl, zstd, zlib, mimalloc): the same tarball contains the
+  runtime source at the pinned commit and every pinned dependency archive.
+- Other bundled libraries are unmodified Arch Linux packages; the inventory
+  names the exact package version, upstream URL and the Arch packaging
+  repository (https://gitlab.archlinux.org/archlinux/packaging/packages/<name>)
+  whose tag reproduces it.
+- joan-native itself: joan-native-<version>-source.tar.gz in the same release.
+
+Patent note: WMA/WMV decoding (FFmpeg) may be subject to patents in some
+jurisdictions; that is the distributor's and user's responsibility.

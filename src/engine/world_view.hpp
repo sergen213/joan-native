@@ -38,11 +38,14 @@ public:
     void frame(float alpha, const CameraPose& pose, float dt, FrameView& view, std::vector<DrawItem>& draws);
 
     float ground_height(glm::vec3 engine_pos) const { return scene_->ground_height(engine_pos); }
+    AssetCache& assets() { return *assets_; }  // RtsFinish: GameCamera picks map items by their model bounds
     // Stage lighting with the fog/clear colour of the current view direction (refreshed by frame()).
     Lighting lighting() const { return lighting_; }
     // CONFIG.DAT 0x9C shadow mode (GameOptions::shadow): 0 none, 1 ShadowModel blobs only, 2 a stencil
     // volume for the player's hero only, 3 volumes for every unit (Scene::draw_shadow actor loop 0x5f1cc0).
     int shadow_mode = 3;
+    // RTS highlight (Unit 0x519250): units drawn with their select*.SMO ring (world_view_rings.cpp); null = none.
+    const std::vector<int>* selection = nullptr;
 
     // --- stats / tests ---------------------------------------------------------------------------
     const WorldScene& scene() const { return *scene_; }
@@ -61,6 +64,19 @@ public:
         int volumes = 0, models = 0;  // units drawn with a volume / with their ShadowModel, last frame()
     };
     const ShadowStats& shadow_stats() const { return shadow_stats_; }
+    // Body mesh game path of a unit's actor (unit.res Model / ModelName at its model level), empty if absent.
+    std::string actor_model(int unit_id) const;
+    struct ItemStats {
+        int shots = 0, drops = 0;      // projectiles / floor items drawn by the last frame()
+        int missing = 0;               // item models that failed to load (cumulative)
+    };
+    const ItemStats& item_stats() const { return item_stats_; }
+    // Mesh game path drawn for a projectile / floor item id (World item id > 0, -MapObjects recno for map
+    // items with a floor marker), empty if none.
+    std::string shot_model(int projectile_id) const;
+    std::string drop_model(int item_id) const;
+    // Model matrix of a projectile at its latest tick position (identity if none).
+    glm::mat4 shot_frame(int projectile_id) const;
 
 private:
     struct Actor {
@@ -71,7 +87,32 @@ private:
         float t0 = 0, t1 = 0;                  // clip ms; t1 may exceed the length after a loop wrap
         bool wrap = false;                     // t0 -> t1 crosses the loop end
         std::array<int, 3> items{-1, -1, -1};  // attached item ids (melee x2, ranged)
+        int level = -1;                        // Unit model level of `character` (+0x3c5)
+        bool own_anim = false;                 // level with its own animation group: holds its idle
+        std::string model;                     // body mesh game path
+        const game::ClipInfo* root = nullptr;  // root-motion clip being drawn (Bip01 x/y stripped), else null
     };
+    // Projectile (ThrowItem): the ammo item's level-2 mesh along the velocity, interpolated.
+    struct Shot {
+        const Model* model = nullptr;
+        std::string path;
+        glm::vec3 p0{0.0f}, p1{0.0f};  // original world units
+        glm::vec3 dir{1.0f, 0.0f, 0.0f};
+        int item = 0;
+    };
+    // World item on the floor (Unit_dropItem): level-0 mesh, AM1 pickup models play their clip.
+    struct Drop {
+        std::unique_ptr<Character> anim;
+        const Model* model = nullptr;
+        std::string path;
+        glm::vec3 pos{0.0f};
+        float yaw = 0;  // radians, the dropping unit's heading / map item HD
+        int item = 0;   // item.res id (map items: a reused recno with another item is a new drop)
+    };
+    void sync_items(const game::World& world, const game::Snapshot& prev, const game::Snapshot& cur);
+    void build_items(float alpha, std::vector<DrawItem>& draws);
+    const Model* item_model(const std::string& path);
+    void spawn_item_emitter(int item, int slot, const game::Vec3& at);
     void equip(Actor& a, const game::World& world, const game::Unit& u);
     struct Node {
         std::unique_ptr<GrassField> grass;
@@ -90,6 +131,7 @@ private:
         std::vector<SlotEmitter> slots;
     };
     void spawn_slot(const std::string& script, std::size_t slot, const game::UnitView& at);
+    void build_rings(std::vector<DrawItem>& draws);  // world_view_rings.cpp, after frames_ is filled
 
     formats::Vfs vfs_;
     std::unique_ptr<AssetCache> assets_;
@@ -98,6 +140,7 @@ private:
     std::unique_ptr<SkyDome> sky_;
     std::unique_ptr<ParticleSystem> effects_;
     UnitDb db_;
+    const game::MapObjects* objects_;                // mission map items (box drops, script add_item)
     std::map<std::string, ScriptEmitters> scripts_;  // lower-case animscr Code
     const game::World* world_ = nullptr;             // last sync()
     std::unordered_map<int, Actor> actors_;
@@ -107,6 +150,11 @@ private:
     Lighting lighting_;
     UnitStats unit_stats_;
     ShadowStats shadow_stats_;
+    std::unordered_map<int, Shot> shots_;
+    std::unordered_map<int, Drop> drops_;
+    std::unordered_map<int, game::Vec3> gone_;      // map drops removed by the last sync (PICKUP emitter spot)
+    std::unordered_map<std::string, const Model*> item_models_;  // null = failed
+    ItemStats item_stats_;
 };
 
 }  // namespace joa::engine

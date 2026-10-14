@@ -146,7 +146,8 @@ void AiSystem::execute_orders(World& w, Unit& u) {
 }
 
 void AiSystem::think(World& w, Unit& u) {  // Unit_ai_think 0x49d810
-    if (u.id == w.player_id() && !u.ai_controlled) return;
+    // 0x49d810 head: the player (+0x102 == 0) and a horse with a rider (+0x1e6) go to Unit_player_control.
+    if ((u.id == w.player_id() && !u.ai_controlled) || u.m.rider) return;
     AiUnit& s = st(u);
     if (!s.orders.empty()) return;  // AI only plans when the queue is empty
     const int now = w.now();

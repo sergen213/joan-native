@@ -130,7 +130,7 @@ Value give_item(Mission& m, const BuiltinCall& c, bool troop) {
     const int r = unit_add_item(m, *u, item, quantity, level);
     if (r && u->id == m.world().player_id()) {
         const ItemDef& d = m.data().items[size_t(item)];
-        m.emit(MissionEvent::Kind::Ui, item, quantity, "item_pickup " + d.code);  // FUN_006e5700(MessageName)
+        m.emit(MissionEvent::Kind::Ui, item, quantity, "sms_given " + d.code);  // FUN_006e5700(SMS 4 "You have been given %1s!")
         auto& hints = m.state().item_hints_b;  // Game+0x728, FUN_00472a90 / FUN_004729c0
         if (!troop && d.show_armory && std::find(hints.begin(), hints.end(), std::uint16_t(item)) == hints.end()) {
             hints.push_back(std::uint16_t(item));

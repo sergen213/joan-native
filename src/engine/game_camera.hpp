@@ -7,12 +7,15 @@
 // fly camera for render tests. Simulation-side state is evaluated once per 33 ms tick; pose(alpha) interpolates.
 #include "engine/camera.hpp"
 #include "engine/input.hpp"
+#include "engine/ui_model.hpp"  // GameOptions (free camera mouse look)
 #include "game/controller_player.hpp"
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <bitset>
-#include <cstdint>
+#include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +27,7 @@ class World;
 
 namespace joa::engine {
 
+class AssetCache;
 class GameInput;
 
 // One original CameraState (CamMan +0x04..+0x1c) in original world units, z up: the camera looks from
@@ -50,6 +54,18 @@ std::vector<CamTrack> parse_camera_tracks(std::string_view text);
 // linear angles / distance (0x427bb0). t_ms clamps to the key range.
 CamState eval_track(const std::vector<CamTrack::Key>& keys, float t_ms);
 
+// Ctrl_switch_commander 0x432300: `which` 0 = the next of JOAN / JEAN / LAHIRE / ALENCON (table 0x9f8b10) after the
+// player that is alive, controllable (+0x2f == 0), not task-locked, +0x114 != -1 and inside the minimap view
+// (FUN_00717a90; any distance while the player is dead), 1..4 = that hero. The player must be one of the four.
+// Range mode ends, ride mode follows the new hero's mount, World::set_player (HUD / camera / party follow
+// player_id); outside RTS the new hero's task is parked (+0x2be) and its team's tasks dropped, the old hero resumes
+// its parked task. RTS (mode 4): player swap only (both stay AI-driven). `minimap_scale` = minimap px per world
+// unit (0 = no minimap: every hero is in view). Returns true if the player changed.
+bool hero_switch(game::Mission& m, int which, glm::vec2 minimap_scale = glm::vec2(0.0f));
+// Unit_toggle_hold 0x5121c0 voice after AiSystem::toggle_hold: "RTS" + prefix + 006 (held) / 007 (resumed) for a
+// rank > 3 unit when in RTS or not the player (MissionEvent Sound, played 2D by GameAudio).
+void hold_voice(game::Mission& m, const game::Unit& u);
+
 class GameCamera {
 public:
     // Follow-camera constants (CONFIRMED unless noted; see CAMERA_SYSTEM.md).
@@ -70,20 +86,61 @@ public:
     // Per tick, after Session::tick: controller yaw read-back, cut scenes / camera scripts, RTS camera and
     // commander keys. Keys come from the tick's InputFrame seen in before_tick (the GameInput is not read).
     void after_tick(game::Mission& m, const GameInput& input);
+    // Action mode keys (PlayerCtrl_process 0x42e1a0): Shift + 25..32 toggles that commander's hold; 24 Switch
+    // character / 25..28 Joan, Jean, La Hire, Alencon = hero_switch, outside range mode, when the scenario is > 1 or
+    // rts_unlocked (+0x79, the same test hook as Session::rts_unlocked), the player not climbing / (dis)mounting.
+    bool rts_unlocked = false;
+    glm::vec2 minimap_scale{0.0f};  // hero_switch view test (set from the drawn HUD; 0 = no minimap)
+    // Rts_deinit 0x4404c0 with camera, before the gameplay part (Session::on_rts_exit): the commander last chosen by
+    // key / portrait (+0x1237) becomes the player if he is a playable hero.
+    void rts_deinit(game::Mission& m);
     CameraPose pose(float alpha) const;
 
     // Free fly camera (--free-camera / --camera X,Y,Z,H,P): eye in original units, heading as unit yaw,
     // pitch positive up (WorldView's former free camera conventions).
     bool free = false;
     void set_free_pose(glm::vec3 eye, float heading_deg, float pitch_deg);
-    void free_move(const GameInput& input, float dt);
+    // Mouse look (relative mode while the fly camera runs): `mouse` = raw counts this frame; right turns right, down
+    // looks down (opt.invert_mouse flips pitch) at the game's mouse-yaw rate ((sensitivity + 1) * 0.7 + 0.2) * 0.2
+    // degrees per count (GameInput::take, 0x431790).
+    void free_move(const GameInput& input, float dt, glm::vec2 mouse = glm::vec2(0.0f), const GameOptions& opt = {});
 
-    // RTS mouse (per rendered frame while Session::in_rts()): click / box select, RMB move / attack, edge
-    // scrolling and middle-drag rotation (applied on the next tick). view_proj = the frame's engine-space
-    // projection * view (GL clip convention); viewport x, y, w, h in pixels (top-left origin).
+    // RTS mouse (per rendered frame while Session::in_rts(), Rts_process_input 0x440b30): Ctrl/Alt+digit groups,
+    // double-click (siege crew dismiss / gate / box), click / box select, hover pick (Rts_pick_target 0x44ac60) and
+    // the RMB command of the hovered type, edge scrolling and middle-drag rotation (applied on the next tick).
+    // view_proj = the frame's engine-space projection * view (GL clip convention); viewport x, y, w, h in pixels
+    // (top-left origin). Presses inside `rts_blocked` (HUD minimap / portraits) are left to the HUD.
     void rts_input(game::Mission& m, const RawInput& raw, glm::vec2 mouse_px, glm::ivec4 viewport, const glm::mat4& view_proj);
-    const std::vector<int>& rts_selection() const { return sel_; }
+    // Working selection = group[active] (ViewCtrl +0xf9/+0x105/+0x1236): group 0 or an Alt-recalled group 1..9.
+    const std::vector<int>& rts_selection() const { return groups_[std::size_t(active_)]; }
+    const std::vector<int>& rts_group(int n) const { return groups_[std::size_t(n)]; }
     glm::vec4 drag_box() const;  // x0, y0, x1, y1 pixels of the selection rectangle; all zero when not dragging
+    // Rts_pick_target result of the last rts_input: 0 terrain, 1 enemy unit, 2 attackable item, 4 floor item,
+    // 6 siege weapon to crew, 7 join team, 8 follow commander, 9 cannot, 11 interact (GAMEPLAY_AI_TROOPS.md §5 3.3).
+    int rts_hover_type() const { return hover_type_; }
+    int rts_hover_target() const { return hover_id_; }
+    int rts_hover_siege() const { return hover_siege_; }  // DAT_00a5704d: crewable siege weapon under the cursor
+    int rts_commander() const { return commander_; }  // ViewCtrl +0x1238 focused commander recno (0 none)
+    // HUD minimap click (FUN_00717240): left = camera jump (distance stepped -200 until the view is valid), right =
+    // Rts_cmd_move with the frame's Ctrl (attack-move).
+    void rts_minimap(game::Mission& m, int button, glm::vec2 world);
+    // Party portrait click (Rts_process_input step 4 -> Rts_select_commander by recno; 2nd click within 500 ms = dbl).
+    void rts_portrait(game::Mission& m, int recno);
+    // "Team over capacity" (Rts_cmd_assign 0x44f750 -> G_POPUP t_interf CHARMOVE|1, game paused, +0x1269): target
+    // leader of the pending join (0 none) and the popup arguments (name, max, joining, removed, is Joan).
+    int rts_join_target() const { return join_target_; }
+    const std::vector<std::string>& rts_join_args() const { return join_args_; }
+    void rts_join_answer(game::Mission& m, bool ok);  // OK -> Rts_cmd_assign(target, 1); CANCEL -> cannot (CASSTO)
+    const std::string& rts_voice() const { return voice_; }  // last acknowledgement voice (SOUND code) emitted
+    // View-control block (the original saves ViewCtrl raw, 0x4857c0: 0x126e bytes + camera): groups 0..9, active
+    // group, +0x1237 / +0x1238 commanders, RTS camera. Native save section "VIEW" (not hashed).
+    std::vector<std::uint8_t> save_view() const;
+    void load_view(std::span<const std::uint8_t> data);  // after reset(); ignores malformed data
+    std::vector<glm::vec4> rts_blocked;  // pixel rects (x, y, w, h) the RTS mouse ignores; set from the drawn HUD
+    // RTSICON cursor sprite (Rts_process 0x442ef0 animation, Rts_draw 0x4450f0 idle name by hover type); advances
+    // the command animation by dt (50 ms per frame).
+    std::string rts_cursor(float dt);
+    AssetCache* assets = nullptr;  // map item models: Rts_pick_target picks their bounds (actor +0x90)
 
     const CamState& state() const { return cur_; }  // camera of the last tick
     float follow_distance() const { return follow_dist_; }
@@ -114,7 +171,20 @@ private:
     void rts_exit(game::Mission& m);
     void rts_tick(game::Mission& m);
     bool rts_view_valid(const game::World& w, const CamState& s) const;
-    void select_commander(game::Mission& m, int idx, bool add);
+    // Rts_select_commander 0x451530: commander idx 1..8 (or the unit `recno`), add = Shift, dbl = double-clicked portrait.
+    void select_commander(game::Mission& m, int idx, bool add, int recno = 0, bool dbl = false);
+    void rts_pick(game::Mission& m, glm::vec2 mouse, glm::ivec4 vp, const glm::mat4& vp_m);
+    void rts_command(game::Mission& m);   // RMB on the hovered target (Rts_process_input step 9)
+    void rts_double_click(game::Mission& m, glm::vec2 mouse, glm::ivec4 vp, const glm::mat4& vp_m);
+    void rts_flatten();                   // additive select: live members of group[active] -> group 0, active 0
+    void rts_family(int f) { cursor_family_ = f, cursor_frame_ = 0, cursor_ms_ = 0; }
+    void say(game::Mission& m, std::string code);  // acknowledgement voice (FUN_00492c40, 2D SOUND entry)
+    int rnd(int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng_); }  // Misc_random_range
+    void join_done(game::Mission& m, int target, bool ok, bool follow);  // Rts_cmd_assign voices + cursor
+    std::string cannot_code(const game::World& w);  // "cannot" voice of the selection
+    std::string select_code(const game::World& w);  // selection voice
+    void move_order(game::Mission& m, glm::vec3 to, bool minimap);  // Rts_cmd_move + voice + cursor
+    int pick_building(game::Mission& m, glm::vec3 at, bool rmb);  // Rts_pick_building + type-10 tests / RMB
 
     std::vector<CamTrack> tracks_;  // Resource/cutscene.cm, Resource/rts.cm, map/<dir>/<stem>.cm
     float yaw_ = 0;                 // camera 0 yaw (degrees, [0, 360))
@@ -139,8 +209,24 @@ private:
     int player_ = 0;                // hero of the last tick (switch -> camera turns to the new hero)
     CamState rts_cam_;
     float rts_dist_ = 700.0f;       // PlayerCtrl +0xed (700.0 at init, HYPOTHESIS: RTS distance)
-    std::vector<int> sel_;
-    int last_commander_ = 0;
+    std::array<std::vector<int>, 10> groups_;  // group 0 working selection, 1..9 Ctrl-stored (max 100 each)
+    int active_ = 0;
+    std::vector<int> drag_base_;    // group 0 entries that pre-existed the Shift drag box (+0x104)
+    int hover_type_ = 0, hover_id_ = 0, hover_att_ = 3;  // hover_att_: attack cursor family of the selection
+    int hover_siege_ = 0, commander_ = 0;
+    glm::vec3 hover_pos_{0.0f};     // terrain / floor item point of the hover pick
+    int cursor_family_ = 0, cursor_frame_ = 0;
+    float cursor_ms_ = 0;
+    bool ctrl_ = false, alt_ = false, shift_ = false;  // modifiers of the last rts_input frame
+    std::string cursor_name_ = "POINT00";              // ViewCtrl +0x1258
+    std::bitset<10> digits_;        // top-row 1..9 held last frame (group key edges)
+    int click_ms_ = -100000, portrait_ms_ = -100000, portrait_ = 0;
+    glm::vec2 click_px_{0.0f};
+    int last_commander_ = 0;        // +0x1237 commander index of the last key / portrait selection (0 none)
+    int join_target_ = 0;
+    std::vector<std::string> join_args_;
+    std::string voice_;
+    std::minstd_rand rng_{1};       // cosmetic (voice variants): never the sim RNG
     glm::vec2 edge_dir_{0.0f};      // screen-space edge scroll direction of the last frames (x right, y up)
     float mmb_dx_ = 0;              // middle-drag mouse x since the last tick
     std::bitset<8> prev_buttons_;

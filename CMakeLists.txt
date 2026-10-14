@@ -17,6 +17,13 @@ if(JOA_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address,undefined)
 endif()
+# Release builds (packaging/release/build_release.py): no build/source paths in outputs, so two
+# builds in different directories are byte-identical (with SOURCE_DATE_EPOCH set by the caller).
+option(JOA_REPRODUCIBLE "Map source/build paths out of compiled outputs" OFF)
+if(JOA_REPRODUCIBLE)
+  add_compile_options("-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/joan-native" "-ffile-prefix-map=${CMAKE_BINARY_DIR}=/joan-native/build")
+  add_link_options(-Wl,--build-id=sha1)
+endif()
 
 include(CTest)
 enable_testing()

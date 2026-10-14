@@ -56,7 +56,9 @@ bool Platform::pump(RawInput& raw) {
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
             if (e.key.scancode < SDL_SCANCODE_COUNT) raw.keys[e.key.scancode] = e.key.down;
+            if (e.key.down && e.key.repeat && text_input_) raw.key_repeat = e.key.scancode;
             break;
+        case SDL_EVENT_TEXT_INPUT: raw.text += e.text.text; break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (e.button.button < raw.mouse_buttons.size()) raw.mouse_buttons[e.button.button] = e.button.down;
@@ -93,6 +95,7 @@ bool Platform::pump(RawInput& raw) {
         }
     }
     raw.mouse_look = mouse_look_;
+    raw.pad_connected = !pads_.empty();
     return running;
 }
 
@@ -102,10 +105,22 @@ void Platform::set_mouse_look(bool on) {
     SDL_SetWindowRelativeMouseMode(window_, on);
 }
 
+void Platform::set_text_input(bool on) {
+    if (on == text_input_) return;
+    text_input_ = on;
+    if (on) SDL_StartTextInput(window_);
+    else SDL_StopTextInput(window_);
+}
+
 void Platform::toggle_fullscreen() {
     const bool fs = (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0;
     if (!fs) SDL_SetWindowFullscreenMode(window_, nullptr);
     SDL_SetWindowFullscreen(window_, !fs);
+}
+
+void Platform::rumble(float low, float high, int ms) {
+    const auto motor = [](float v) { return Uint16(std::clamp(v, 0.0f, 1.0f) * 65535.0f); };
+    for (SDL_Gamepad* p : pads_) SDL_RumbleGamepad(p, motor(low), motor(high), Uint32(std::max(ms, 0)));
 }
 
 }  // namespace joa::engine

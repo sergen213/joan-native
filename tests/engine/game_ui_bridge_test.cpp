@@ -84,7 +84,7 @@ int main() {
     }
     std::fprintf(stderr, "player %s %d/%d portrait %s, party %zu, messages %zu log %zu, objectives %zu, icons %zu\n",
                  hud.player.name.c_str(), hud.player.hp_value, hud.player.hp_max, hud.player.portrait.c_str(), hud.party.size(),
-                 hud.messages.size(), hud.message_log.size(), hud.objectives.size(), hud.map_icons.size());
+                 hud.messages.size(), hud.message_log.size(), hud.objective_list.size(), hud.map_icons.size());
     CHECK(hud.player.name == "Joan of Arc");
     CHECK(hud.player.hp_value == 60 && hud.player.hp_max == 60);
     CHECK(hud.player.portrait == "JOAN1");
@@ -99,7 +99,7 @@ int main() {
     CHECK(message_seen);
     for (const auto* l : {&hud.message_log, &hud.messages})
         if (!l->empty()) std::fprintf(stderr, "message %s: %s\n", l->front().icon.c_str(), l->front().text.c_str());
-    CHECK(!hud.objectives.empty() && hud.objectives_main >= 1);
+    CHECK(std::any_of(hud.objective_list.begin(), hud.objective_list.end(), [](const auto& l) { return l.type == 0 && !l.des.empty(); }));
     CHECK(!hud.brief_commanders.empty());
     CHECK(name_bar_seen);
     CHECK(std::any_of(hud.map_icons.begin(), hud.map_icons.end(), [](const HudMapIcon& i) { return i.sprite == "fcastle"; }));
@@ -115,6 +115,36 @@ int main() {
         hold.value = metz;
         CHECK(b.handle(hold, m));
         CHECK(jean && m.ai().is_holding(*jean) != before);
+    }
+
+    // SMS line (interfac\i_sms.cpp): map items picked up under the player post SMS 3 + MessageName (0x5a6660),
+    // the S7 gold bar its counter (SMS 11, Unit_auto_pickup 0x49da30); the front line slides in, holds 3 s, leaves.
+    {
+        joa::game::MapObjects& o = m.objects();
+        const joa::game::Unit& joan = *m.world().unit(m.world().player_id());
+        for (const auto& [code, qty] : {std::pair{"GOLDBAG", 1}, std::pair{"fd_bread_L", 2}, std::pair{"S7_GOLDBAR", 1}}) {
+            const int r = o.create(m, o.res_by_code(code));
+            CHECK(r > 0);
+            if (r <= 0) continue;
+            joa::game::MapItem& it = *o.item(r);  // script add_item 0x651ad0: Pickable -> floor marker
+            it.on_floor = true, it.quantity = qty, it.level = o.res(it.res)->min_level, it.pos = joan.pos;
+        }
+        const int gold = m.state().gold;
+        s.tick({});
+        s.take_world_events();
+        b.on_events(s.take_mission_events(), m, hud);
+        frame(ui, b, m, hud, 0.05f);
+        for (const auto& l : b.sms()) std::fprintf(stderr, "sms (type %d): %s\n", l.type, l.text.c_str());
+        const auto has = [&](const char* text) {
+            return std::any_of(b.sms().begin(), b.sms().end(), [&](const GameUiBridge::Sms& l) { return l.text == text; });
+        };
+        CHECK(m.state().gold == gold + 120 && m.state().gold_crates == 1);
+        CHECK(b.sms().size() == 3);
+        CHECK(has("You have picked up a pouch worth 120 gold."));
+        CHECK(has("You have picked up two loaves of bread."));
+        CHECK(has("You have collected 1 barrel of gold"));
+        for (int i = 0; i < 100; ++i) frame(ui, b, m, hud, 0.05f);  // 0.67 s in + 3 s + ~0.7 s out
+        CHECK(b.sms().size() == 2);
     }
 
     // list_saves finds a native save written by Session::save (full path, META description and mission).

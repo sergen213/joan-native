@@ -1,5 +1,6 @@
 #include "game/unitclass_db.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -166,6 +167,8 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         F("CHARMOVE", "AIM_R", c.aim_r); F("CHARMOVE", "AIM_MXD", c.aim_mxd); F("CHARMOVE", "AIM_HA", c.aim_ha);
         F("CHARMOVE", "TURN_ANG", c.turn_ang); I("CHARMOVE", "JUMPMAXD", c.jumpmaxd); I("CHARMOVE", "CHAINPRO", c.chainpro);
         I("CHARMOVE", "CRI_TIME", c.cri_time);
+        I("CRITICAL", "FADE_IN1", c.crit_fade_in1); I("CRITICAL", "FADE_IN2", c.crit_fade_in2);
+        for (int k = 0; k < 3; ++k) I("CRITICAL", ("GLOW_IN" + std::to_string(k + 1)).c_str(), c.crit_glow_in[k]);
         const char* d[] = {"EASY", "NORM", "DIFF", "VDIFF"};
         for (int k = 0; k < 4; ++k) {
             F("GAME", (std::string(d[k]) + "_D").c_str(), c.diff_d[k]);
@@ -218,6 +221,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
             u.p1 = std::atoi(u.para1.c_str());
             u.cost = std::atoi(cell(*t, r, "COST").c_str());
             u.require = cell(*t, r, "REQUIRE");
+            u.desc = cell(*t, r, "DESC");
             gd->upitems.push_back(u);
         }
     if (auto t = table(set, "UPGRADE"))
@@ -265,6 +269,9 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         it.use_immediately = kv.i("UseImmediately") != 0;
         it.show_armory = kv.i("ShowArmoryInterface") != 0;
         it.width = kv.i("Width", 1), it.height = kv.i("Height", 1);
+        it.defense = kv.i("Defense"), it.price = kv.i("Price"), it.pickable = kv.i("Pickable") != 0;
+        it.description = kv.str("Description"), it.detail_file = kv.str("DetailDescriptionFilename");
+        it.message = kv.str("MessageName");
         gd->items.push_back(std::move(it));
     }
     if (gd->items.size() <= 1) return nullptr;
@@ -319,6 +326,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         u.walk = kv.f("WalkSpeed"); u.run = kv.f("RunSpeed"); u.shift_l = kv.f("ShiftLeftSpeed");
         u.shift_r = kv.f("ShiftRightSpeed"); u.shift_b = kv.f("ShiftBackSpeed");
         u.hp = kv.i("HP"); u.ep = kv.i("EP"); u.life = kv.i("Life"); u.experience = kv.i("Experience"); u.gold = kv.i("Gold");
+        if (u.unit_class == 8) u.resource = kv.i("Resource");   // RecruitWorkshop: +0x165, read for siege weapons only
         u.earmor_id = kv.i("EArmorId");
         u.earmor_item = gd->item_index(tok(kv.str("EArmorCode")));
         u.pweapon = gd->item_index(tok(kv.str("PWeaponId")));
@@ -384,6 +392,79 @@ int GameData::load_clip(const std::string& file, const std::string& name) {
     return idx;
 }
 
+bool root_motion_action(int a) {
+    switch (a) {
+    case CHAIN: case ATTACK: case JATTACKB: case ENGATK: case ENGATK2: case ENGATK3: case ENGATK4: case ATTACKED:
+    case ATTKED2: case ATTKEDR: case THROW: case THROWN: case STANDUP: case RUSH: case DOWNATK: case JUMP_B:
+    case JUMP_R: case JUMP_L:
+        return true;
+    default: return false;
+    }
+}
+
+void root_offset(const ClipInfo& c, float t, float& x, float& y) {   // FUN_00418a00
+    x = y = 0;
+    const auto& k = c.root;
+    if (k.empty()) return;
+    if (t >= k.back()[0]) { x = k.back()[1], y = k.back()[2]; return; }
+    if (t < k[0][0]) {
+        if (t >= 0.0f) x = t / k[0][0] * k[0][1], y = t / k[0][0] * k[0][2];
+        return;
+    }
+    for (size_t i = 1; i < k.size(); ++i)
+        if (t < k[i][0]) {
+            const float f = (t - k[i - 1][0]) / (k[i][0] - k[i - 1][0]);
+            x = (k[i][1] - k[i - 1][1]) * f + k[i - 1][1], y = (k[i][2] - k[i - 1][2]) * f + k[i - 1][2];
+            return;
+        }
+}
+
+// FUN_00417f20: the "Bip01" track's keys from the one at the clip start (0x5b7c70: bracketing key,
+// the next one when the fraction > 0.99) through the clip end, as offsets from that key, appended
+// with 0x418820's colinear merge. The "Mother" bone transform applies only to skeletons without
+// Bip01 (siege / broken models), so it never matters here.
+void GameData::build_root(int idx, const std::string& file, const std::string& name) {
+    ClipInfo& ci = clips[size_t(idx)];
+    if (ci.root_built) return;
+    ci.root_built = true;
+    const auto& anim = am2_[upper(file)];
+    auto bytes = vfs_.read("anim/" + file + ".am3");
+    formats::Skeleton sk;
+    std::string e;
+    if (!anim || !bytes || !formats::parse_skeleton(*bytes, sk, e)) return;
+    size_t bip = sk.nodes.size();
+    for (size_t i = 0; i < sk.nodes.size(); ++i)
+        if (sk.nodes[i].present && sk.nodes[i].name == "Bip01") { bip = i; break; }
+    const formats::AnimClip* clip = nullptr;
+    for (const auto& c : anim->clips)
+        if (formats::iequals(c.name, name)) { clip = &c; break; }
+    if (!clip || bip >= anim->tracks.size()) return;
+    const auto& keys = anim->tracks[bip];
+    if (keys.empty()) return;
+    size_t i = 0;
+    while (i + 1 < keys.size() && keys[i + 1].time <= clip->start) ++i;
+    if (i + 1 < keys.size() && keys[i].time < clip->start &&
+        (clip->start - keys[i].time) / (keys[i + 1].time - keys[i].time) > 0.99f)
+        ++i;
+    const float x0 = keys[i].m[3], y0 = keys[i].m[7];
+    auto& k = ci.root;
+    for (; i < keys.size(); ++i) {
+        const float t = keys[i].time;
+        if (t < clip->start - 0.001f) continue;
+        if (t > clip->end + 0.001f) break;
+        const float kt = std::max(0.0f, t - clip->start), kx = keys[i].m[3] - x0, ky = keys[i].m[7] - y0;
+        if (!k.empty()) {   // 0x418820: drop the last key when it lies within 1 unit of prev -> new
+            const std::array<float, 3> p = k.size() < 2 ? std::array<float, 3>{} : k[k.size() - 2];
+            const auto& l = k.back();
+            const float f = (l[0] - p[0]) / (kt - p[0]);
+            if (std::fabs(l[1] - ((kx - p[1]) * f + p[1])) <= 1.0f && std::fabs(l[2] - ((ky - p[2]) * f + p[2])) <= 1.0f)
+                k.pop_back();
+        }
+        if (k.size() >= 50) break;   // ponytail: the 0x25c record holds 50 keys; longer tracks never seen
+        k.push_back({kt, kx, ky});
+    }
+}
+
 const MoveTable* GameData::moves(int cls) {
     if (cls < 0 || cls >= int(units.size())) return nullptr;
     UnitClass& u = units[cls];
@@ -429,6 +510,7 @@ const MoveTable* GameData::moves(int cls) {
         m.sound_time2 = num(r, "SOUNDTIME2");
         m.show_crit = num(r, "SHOW_CRIT") != 0;
         if (!m.upper_file.empty() && !m.upper_name.empty()) m.clip = load_clip(m.upper_file, m.upper_name);
+        if (m.clip >= 0 && root_motion_action(m.movement)) build_root(m.clip, m.upper_file, m.upper_name);   // FUN_00415090
         mt.rows.push_back(std::move(m));
     }
     move_tables.push_back(std::move(mt));

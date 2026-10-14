@@ -2,6 +2,7 @@
 #include <cmath>
 
 #include "game/ai_routines.hpp"
+#include "game/mount_ride.hpp"
 
 namespace joa::game {
 
@@ -65,10 +66,16 @@ void AiSystem::cleanup(Unit& u, int action) {  // per-action cleanup functions (
     case order::SHOOT: case order::BLOCK: case order::DOWN_ATTACK: case order::ENERGY_ATTACK: case order::RUSH_ATTACK:
         w_.stop(u); break;
     case order::JUMP: w_.set_action(u, DOWN); break;
-    case order::MOVE_TO_TARGET: case order::MOVE_TO_RELATIVE_TARGET:
+    case order::MOVE_TO_TARGET: case order::MOVE_TO_RELATIVE_TARGET:  // OrderEnd_move_to_target 0x4c1670
         if (s.orders.cur.p[3]) u.m.track = 0;
-        stop(u); break;
-    case order::MOVE_ON_TRACK: u.m.track = 0; stop(u); break;
+        if (u.mount && (u.action == H_WALK || u.action == H_BACK || u.action == H_RUN)) rider_stop(w_, u), clear_path(u), s.wait_cnt = s.wait_len;
+        else stop(u);
+        break;
+    case order::MOVE_ON_TRACK:  // OrderEnd_move_on_track 0x4c17a0
+        u.m.track = 0;
+        if (u.mount && (u.action == H_WALK || u.action == H_BACK || u.action == H_RUN)) rider_stop(w_, u), clear_path(u), s.wait_cnt = s.wait_len;
+        else stop(u);
+        break;
     case order::APPROACH_ENEMY: case order::APPROACH_ITEM: case order::APPROACH_PLACE:
     case order::FOLLOW_FORMATION: case order::FOLLOW_UNIT:
         stop(u); break;
@@ -129,15 +136,37 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
             if (i >= 12) return 0;
             return char((unsigned(c.p[i / 4]) >> ((3 - i % 4) * 8)) & 0xff);
         };
-        if (u.mount) { done(); break; }  // mounted combat: horses are not simulated
+        if (u.mount) {  // mounted branch of 0x4bbf20: one-letter H_ATTACK 'A' swings, p3 (+0x2a) of them
+            auto end = [&] { u.combo.clear(); u.combo_idx = 0; w_.stop(u); done(); };
+            if (u.action == H_ATTACK) {
+                // +0x2f1 (actor) is always present headless; the re-swing waits for record +0x28 END_TIME.
+                if (w_.anim_remaining(u) == 0) end();
+                else if (now - u.anim_start >= u.win_close) {
+                    if (c.p[2] < 1) end();
+                    else {
+                        --c.p[2];
+                        w_.set_action(u, H_ATTACK, 'A');
+                        if (u.combo == "AAA") u.combo = "A";
+                    }
+                }
+            } else if (u.action >= H_HITED && u.action <= H_RHITED) {
+                if (expired) done();
+            } else if (u.action == DIE || w_.dead(u)) {
+                done();
+            } else {
+                --c.p[2];
+                w_.set_action(u, H_ATTACK, 'A');
+            }
+            break;
+        }
         if (u.action == ATTACK) {
             const int n = u.combo_idx > 0 ? int(u.combo.size()) : 0;
             int i = 0;
             while (i < n && u.combo[std::size_t(i)] == key(i)) ++i;
             if (i == n && key(i)) {
                 if (w_.anim_remaining(u) == 0) { u.combo.clear(); u.combo_idx = 0; w_.stop(u); done(); break; }
-                // HYPOTHESIS: the chain window opening (anim rec +0x28) = the move's StartTime (u.win_open).
-                if (now - u.anim_start < u.win_open) break;
+                // Record +0x28 = END_TIME (animgrp layout, GAMEPLAY_CHARACTER_COMBAT.md §1.1) = u.win_close.
+                if (now - u.anim_start < u.win_close) break;
                 if (!w_.find_move(u, ATTACK, u.combo + key(i))) break;
                 w_.set_action(u, ATTACK, key(i));
                 break;

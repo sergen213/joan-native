@@ -19,6 +19,7 @@
 #include "game/ai_system.hpp"
 #include "game/physics_char.hpp"
 #include "game/campaign.hpp"
+#include "game/interact_player.hpp"
 #include "game/mission_objects.hpp"
 #include "game/mission_places.hpp"
 #include "game/mission_state.hpp"
@@ -66,6 +67,7 @@ public:
     MissionState& state() { return state_; }
     Places& places() { return places_; }
     MapObjects& objects() { return objects_; }
+    const MapObjects& objects() const { return objects_; }
     AiSystem& ai() { return *ai_; }
     NavWorld* nav() { return nav_.get(); }  // every level's .pfd + the world mesh; null without a .pfd
     MissionUi& ui() { return ui_; }
@@ -127,6 +129,7 @@ private:
     MapObjects objects_;
     MissionUi ui_;
     std::uint8_t last_finish_ = 0;
+    InteractTarget prompt_;  // last reported interact indicator (derived, not saved)
     bool force_objectives_ = false;
     void restore_profile();  // Battle_load_world: lists, gold, play time, command points
 };

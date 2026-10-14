@@ -77,8 +77,11 @@ bool Character::play(std::string_view am2, std::string_view name) {
     return false;
 }
 
-void Character::pose(float clip_ms) {
+void Character::pose(float clip_ms, float root_x, float root_y) {
     bones_ = formats::sample_pose(*anim_, clip().start + std::clamp(clip_ms, 0.0f, clip_length()));
+    // Root-motion clips: the body carries the Bip01 x/y travel, the drawn pose stays in place.
+    if (root_x != 0.0f || root_y != 0.0f)
+        for (formats::Mat3x4& b : bones_) b[3] -= root_x, b[7] -= root_y;
     std::vector<std::vector<formats::MeshVertex>> posed;
     posed.reserve(mesh_->submeshes.size());
     float top = 0;

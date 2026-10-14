@@ -171,7 +171,10 @@ void GameCamera::reset(const game::Mission& cm) {
     cut_cam_ = cs.active && cs.cam[3] != 0.0f;
     cut_back_ = false;
     tick_in_ = {};
-    sel_.clear();
+    groups_ = {}, active_ = 0, last_commander_ = 0;  // a native load restores them afterwards (load_view, "VIEW")
+    hover_type_ = hover_id_ = hover_siege_ = commander_ = 0;
+    join_target_ = 0, join_args_.clear();
+    rts_family(0);
     pressing_ = dragging_ = false;
     edge_dir_ = {};
     mmb_dx_ = 0;
@@ -180,7 +183,7 @@ void GameCamera::reset(const game::Mission& cm) {
         rts_cam_ = follow_state(w);
         rts_cam_.pitch = kRtsPitch;
         rts_cam_.dist = rts_dist_;
-        if (u) sel_ = m.ai().rts_select_with_team(u->id);
+        if (u) groups_[0] = m.ai().rts_select_with_team(u->id);
     }
     snap_ = true;
     if (cut_cam_) set(cut_state(cs), Mode::Cut);
@@ -267,11 +270,37 @@ void GameCamera::before_tick(const game::Mission& cm, game::InputFrame& f) {
     tick_in_ = f;
 }
 
-void GameCamera::after_tick(game::Mission& m, const GameInput& /*keys: tick_in_*/) {
+void GameCamera::after_tick(game::Mission& m, const GameInput& input) {  // keys: tick_in_; Shift: input
     game::World& w = m.world();
     game::PlayerController& pc = w.controller();
     game::MissionUi& ui = m.ui();
     yaw_ = wrap360(pc.camera_yaw_out);  // controller turns camera 0 with the hero (0x431790: camera yaw -= d)
+    // Action mode keys (PlayerCtrl_process 0x42e1a0): Shift + 25..32 = Unit_toggle_hold of that commander; 24 / 25..28
+    // = Ctrl_switch_commander 0 / 1..4 outside range mode (+0xac) when the scenario is > 1 or +0x79 (rts_unlocked),
+    // the player neither climbing (Unit_get_busy_state) nor (dis)mounting (H_MNT_L..H_DMNT_R), unless dead. The RTS
+    // commander keys are rts_tick's.
+    if (w.game_mode != 4 && !ui.cs.active && !ui.game_cut_scene) {
+        static constexpr const char* kCmd[8] = {"JOAN_OF_ARC", "JEAN_DE_METZ", "LAHIRE", "ALENCON",
+                                                "ORLEAN", "arthur_de_richemont", "charlie7", "FLAVY"};
+        bool done = false;
+        for (int a = 25; a <= 32 && !done && input.shift_held(); ++a) {
+            if (!tick_in_.pressed[std::size_t(a)]) continue;
+            done = true;
+            for (game::Unit& u : w.units())
+                if (!u.deleted && u.cls >= 0 && formats::iequals(w.data().units[std::size_t(u.cls)].code, kCmd[a - 25])) {
+                    m.ai().toggle_hold(u, true), hold_voice(m, u);
+                    break;
+                }
+        }
+        const game::Unit* p = w.unit(w.player_id());
+        if (!done && !pc.range_mode && (rts_unlocked || m.scenario_no() > 1) && p &&
+            (w.dead(*p) || (!p->m.climb && (p->action < game::H_MNT_L || p->action > game::H_DMNT_R))))
+            for (int a = 24; a <= 28; ++a)
+                if (tick_in_.pressed[std::size_t(a)]) {
+                    hero_switch(m, a - 24, minimap_scale);
+                    break;
+                }
+    }
     // Hero switch (Ctrl_switch_commander, scheme 3: FUN_00436190(1) + FUN_004384e0): camera 0 turns to the new hero's
     // facing at up to 40 degrees per frame; native: at once.
     if (w.player_id() != player_) {
@@ -386,11 +415,12 @@ void GameCamera::set_free_pose(glm::vec3 eye, float heading_deg, float pitch_deg
     free_pitch_ = std::clamp(pitch_deg, -89.0f, 89.0f);
 }
 
-// Fly: move 4/5/6/7 (forward/back/strafe), turn 8/9 or 50/51, pitch 48/49, Shift (3) = fast.
-void GameCamera::free_move(const GameInput& in, float dt) {
+// Fly: move 4/5/6/7 (forward/back/strafe), turn 8/9 or 50/51, pitch 48/49, Shift (3) = fast, mouse look.
+void GameCamera::free_move(const GameInput& in, float dt, glm::vec2 mouse, const GameOptions& opt) {
     const auto axis = [&](int pos, int neg) { return float(in.held(pos)) - float(in.held(neg)); };
-    free_heading_ = wrap360(free_heading_ + 90.0f * dt * (axis(8, 9) + axis(50, 51)));
-    free_pitch_ = std::clamp(free_pitch_ + 45.0f * dt * axis(48, 49), -89.0f, 89.0f);
+    const float k = ((std::clamp(opt.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f) * 0.2f;  // degrees per count
+    free_heading_ = wrap360(free_heading_ + 90.0f * dt * (axis(8, 9) + axis(50, 51)) - mouse.x * k);
+    free_pitch_ = std::clamp(free_pitch_ + 45.0f * dt * axis(48, 49) - mouse.y * k * (opt.invert_mouse ? -1.0f : 1.0f), -89.0f, 89.0f);
     const float h = free_heading_ * kDeg, p = free_pitch_ * kDeg;
     const glm::vec3 f{std::cos(h) * std::cos(p), std::sin(h) * std::cos(p), std::sin(p)}, r{std::sin(h), -std::cos(h), 0.0f};
     free_eye_ += (f * axis(4, 5) + r * axis(7, 6)) * ((in.held(3) ? 2400.0f : 600.0f) * dt);

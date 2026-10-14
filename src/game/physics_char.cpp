@@ -4,6 +4,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "formats/vfs_bytes.hpp"
+#include "game/savegame_container.hpp"
+
 namespace joa::game {
 
 namespace {
@@ -49,9 +52,9 @@ void CharPhysics::integrate(World& w, float dt_s) {
             u.vel.x *= 0.5f, u.vel.y *= 0.5f;
             if (std::fabs(u.vel.x) < 1 && std::fabs(u.vel.y) < 1) u.vel.x = u.vel.y = 0;
         }
-        float px = 0, py = 0;
+        float px = u.root_vel.x, py = u.root_vel.y;   // root-motion move request (0x52daa0)
         if (auto it = push_.find(u.id); it != push_.end()) {
-            if (now < it->second.until) px = it->second.x, py = it->second.y;
+            if (now < it->second.until) px += it->second.x, py += it->second.y;
             else push_.erase(it);
         }
         const float r = radius_of(u);
@@ -126,6 +129,26 @@ void CharPhysics::integrate(World& w, float dt_s) {
             u.pos = {tx, ty, tz};
         }
     }
+}
+
+std::vector<std::uint8_t> CharPhysics::save_state() const {
+    std::vector<std::uint8_t> b;
+    ByteWriter w(b);
+    w.i32(std::int32_t(push_.size()));
+    for (const auto& [id, p] : push_) w.i32(id), w.f32(p.x), w.f32(p.y), w.i32(p.until);
+    return b;
+}
+
+bool CharPhysics::load_state(std::span<const std::uint8_t> b) {
+    formats::ByteReader r(b);
+    push_.clear();
+    for (int n = r.i32(); n > 0 && !r.at_end(); --n) {
+        const int id = r.i32();
+        Push p;
+        p.x = r.f32(), p.y = r.f32(), p.until = r.i32();
+        push_[id] = p;
+    }
+    return r.at_end();
 }
 
 }  // namespace joa::game

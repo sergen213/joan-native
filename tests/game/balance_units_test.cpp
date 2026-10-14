@@ -201,7 +201,8 @@ int main() {
     std::printf("20v20: dead english %d french %d; hits eng %d (max dist %.0f, >100: %d) fr %d (max dist %.0f, >100: %d); "
                 "dmg eng %.0f fr %.0f\n", t.dead[1], t.dead[2], t.hits[1], t.max_hit_dist[1], t.beyond_100[1], t.hits[2],
                 t.max_hit_dist[2], t.beyond_100[2], t.dmg[1], t.dmg[2]);
-    // English reach tops out at 94 (captain AAB; soldiers 83/87), French AA/AAB reach 132.
-    CHECK(t.beyond_100[1] * 10 <= t.beyond_100[2] && t.beyond_100[2] > t.hits[2] / 4, "French hits land beyond English reach");
+    // English reach tops out at 94 (captain AAB; soldiers 83/87), French AA/AAB reach 132. Attack root motion
+    // (0x52daa0) closes part of the gap before the hit lands, so only a fifth of the French hits stay > 100.
+    CHECK(t.beyond_100[1] * 10 <= t.beyond_100[2] && t.beyond_100[2] > t.hits[2] / 5, "French hits land beyond English reach");
     return 0;
 }

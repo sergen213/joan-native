@@ -27,12 +27,16 @@ public:
     // Drains pending events into `raw`; returns false when the user asked to quit.
     bool pump(RawInput& raw);
     void set_mouse_look(bool on);  // relative mouse mode while steering the camera
+    void set_text_input(bool on);  // SDL text input (IME, RawInput::text) only while a text field is active
     void toggle_fullscreen();      // windowed <-> borderless
+    // GamepadPlay: rumble every open pad (SDL_RumbleGamepad; silently nothing on pads without motors).
+    void rumble(float low, float high, int ms);
 
 private:
     SDL_Window* window_ = nullptr;
     std::vector<SDL_Gamepad*> pads_;
     bool mouse_look_ = false;
+    bool text_input_ = false;
 };
 
 }  // namespace joa::engine

@@ -51,7 +51,9 @@ int main() {
             std::fprintf(stderr, "SKIP: OpenGL unavailable (%s)\n", e.what());
             return 77;
         }
-        const Image vk = render(demo_options(RendererKind::Vulkan, p), 6);
+        Options vo = demo_options(RendererKind::Vulkan, p);  // raster parity: Ultra's ray tracing (vk_rt_*) off
+        for (const char* k : {"raytracing.reflections", "raytracing.shadows", "raytracing.gi"}) vo.graphics.apply(k, "false");
+        const Image vk = render(vo, 6);
         const bool enh = p == GraphicsPreset::Enhanced;
         save(gl, enh ? "vk_remaster_enhanced_gl.png" : "vk_remaster_ultra_gl.png");
         save(vk, enh ? "vk_remaster_enhanced_vk.png" : "vk_remaster_ultra_vk.png");

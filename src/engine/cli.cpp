@@ -118,6 +118,8 @@ std::string apply_settings_ini(std::string_view ini, Options& o) {
             o.sensitivity = f;
         } else if (key == "controller.camera_fix") {
             o.camera_fix = v == "true" || v == "1";
+        } else if (key == "controller.rumble") {
+            o.rumble = v == "true" || v == "1";
         } else if (key.starts_with("audio.") && number(v, i)) {
             const std::string_view k = std::string_view(key).substr(6);
             i = std::clamp(i, 0, 100);
@@ -128,9 +130,9 @@ std::string apply_settings_ini(std::string_view ini, Options& o) {
         } else if (key == "paths.game_dir" && !v.empty()) {
             o.game_dir = std::string(v);
         } else if (auto err = o.graphics.apply(key, v); !err.empty()) {
-            return err;  // renderer.preset, graphics.* (preset.hpp)
+            return err;  // renderer.preset, graphics.*, raytracing.* (preset.hpp)
         }
-        // Other launcher keys (raytracing, update) do not affect this build yet.
+        // Other launcher keys (update) do not affect this build.
     }
     return {};
 }

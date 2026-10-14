@@ -370,12 +370,11 @@ Value f199(Mission& m, const BuiltinCall& c) {
     return I(1);
 }
 
-// 200 workshop_set_recruit_list 0x654fa0 -> Workshop_set_recruit_list 0x46b730 (H). The
-// product table (+0xa2..) is siege-workshop interface data and not modelled.
+// 200 workshop_set_recruit_list 0x654fa0 -> Workshop_set_recruit_list 0x46b730 (H): product table + empty queue.
 Value f200(Mission& m, const BuiltinCall& c) {
     Facility* f = m.places().facility(std::int16_t(c.i(0)));
     if (!f) return I(0);
-    if (f->kind == Facility::Workshop && m.places().recruit_rec(std::uint16_t(c.i(1)))) f->recruit_list = c.i(1);
+    if (f->kind == Facility::Workshop) m.places().set_workshop_list(f->recno, std::uint16_t(c.i(1)));
     return I(1);
 }
 

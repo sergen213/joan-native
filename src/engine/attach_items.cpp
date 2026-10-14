@@ -31,13 +31,39 @@ std::optional<formats::DbfTable> table(const std::optional<formats::ResArchive>&
 
 }  // namespace
 
+std::string item_anim(std::string_view model) {
+    if (model.size() < 4 || !formats::iequals(model.substr(model.size() - 4), ".am1")) return {};
+    const auto slash = model.rfind('/');
+    const std::size_t from = slash == std::string_view::npos ? 0 : slash + 1;
+    return "item/anim/" + std::string(model.substr(from, model.size() - from - 4)) + ".am2";
+}
+
 UnitDb::UnitDb(const formats::Vfs& vfs)
     : units_(open_res(vfs, "unit/unit.res")), items_(open_res(vfs, "item/item.res")),
-      std_set_(open_res(vfs, "Resource/STD.SET")) {}
+      std_set_(open_res(vfs, "Resource/STD.SET")) {
+    // GameData item codes are the Code field (ItemRes_parse 0x4a0160), not always the entry name.
+    if (items_)
+        for (const auto& e : items_->entries())
+            if (const std::string c = field(record(items_, e.name), "Code"); !c.empty() && !formats::iequals(c, e.name))
+                item_alias_.emplace_back(c, e.name);
+}
 
-std::optional<UnitLook> UnitDb::look(std::string_view code) const {
+std::vector<formats::KvLine> UnitDb::item_record(std::string_view code) const {
+    for (const auto& [c, entry] : item_alias_)
+        if (formats::iequals(c, code)) return record(items_, entry);
+    return record(items_, code);
+}
+
+std::optional<UnitLook> UnitDb::look(std::string_view code, int level) const {
     const auto rec = record(units_, code);
-    const std::string model = field(rec, "Model");
+    // Model level (Unit +0x3c5, UnitRes_load_record 0x404afc): 0 = Model / Animation, n = the n-th
+    // ModelName / AnimationName pair after ModelLevel (class +0x84 / +0x90 + n*4). CONFIRMED.
+    std::string model = field(rec, "Model"), anim_code = field(rec, "Animation");
+    int n = 0;
+    for (const auto& kv : rec) {
+        if (formats::iequals(kv.key, "ModelName") && ++n == level) model = kv.value;
+        else if (formats::iequals(kv.key, "AnimationName") && n == level && level > 0) anim_code = kv.value;
+    }
     if (none(model)) return std::nullopt;
     UnitLook out;
     out.model = "unit/" + model;
@@ -46,7 +72,7 @@ std::optional<UnitLook> UnitDb::look(std::string_view code) const {
     // Animation code -> STD.SET ANIMATE {CODE, DBFNAME} -> per-unit table; the idle clip is the
     // STAND/IDLE row without a combo suffix, its UPPERFILE.am2 holds clip UPPERNAME (CONFIRMED
     // layout, GAMEPLAY_CHARACTER_COMBAT.md anim record +0x2c/+0x4d).
-    const std::string anim_code = field(rec, "Animation");
+    out.anim_code = anim_code;
     if (const auto animate = table(std_set_, "ANIMATE")) {
         const int c = animate->field_index("CODE"), d = animate->field_index("DBFNAME");
         for (std::size_t r = 0; c >= 0 && d >= 0 && r < animate->record_count(); ++r) {
@@ -77,17 +103,29 @@ std::optional<UnitLook> UnitDb::look(std::string_view code) const {
     if (ids.empty())
         if (const std::string id = field(rec, "PRangeWeaponId"); !none(id)) ids.push_back(id);
     for (const std::string& id : ids)
-        if (auto it = item(id)) out.items.push_back(std::move(*it));
+        if (auto it = item(id); it && !it->bone.empty()) out.items.push_back(std::move(*it));
     return out;
 }
 
-std::optional<UnitLook::Item> UnitDb::item(std::string_view code) const {
-    const auto rec = record(items_, code);
-    std::string mesh = field(rec, "ModelName");
-    if (none(mesh)) mesh = field(rec, "Model");
-    const std::string bone = field(rec, "AttachBoneName");
-    if (none(mesh) || none(bone)) return std::nullopt;
+std::optional<UnitLook::Item> UnitDb::item(std::string_view code, int level) const {
+    // ItemRes model for a level (FUN_004a3f20, CONFIRMED): 0 = Model, n = the n-th ModelName (+0x73 + n*4),
+    // Model when that slot is empty.
+    const auto rec = item_record(code);
+    std::string mesh = field(rec, "Model");
+    int n = 0;
+    for (const auto& kv : rec)
+        if (formats::iequals(kv.key, "ModelName") && ++n == level && !none(kv.value)) mesh = kv.value;
+    if (none(mesh)) return std::nullopt;
+    std::string bone = field(rec, "AttachBoneName");
+    if (none(bone)) bone.clear();
     return UnitLook::Item{"item/" + mesh, bone};
+}
+
+std::string UnitDb::item_emitter(std::string_view code, int slot) const {
+    int n = 0;
+    for (const auto& kv : item_record(code))
+        if (formats::iequals(kv.key, "EmitterName") && n++ == slot) return none(kv.value) ? std::string() : kv.value;
+    return {};
 }
 
 }  // namespace joa::engine

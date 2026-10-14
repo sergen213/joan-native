@@ -121,7 +121,8 @@ RunResult run_crossing(GameData& gd, const formats::Vfs& vfs, int no, bool verbo
     if (!pl || !find_cross(nav, c, nav.level_at(pl->pos.x, pl->pos.y))) find_cross(nav, c);
     if (c.a < 0) return std::printf("mission %d: no crossing pair\n", no), res;
     if (pl) pl->pos = {c.pa.x - 150, c.pa.y - 150, c.pa.z};
-    const int id = w.spawn_unit("FRENCH_LIGHT_INFANTRY", pl ? pl->nation : 0, {c.pa.x, c.pa.y, c.pa.z}, 0);
+    // Nation 0: hostile to nobody, so border garrisons (S6L1) cannot pull it into a fight before it crosses.
+    const int id = w.spawn_unit("FRENCH_LIGHT_INFANTRY", 0, {c.pa.x, c.pa.y, c.pa.z}, 0);
     Unit* u = w.unit(id);
     if (!u) return std::printf("mission %d: spawn failed\n", no), res;
     u->ai_controlled = true;

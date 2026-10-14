@@ -97,6 +97,14 @@ struct MenuModel {
     int frontend_exit = -1;       // Main/Difficulty exit animation in progress (MenuFrontEnd): clicked button index, -1 none
     float frontend_exit_time = 0; // model.time of that click
     float time = 0.0f;            // seconds since the current screen opened (animations, credits scroll)
+    // SaveCapture: description text box (en2d txtbox2d, FUN_0062dd10): caret +0x87 and selection anchor +0x8d
+    // (byte indices, kept across entries like the original object), caret blink origin (model.time, 0x62d730).
+    int save_caret = 0, save_anchor = 0;
+    float save_blink = 0;
+    bool save_drag = false;       // mouse selection drag in the text box (+0x84)
+    // HudGaps: options close slide (FUN_0073cc00 case 6) running since model.time 0; the screen switches to
+    // `previous` when it ends (FUN_0073db40), input ignored meanwhile.
+    bool options_closing = false;
 };
 
 // Something the game layer must do. Menu-internal navigation never produces commands.
@@ -119,6 +127,8 @@ struct UiCommand {
         QuickLoadCancel, // quick-load prompt Cancel
         ContinueCampaign,// mission won: game-end menu CONTINUE (next campaign mission, FUN_00720ca0)
         LoadMenu,        // game-over / game-end menu LOAD GAME: open the Load screen (load menu 0x74da40)
+        // RtsComplete:
+        RtsPortrait,     // RTS party portrait click: value = party index (Rts_select_commander by recno)
     } type;
     int value = 0;
     std::string text, text2;
@@ -132,6 +142,8 @@ struct HudUnit {                  // player panel / party portrait / unit name b
     int hp_value = 0, hp_max = 0, energy_value = 0, energy_max = 0;
     int level = 1;
     float xp = 0.0f;              // 0..1 progress to the next level
+    // Player panel bars (HUD +0x20/+0x24/+0x28, chased per tick by FUN_006fd8b0); -1 = hp / energy / xp. Texts use the real values.
+    float hp_bar = -1.0f, energy_bar = -1.0f, xp_bar = -1.0f;
     int ammo = 0;                 // arrows (panel field under the level shield)
     int units = 0;                // troops under command
     bool selected = false;
@@ -140,6 +152,17 @@ struct HudUnit {                  // player panel / party portrait / unit name b
     glm::vec2 screen{0.0f};       // name bar: projected point above the head, window pixels (bar centre, text above)
     float bar_scale = 1.0f;       // name bar billboard: (camera distance in s04_04_mission1_hud) / (camera-to-unit distance)
     bool on_screen = false;
+    bool workshop_bar = false;    // name_bars entry: workshop build bar (bar_workshop fill = hp, no label; 0x46c540)
+    // HudGaps party effects (FUN_006f9b60 party loop):
+    int hit_ms = -1;              // ms since the last hit (DICON/DSWORD/CHIT/MHIT flash, 1000 ms); -1 = none
+    bool danger = false;          // hp / max < GAMEPLAY.RES {DANGER} INDANGER: DICON blink + DSWORD loop
+    int morale = -1;              // average morale of leader + troops (FUN_006ffb40): morale*6/100 CMORAL pips; -1 = no troops
+    // CSELECT (+ MSELECT with troops) blink: the unit of the open character window (+0x6ae/+0x6af); else in RTS mode
+    // CSELECT on the ViewCtrl +0x1238 commander (Rts_select_commander).
+    bool commander_selected = false, troops_selected = false;
+    // Drawn at 0x80ffffff (half alpha) when +0x2f (control) / task-locked (+0x2e1) or outside the minimap view (0x717a90).
+    bool busy = false;
+    glm::vec2 world{0.0f};        // original world x/y (minimap view test)
 };
 
 struct HudMapIcon {
@@ -207,9 +230,7 @@ struct HudModel {
     int message_log_page = 0;              // left page index (even)
     bool show_message_log = false;
     bool show_mission_brief = false;
-    bool show_objective = false;
-    std::vector<std::string> objectives;   // objective panel lines, raw cp1252
-    int objectives_main = 0;               // first n lines are main objectives (white separator line below them)
+    bool show_objective = false;           // objective panel drawn (+0x14d); state and lines: objective_* (mapobj)
     int mission_time = 0, total_time = 0;  // seconds (mission brief corner boxes)
     bool brief_strategy = false, brief_siege = false;  // "Strategic Command" / "Siege Weapon" topics enabled (chapter >= 5)
     // Mission-brief pages (hud_brief.cpp). brief_page = objmenu +0x80: 0 topic menu, 1 Background, 2 Objectives,
@@ -238,7 +259,105 @@ struct HudModel {
     std::vector<BriefTown> brief_towns;    // territories of the mission map (owner may change at run time)
     std::array<BriefWeapon, 6> brief_weapon_info{};
     bool rts_mode = false;                // party: hold/resume buttons also on the player's portrait
+    std::string rts_join_prompt;          // RtsHero: G_POPUP CHARMOVE|1 "team over capacity" body; "" = closed (pauses)
     bool show_quickload_prompt = false;   // QSAVE "Load the last Quick Save game now?"
+    // CharDetails:
+    bool show_character = false;          // character details window (F1 / action 35, 36; CharacterWindow)
+    int armory_item = 0, armory_level = 0;  // ARMORY "YOU HAVE ACQUIRED THE" window (show_armory pickup), 0 = closed
+    // HudGaps: interact indicator FUN_006d23b0 (GMSG box + bribe line), target HUD (TUI set, FUN_006f9b60 head).
+    struct Interact {
+        int line = -1;            // GMSG line: 2 talk, 4 prisoner, 6 barrack, 7 siege house, 8 wood, 9 iron,
+                                  // 10 resource without Alencon, 11 mount, 12 recruit; 0 = item Description; 1 = RTS mode:
+                                  // t_interf RTS 1 crew text of the hovered siege weapon; -1 = no box
+        std::string name;         // talk target name / siege weapon class name (line 1), raw cp1252
+        std::string item_text;    // item Description (line 0)
+        int item_arg = 0;         // line 1: crew slots (class AttachPointCount +0x1ad)
+        int bribe_line = 0;       // 3 = offer, 5 = not enough gold, 0 = none (text under the minimap)
+        std::string bribe_name;
+        int bribe_cost = 0, gold = 0;
+        std::string key;          // KeyMap_get_name(scheme, 0x11): the interact key
+    } interact;
+    struct Target {
+        bool active = false;      // +0x33 != 0 (cleared 3000 ms after the last set)
+        bool unit = true;         // +0x37: unit (else a structure item)
+        bool siege = false;       // unit class +0x118 not NORMAL/MAIN: SBASE layout
+        std::string icon;         // TUI sprite: portrait / siege icon (FUN_00703880) or structure icon; "" = none
+        std::string text;         // "<class name> (<level>)" (units only)
+        int hp = 0, hp_max = 1;   // displayed HP (+0x2c, set to the real HP on a new target, then chases it by <= 40 per tick) / max
+    } target;
+    int clock_ms = 0;             // game clock (World ms = DAT_00a500ba): party hit / danger blinks
+    float ui_ms = 0.0f;           // real-time clock DAT_00a500b2 (hud_game adds ui.dt): selection blink
+    float select_ms = 0.0f;       // its value when the character window opened / switched unit (DAT_00a4d75f)
+    bool sim_paused = false;      // GameFlow::paused(): game speed 0, DAT_00a500ba stands (EXP / crit HUD timers stop)
+    // HudGaps crit: critical-attack HUD Crit_drawHUD 0x45fae0 (object 0xa4f820), kill interface FUN_006df180 (0xa50518).
+    struct Crit {
+        bool enabled = false;     // +0x38 set_critical_attack_enabled (nothing is drawn while clear)
+        std::string keys;         // +0x1f combo of the shown sequence: 'A' Light, 'B' Heavy; "" = none (+0x18 clear)
+        int progress = 0;         // +0x1d keys entered (lit icons)
+        int banner = 0;           // 1 CA (+0x19, CRITATT), 2 CK (+0x1b, CRITKILL), 3 CF (+0x1a, never set); 0 none
+        float banner_ms = 0.0f;   // game ms since CRITATT (+0x2f vs DAT_00a500ba), advanced by hud_crit unless sim_paused
+        int fade_in1 = 200, fade_in2 = 200, glow_in[3] = {200, 200, 200};  // GAMEPLAY.RES {CRITICAL}
+    } crit;
+    struct KillPanel {
+        bool active = false;      // start_/end_kill_interface(_2): +8 / +9
+        int mode = 0;             // +0x12 / +0x13: 0 icon, 1 ficon, 2 hicon, 3 ticon (time left), 4 icon, 5 gold
+        std::string text;         // "count/limit" or "m:s"
+    } kill_panel[2];
+    // HudGaps exp: MGEXP EXP counter FUN_006fe520/FUN_006fe660, level-up FUN_00703680/FUN_006ffed0, ComboHUD 0x7036f0/
+    // 0x702740 (HUD object fields; hud_exp.cpp). Times: ms of `now` (game clock DAT_00a500ba), advanced by hud_exp with
+    // ui.dt() unless sim_paused; the roll steps once per drawn frame of the exe's 30 Hz loop (real time).
+    struct Exp {
+        struct Entry {
+            int value = 0;    // +0x3c gained EXP
+            int digits = 0;   // +0x60 decimal digits of value
+            int roll = 0;     // +0x69 rolling value shown (0 -> value, lowest digit first)
+            int state = 0;    // +0x8d 0 roll, 1 flash, 2 hold 1500 ms, 3 flash, 4 fade/fly out 300 ms
+            float t = -1.0f;  // +0x96 state timer (-1 = unset, the exe's 0)
+        };
+        float now = 0.0f;
+        float roll_acc = 0.0f;     // ms toward the next roll step
+        std::vector<Entry> queue;  // +0xbe count, at most 9 (the first entry is drawn)
+        float slide_t = 0.0f;      // +0xba EXPTEXT slide in / out start
+        int level_state = 0;       // +0xc2 0 off, 1..9 (LEVELUP0..3, LEVEL1..3 + digits)
+        int level = 0;             // +0xc3 the player's new level
+        float level_t = 0.0f;      // +0xc4
+        int combo_state = 0;       // +0xcd 0 off, 1 fade in, 2, 3 hold (count shown), 4, 5 fade out
+        int combo = 0;             // +0xce count shown
+        float combo_t = 0.0f;      // +0xd0
+        int combo_hits = 0;        // DAT_00a5ba62 = World::combo_hits after the last tick
+    } exp;
+    // HudGaps mapobj: minimap vision mask FUN_0070ec50 (minimap 0xa4f3.. +0x478, hud_mapobj.cpp) and the objective
+    // panel (HUD object 0xa4d618 +0x14d..+0x299, FUN_00704810). Panel/line times: ms since the exe's stamps
+    // (+0x153 / +0x1f9 = DAT_00a500ba real ms), advanced by hud_objectives with ui.dt().
+    struct VisionArea {
+        int shape = 0;             // 0 rectangle (p[0], p[1] corners), 1 circle (p[0], r), 2 quadrilateral p[0..3]
+        glm::vec2 p[4]{};          // original world x/y (y up)
+        float r = 0.0f;
+        bool round = false;        // unit circle: centre rounded (ftol(x + 0.5)) like the exe
+    };
+    bool minimap_fog = false;      // mask built (minimap on, player alive): black 0x80 outside `minimap_vision`
+    std::vector<VisionArea> minimap_vision;  // friendly units (radius +0x3c1), allied territories, script areas
+    std::vector<HudMapIcon> minimap_waypoints;  // MAPICON wp_1..wp_7 (FUN_00718540): drawn over the fog and frame
+    struct ObjectiveLine {
+        int recno = 0;             // +0x299 end condition (1-based)
+        int status = -1;           // +0x1a7: -1 none, 0 COMPLETED! (gold), 1 FAILED! (red), 2 New! (green)
+        int reveal = 0;            // +0x157 prefix start (1 = whole prefix, 0 = no prefix)
+        float reveal_ms = 0.0f;    // ms since +0x1f9
+        // GameUiBridge::fill, every frame, from the end condition:
+        int type = 0;              // 0 main, 2 side (others are not drawn)
+        bool enabled = true;       // +0x0f
+        std::string des;           // raw cp1252
+        int suffix = 0;            // para1: 1 "(Time left ...)" MAINGAME 5, 2 "(n/m rescued)" MAINGAME 6
+        int a = 0, b = 0;          // its numbers (minutes left / rescue count, limit)
+    };
+    std::vector<ObjectiveLine> objective_list;  // +0x299 list order (new lines inserted first)
+    int objective_fade = 0;        // +0x14f: 0 hidden, 1 fade in 2 s, 2 fade out 3 s, 3 shown (12 s unless pinned)
+    float objective_fade_ms = 0.0f;  // ms since +0x153
+    bool objective_pinned = false; // +0x14e: opened with O (no 12 s auto-hide)
+    bool objective_paused = false; // cut scene: +0x153 follows the clock (FUN_006fd8b0), the panel stands still
+    // RecruitWorkshop: barracks (0x6c0310) / siege workshop (0x6ed3e0) screen of this facility recno, 0 = closed
+    // (MissionEvent::Interact "recruit_screen" / "workshop_screen"; FacilityWindow; the sim is paused while open).
+    int recruit_screen = 0, workshop_screen = 0;
 };
 
 }  // namespace joa::engine

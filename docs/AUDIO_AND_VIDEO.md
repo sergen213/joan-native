@@ -129,15 +129,19 @@ Local builds use the system FFmpeg via pkg-config (Arch's is GPL-3.0: never ship
 Releases link the shared libraries built by `packaging/ffmpeg/build_ffmpeg.py` from the
 signature-verified FFmpeg 8.1.3 release (`packaging/ffmpeg/ffmpeg.lock.json`): `--disable-gpl
 --disable-nonfree --disable-version3 --disable-everything` plus only the decoders `wmav1 wmav2 wmv1
-wmv2 wmv3`, demuxer `asf`, protocol `file`, libraries avcodec/avformat/avutil/swscale/swresample —
-LGPL-2.1-or-later. The recipe refuses GPL/nonfree configurations, checks the exact installed file
-set and sonames, and writes license/notice files (digests pinned in the lock) plus the source proof
-under `share/licenses/FFmpeg`. Ship the libraries as separate `.so` files (users can replace them),
-and publish the byte-exact source archive, its `.asc`, the recipe and the lock with each release.
-Verified: a configure/make of exactly these arguments (with `--disable-x86asm`, nasm absent here)
-produced the five locked sonames/versions, and all three audio/video tests pass against it.
-The install prefix must not contain whitespace (FFmpeg's `pkgconfig_generate.sh` writes an empty
-`prefix=` otherwise; the recipe rejects such prefixes).
+wmv2 wmv3 vc1 pcm_s16le`, demuxer `asf`, protocol `file`, libraries avcodec/avformat/avutil/swscale/
+swresample — LGPL-2.1-or-later. The recipe refuses GPL/nonfree configurations, checks the exact
+installed file set and sonames, and writes license/notice files (digests pinned in the lock) plus the
+source proof under `share/licenses/FFmpeg`. `packaging/release/build_release.py` ships the libraries
+as separate `.so` files (users can replace them) and puts the byte-exact source archive, its `.asc`,
+the key, the recipe and the lock into the release's `*-third-party-source.tar`.
+The prefix is relocatable (`*.pc` use `${pcfiledir}`) and path-free: configure sees a placeholder
+prefix, bare tool names and relative sources (the build runs in `$TMPDIR`, which must not contain
+whitespace), so two builds anywhere are byte-identical (verified 2026-10-14). Local release build:
+`python3 packaging/ffmpeg/build_ffmpeg.py --prefix work/tools/ffmpeg-prefix --tools-dir work/tools`
+(nasm required), then `PKG_CONFIG_PATH=$PWD/work/tools/ffmpeg-prefix/lib/pkgconfig cmake …`.
+Verified 2026-10-14 (x86asm on): `ldd joan-native` resolves all five libraries to the prefix and
+`engine.audio_decode` + `engine.video_decode` pass against it.
 
 ## 8. Gaps
 

@@ -74,7 +74,7 @@ class IRenderer {
 
 1. Original asset loading through the `MeshData`/`TextureData` seam (DDS decode, SMO/AM1/AM3 meshes, terrain) — depends on `joa_formats`.
 2. GPU skinning: vertex layout and attributes are in place; bone palette uniform + shader path once the animation format is known (bone count limit unknown).
-3. Vulkan: done for raster parity (section below); next RT (reflections/shadows/GI per launcher `[raytracing]`).
+3. Vulkan: done for raster parity (section below) and optional hardware ray tracing (reflections/shadows/GI, [RAYTRACING.md](RAYTRACING.md)).
 4. Shadows, particles, MSAA, anisotropic filtering, gamma-space blending option, terrain renderer.
 5. Original key bindings, mouse-camera behaviour (CAMERA_AND_WIDESCREEN.md §3 mouse delta clamp) and menus/UI art.
 6. Tracy: `-DJOA_TRACY=ON` fetches Tracy v0.11.1 via FetchContent (network at configure time; verified to build and run). Dear ImGui is not installed system-wide and cannot be vendored offline, so no dev overlay yet.
@@ -105,7 +105,7 @@ class IRenderer {
 ### Vulkan gaps
 
 - Uploads and `read_back()` are synchronous (`vkQueueWaitIdle`); `update_mesh` re-uploads through staging each call — fine for loading, slow for many per-frame CPU-skinned meshes (switch to a per-frame host-visible ring).
-- No MSAA, no RT, single graphics queue (no async transfer/compute), no HDR swapchain formats.
+- No MSAA, single graphics queue (no async transfer/compute), no HDR swapchain formats. RT: [RAYTRACING.md](RAYTRACING.md).
 - Swapchain needs an `*_SRGB` surface format for byte-exact presentation; a UNORM-only surface would present darker (all common Linux drivers expose B8G8R8A8_SRGB).
 
 ## First original scene

@@ -224,6 +224,8 @@ public:
         history_.valid = false;
         if (remaster_)
             std::fprintf(stderr, "joan-native: opengl graphics preset %s (remaster path)\n", preset_name(g.preset));
+        if (remaster_ && g.rt.any())  // docs/RAYTRACING.md: ray tracing is Vulkan-only
+            std::fputs("joan-native: opengl: ray tracing needs the Vulkan renderer, using the raster path\n", stderr);
     }
 
     void set_material_maps(TextureHandle albedo, const MaterialMaps& maps) override {

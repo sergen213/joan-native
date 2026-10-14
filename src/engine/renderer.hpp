@@ -187,7 +187,9 @@ public:
     // Associates PBR inputs with an albedo texture (any material using it picks them up).
     virtual void set_material_maps(TextureHandle /*albedo*/, const MaterialMaps&) {}
 
-    // One frame: begin_frame(size) -> submit(frame) once -> end_frame() presents.
+    // One frame: begin_frame(size) -> submit(frame) once -> end_frame() presents. An off-screen frame (save
+    // thumbnail, session_client capture_world) is begin_frame -> submit -> read_back with no end_frame: nothing is
+    // presented and the next begin_frame starts a normal frame.
     virtual void begin_frame(glm::ivec2 framebuffer_pixels) = 0;
     virtual void submit(const FrameData& frame) = 0;
     virtual void end_frame() = 0;

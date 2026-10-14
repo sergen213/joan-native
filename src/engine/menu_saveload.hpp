@@ -43,4 +43,7 @@ constexpr float kIngameBackdropIn = 0.3f, kIngameBackdropOut = 0.3f;  // duratio
 // (G_POPUP 1/2, b_ot/b_ov/b_dw), centred on the 4:3 canvas. Enter = OK, Escape = CANCEL.
 // Returns 1 = OK, 2 = CANCEL, 0 = still open. Defined in menu_ingame.cpp.
 int ui_confirm_popup(Ui& ui, std::string_view body);
+// G_POPUP text box with a CLOSE button (FUN_006d3cb0 flags 4: siege / workshop help): title, body, `width` design px.
+// Returns true when closed (CLOSE, Enter or Escape). Defined in hud_brief.cpp.
+bool ui_text_popup(Ui& ui, std::string_view title, std::string_view body, float width);
 }  // namespace joa::engine

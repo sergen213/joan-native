@@ -11,7 +11,7 @@ The native port ships no game data; users import their own copy. The source is o
 | `…/joan-native/game/current` | joa-install | relative symlink to the active version dir (what the engine reads) |
 | `…/joan-native/game/<id>-<ts>.staging/`, `.extract-<pid>/`, `.lock` | joa-install | transient staging, installer extraction, `flock` |
 | `…/joan-native/app/` | joa-updater | native binaries (see updater docs); never touched here |
-| `${XDG_DATA_HOME}/applications/joan-native.desktop` | joa-install | desktop entry, `Exec="<joa-launcher>"` |
+| `${XDG_DATA_HOME}/applications/joan-native.desktop` | joa-install | desktop entry, `Exec="<launcher>"`: `$APPIMAGE` when run from the AppImage, else the `joa-launcher` next to the running binary, else `joa-launcher` on `PATH` (CLI and launcher use the same rule) |
 | `${XDG_CONFIG_HOME:-~/.config}/joan-native/settings.ini` | launcher | see `docs/LAUNCHER.md` |
 
 ## Import algorithm

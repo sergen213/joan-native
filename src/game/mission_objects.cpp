@@ -103,6 +103,9 @@ void parse_res(ObjRes& r, std::string_view text, const std::string& rec_name) {
             const std::string n = v;
             const auto p = n.find_last_of('\\');
             r.basename = p == std::string::npos ? n : n.substr(p + 1);
+        } else if (is("Description")) {   // +0x20: each "\n" pair -> newline (0x4a0160)
+            r.description = v;
+            for (std::size_t p; (p = r.description.find("\\n")) != std::string::npos;) r.description.replace(p, 2, "\n");
         } else if (is("StructionType")) {
             static constexpr const char* kS[] = {"TOWER", "WALL", "GATE", "WOODGATE", "WOODDOOR", "TRUNK"};
             r.struction = index_of(first_token(v), kS, 6);
@@ -766,6 +769,8 @@ void MapObjects::gate_event(Mission& m, int ir, const Trigger& t) {
     auto take = [&](float dmg) {
         MapItem& x = items_[ir - 1];
         x.hp = std::max(0, int(float(x.hp) - dmg));
+        // Gate_on_event 0x48caf0 tail: a unit sender's hit sets the HUD target (FUN_006fe340 when it is the player).
+        if (t.src_kind == 1) m.emit(MissionEvent::Kind::Ui, ir, t.sender, "item_hit");
         if (x.stage == 0 || dmg == 0.0f || !check_stage()) return;
         destroyed_check();
     };
@@ -836,6 +841,7 @@ void MapObjects::wall_event(Mission& m, int ir, const Trigger& t) {
         return;
     }
     wl.hp = std::max(0, int(float(wl.hp) - dmg));
+    if (t.src_kind == 1) m.emit(MissionEvent::Kind::Ui, ir, t.sender, "item_hit");   // Wall_on_event 0x54ffd0 -> FUN_006fe340
     if (wl.stage == 0 || dmg == 0.0f || wl.stage > int(r->stages.size()) || wl.hp > r->stages[wl.stage - 1].margin) return;
     stage_down(m, ir, 0, true);
     if (items_[ir - 1].stage == 0 && items_[ir - 1].hp == 0) m.emit(MissionEvent::Kind::Ui, ir, 0, "item_destroyed");

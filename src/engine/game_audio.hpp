@@ -48,6 +48,7 @@ public:
     std::map<int, game::Vec3> projectile_pos_; // last known projectile positions (hit sounds after removal)
     std::map<int, int> last_step_;             // unit -> game ms of its last footstep (unit +0x1d6)
     std::map<int, VoiceId> ambient_;           // map trigger index -> emitter voice while the player is inside
+    VoiceId siege_built_ = 0;                  // last "RTS_SIEGE_009" (workshop 0x46a040 skips 008 while it plays)
     struct EnvSlot {
         int state = 0;  // 0 idle, 1 playing, 2 fading (DAT_00a5cd80[slot])
         const MusicTrack* track = nullptr;

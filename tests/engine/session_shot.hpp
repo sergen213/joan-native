@@ -76,7 +76,9 @@ inline int run(RendererKind kind, const char* tag) {
     };
     for (const Aspect a : {Aspect{"16x9", 1280, 720}, Aspect{"21x9", 2520, 1080}}) {
         const std::string shot = out + tag + "_session_hud_" + a.name + ".png", script = out + tag + "_session_hud.txt";
-        std::ofstream(script) << "40 tap Escape\n140 shot " << shot << "\n";
+        // s04_04 was shot before the original's first minimap mask build (FUN_0070ec50: enemy dots everywhere, no
+        // darkening); the console cheat "enable_fog_of_war 0" (FUN_00456990) gives the same unmasked minimap.
+        std::ofstream(script) << "1 cheat enable_fog_of_war 0\n40 tap Escape\n140 shot " << shot << "\n";
         Options o;
         o.renderer = kind;
         o.width = a.w, o.height = a.h;

@@ -26,6 +26,10 @@ bool UiRunner::frame(glm::ivec4 viewport, const UiInput& input, float dt, std::v
     ui_menu(ui, menu, commands);
     ui.frame(Anchor::Center);
     ui.cursor();
+    if (audio) {
+        for (const std::string& s : ui.sounds) audio->play_sound(s);  // UI SE, 2D
+        audio->update();
+    }
     bool running = true;
     // No game layer behind the standalone UI: honour navigation-only commands, log the rest.
     for (std::size_t i = first; i < commands.size(); ++i) {
@@ -67,6 +71,8 @@ UiInput UiInputTracker::update(SDL_Window* window, const RawInput& raw) {
             in.key_pressed = int(k);
             break;
         }
+    if (!in.key_pressed) in.key_pressed = raw.key_repeat;  // typematic repeat (text fields)
+    in.text = raw.text;
     keys_ = raw.keys;
     left_ = left;
     right_ = right;

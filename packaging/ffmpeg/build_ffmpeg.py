@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Build the authenticated, LGPL-only FFmpeg subset joan-native needs, in a fresh rootless prefix.
 
-Decoders: wmav1, wmav2 (music/*.wma, movie soundtracks), wmv1, wmv2, wmv3 (movie/*.wmv);
-demuxer: asf; protocol: file; libraries: avcodec, avformat, avutil, swscale, swresample.
-Shared libraries only, so end users can replace/relink them (LGPL-2.1 §6).
+Decoders: wmav1, wmav2 (music/*.wma, movie soundtracks), wmv1, wmv2, wmv3 + vc1 (movie/*.wmv),
+pcm_s16le (PCM ASF streams); demuxer: asf; protocol: file; libraries: avcodec, avformat, avutil,
+swscale, swresample. Shared libraries only, so end users can replace/relink them (LGPL-2.1 §6).
 
-Run: python3 packaging/ffmpeg/build_ffmpeg.py --prefix ~/.cache/joan-native/ffmpeg-prefix --tools-dir work/tools
-(the prefix path must not contain whitespace: FFmpeg writes broken *.pc files otherwise)
+Run: python3 packaging/ffmpeg/build_ffmpeg.py --prefix work/tools/ffmpeg-prefix --tools-dir work/tools
 Then configure joan-native with PKG_CONFIG_PATH=<prefix>/lib/pkgconfig (src/engine/CMakeLists.txt
 uses pkg-config) and ship <prefix>/lib/*.so.* plus <prefix>/share/licenses/FFmpeg next to the binary.
+The prefix is relocatable (*.pc use ${pcfiledir}; configure only ever sees the fixed placeholder
+PLACEHOLDER, compilers by bare name, sources by relative path), so the libraries are byte-identical
+wherever they are built (reproducible; SOURCE_DATE_EPOCH = signature date).
 acquire_source() keeps the byte-exact official archive, its detached signature and the release key:
 redistribute those with this recipe and ffmpeg.lock.json as the corresponding source. Never
 configure with --enable-gpl/--enable-nonfree/--enable-version3 (check_configuration() enforces it).
@@ -34,6 +36,7 @@ import urllib.request
 LOCK = Path(__file__).with_name("ffmpeg.lock.json")
 METADATA = Path("share/joan-native/ffmpeg-source.json")
 NOTICE_ROOT = Path("share/licenses/FFmpeg")
+PLACEHOLDER = "/joa-ffmpeg"  # configure --prefix; only ever exists inside the DESTDIR stage
 NOTICE_DIRS = {"libavcodec", "libavformat", "libavutil", "libswscale", "libswresample", "compat", "ffbuild"}
 NOTICE_SUFFIXES = (".c", ".h", ".asm", ".inc", ".S", ".sh", ".mak")
 
@@ -207,7 +210,8 @@ def check_configuration(source: Path) -> None:
         if not re.search(rf"^#define CONFIG_{name} {enabled}$", config, re.M):
             raise ValueError(f"Unexpected FFmpeg configuration: {name}")
     components = (source / "config_components.h").read_text(encoding="utf-8")
-    for name in ("WMAV1_DECODER", "WMAV2_DECODER", "WMV1_DECODER", "WMV2_DECODER", "WMV3_DECODER", "ASF_DEMUXER"):
+    for name in ("WMAV1_DECODER", "WMAV2_DECODER", "WMV1_DECODER", "WMV2_DECODER", "WMV3_DECODER", "VC1_DECODER",
+                 "PCM_S16LE_DECODER", "ASF_DEMUXER"):
         if not re.search(rf"^#define CONFIG_{name} 1$", components, re.M):
             raise ValueError(f"Required FFmpeg component disabled: {name}")
 
@@ -245,38 +249,39 @@ def build(prefix: Path, tools_dir: Path) -> Path:
     cache = local_directory(tools_dir)
     if prefix.exists() or prefix.is_symlink():
         raise FileExistsError(f"FFmpeg requires a fresh dedicated prefix: {prefix}")
-    if any(c.isspace() for c in str(prefix)):  # ffbuild/pkgconfig_generate.sh word-splits: empty prefix= in *.pc
-        raise ValueError(f"FFmpeg prefix must not contain whitespace: {prefix}")
     source_cache = cache / "ffmpeg-source"
     if prefix == cache or prefix in cache.parents or prefix == source_cache or source_cache in prefix.parents:
         raise ValueError("FFmpeg prefix must not overlap the source cache or contain the tool cache")
-    tools = {}
-    for name in ("gcc", "make", "nasm", "ar", "ranlib", "strip", "nm"):
-        tools[name] = shutil.which(name)
-        if not tools[name]:
-            raise RuntimeError(f"Required FFmpeg build tool is missing: {name}")
+    missing = [t for t in ("gcc", "make", "nasm", "ar", "ranlib", "strip", "nm") if not shutil.which(t)]
+    if missing:
+        raise RuntimeError(f"Required FFmpeg build tools are missing: {missing}")
     lock = load_lock()
     archive = acquire_source(cache)
     prefix.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=prefix.parent, prefix=".ffmpeg-build-") as temporary:
+    # configure breaks on whitespace in its own directory: build under $TMPDIR, then publish atomically.
+    with tempfile.TemporaryDirectory(prefix="joa-ffmpeg-build-") as temporary:
         work = Path(temporary)
+        if any(c.isspace() for c in str(work)):
+            raise ValueError(f"FFmpeg build directory must not contain whitespace (set TMPDIR): {work}")
         source = extract_source(archive, work, lock["top_directory"])
         notices = license_contents(source, lock)  # verify before executing configure
-        args = [str(source / "configure"), "--prefix=" + str(prefix),
-                "--libdir=" + str(prefix / "lib"), "--shlibdir=" + str(prefix / "lib"),
-                "--pkgconfigdir=" + str(prefix / "lib/pkgconfig"), *lock["configure_args"],
-                "--cc=" + tools["gcc"], "--ld=" + tools["gcc"], "--ar=" + tools["ar"],
-                "--ranlib=" + tools["ranlib"], "--strip=" + tools["strip"], "--nm=" + tools["nm"],
-                "--x86asmexe=" + tools["nasm"], "--pkg-config=false"]
+        # Path-free configuration (it is embedded in libavutil): placeholder prefix, bare tool names
+        # resolved through PATH, in-tree "./configure" so every compiled path is relative.
+        args = ["./configure", "--prefix=" + PLACEHOLDER, *lock["configure_args"],
+                "--cc=gcc", "--ld=gcc", "--ar=ar", "--ranlib=ranlib", "--strip=strip", "--nm=nm",
+                "--x86asmexe=nasm", "--pkg-config=false"]
         # Do not inherit host CFLAGS/CPPFLAGS/LDFLAGS, native CPU flags or package discovery.
         env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(work), "LC_ALL": "C", "TZ": "UTC",
                "TMPDIR": str(work), "SOURCE_DATE_EPOCH": str(lock["provenance"]["signature_unix_time"])}
         command(args, source, env)
         check_configuration(source)
-        command([tools["make"], "-j" + str(os.cpu_count() or 1)], source, env)
+        command(["make", "-j" + str(os.cpu_count() or 1)], source, env)
         stage = work / "install"
-        command([tools["make"], "install-libs", "install-headers", "DESTDIR=" + str(stage)], source, env)
-        installed = stage / prefix.relative_to("/")
+        command(["make", "install-libs", "install-headers", "DESTDIR=" + str(stage)], source, env)
+        installed = stage / PLACEHOLDER.lstrip("/")
+        for pc in (installed / "lib/pkgconfig").glob("*.pc"):  # relocatable: no build path in *.pc
+            text = pc.read_text(encoding="utf-8").replace(PLACEHOLDER, "${prefix}")
+            pc.write_text(re.sub(r"^prefix=.*$", "prefix=${pcfiledir}/../..", text, count=1, flags=re.M), encoding="utf-8")
         libraries = check_install(installed, lock)
         for name, data in notices.items():
             output = installed / NOTICE_ROOT / name
@@ -295,16 +300,18 @@ def build(prefix: Path, tools_dir: Path) -> Path:
             configuration.append({"path": destination.relative_to(installed).as_posix(), "sha256": _sha256(destination)})
         metadata = {"format": 1, "component": "FFmpeg", "version": lock["version"], "url": lock["url"],
                     "source_sha256": lock["source_sha256"], "license": lock["license"], "licenses": lock["licenses"],
-                    "libraries": lock["libraries"], "built_libraries": libraries, "source_cache_path": str(archive),
-                    "prefix": str(prefix), "configure_args": args[1:], "lock_sha256": _sha256(LOCK),
-                    "proof": lock["provenance"], "source_terms": lock["source_terms"], "configuration": configuration,
-                    "tool_paths": {k: v for k, v in tools.items() if k != "make"}}
+                    "libraries": lock["libraries"], "built_libraries": libraries, "configure_args": args[1:],
+                    "lock_sha256": _sha256(LOCK), "proof": lock["provenance"], "source_terms": lock["source_terms"],
+                    "configuration": configuration}
         output = installed / METADATA
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        publish = prefix.with_name("." + prefix.name + ".publish")
+        shutil.rmtree(publish, ignore_errors=True)
+        shutil.copytree(installed, publish, symlinks=True)
         if prefix.exists() or prefix.is_symlink():
             raise FileExistsError(prefix)
-        installed.rename(prefix)
+        publish.rename(prefix)
     return prefix
 
 

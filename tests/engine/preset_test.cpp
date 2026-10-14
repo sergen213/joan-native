@@ -60,8 +60,11 @@ int main() {
         CHECK(!apply_settings_ini("[graphics]\nexposure=abc\n", o3).empty());
         Options o4;
         CHECK(!apply_settings_ini("[graphics]\nwarp_drive=1\n", o4).empty());
-        Options o5;  // raytracing keys belong to a later wave: ignored, not an error
+        Options o5;  // [raytracing] keys (docs/RAYTRACING.md; the full matrix is in vk_rt_fallback_test)
         CHECK(apply_settings_ini("[raytracing]\nreflections=true\n", o5).empty());
+        CHECK(o5.graphics.resolve().rt.reflections && !o5.graphics.resolve().rt.gi);
+        Options o6;
+        CHECK(!apply_settings_ini("[raytracing]\nrays_per_pixel=0\n", o6).empty());
     }
     // No settings: Original.
     {

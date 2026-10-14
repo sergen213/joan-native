@@ -134,7 +134,13 @@ void World::roll_drop(Unit& u) {
 }
 
 void World::delete_unit(int id) {
-    if (Unit* u = unit(id)) u->deleted = true;
+    Unit* u = unit(id);
+    if (!u) return;
+    // Unit_deinit 0x461f10: the ridden horse loses its rider (0x482930(0)); a horse with a rider in an
+    // active scene dismounts it (0x4fc220(0)).
+    if (Unit* h = unit(u->mount)) horse_set_rider(*this, *h, 0);
+    if (Unit* r = unit(u->m.rider); r && u->m.active && r->mount == id) ride_horse(*this, *r, 0);
+    u->deleted = true;
 }
 Unit* World::unit(int id) {
     return id >= 1 && id <= int(units_.size()) && !units_[id - 1].deleted ? &units_[id - 1] : nullptr;
@@ -222,21 +228,30 @@ const MoveRecord* World::move(const Unit& u) const {
 const AnimScript* World::script_of(const MoveRecord* r) const {
     return r && r->script >= 0 ? &gd_.scripts[r->script] : nullptr;
 }
+// Unit_findCurrentAnimRec 0x504010: scans the table from the LAST record to the first. A record matches
+// posture, action and ITEM_USING with SPECIAL equal to the unit's (+0x21d; 4 counts as 0 outside
+// WALK/RUN) or 0. An exact-SPECIAL match returns at once (highest index); SPECIAL-0 fallbacks keep the
+// lowest index. ATTACK / H_ATTACK need the exact combo; for other actions a combo match is preferred
+// (IDLE AI buffer rows).
 const MoveRecord* World::find_move(const Unit& u, int action, std::string_view combo, int posture) const {
     const MoveTable* mt = gd_.moves(u.cls);
     if (!mt) return nullptr;
     if (posture < 0) posture = u.posture;
-    const MoveRecord* any = nullptr;
-    for (int pass = 0; pass < 2; ++pass) {
-        const int sp = pass == 0 ? u.special : 0;
-        for (const auto& r : mt->rows) {
-            if (r.position != posture || r.movement != action || r.item_using != u.item_using || r.special != sp) continue;
-            if (r.combo == combo) return &r;
-            if (!any) any = &r;
-        }
-        if (any && action != ATTACK && action != H_ATTACK) return any;
-        if (sp == 0) break;
+    const int sp = u.special == 4 && action != WALK && action != RUN ? 0 : u.special;
+    const bool attack = action == ATTACK || action == H_ATTACK;
+    const MoveRecord* best[4] = {};  // [special fallback][combo mismatch]
+    for (auto it = mt->rows.rbegin(); it != mt->rows.rend(); ++it) {
+        const MoveRecord& r = *it;
+        if (r.position != posture || r.movement != action || r.item_using != u.item_using) continue;
+        if (r.special != sp && r.special != 0) continue;
+        const bool cm = r.combo == combo;
+        if (!cm && attack) continue;
+        const int k = (r.special == sp ? 0 : 2) + (cm ? 0 : 1);
+        if (k < 2 && best[k]) continue;  // exact SPECIAL: first found from the end
+        best[k] = &r;                    // fallback: keeps the lowest index
     }
+    for (const MoveRecord* r : best)
+        if (r) return r;
     return nullptr;
 }
 int World::anim_length(const Unit& u) const {
@@ -487,8 +502,9 @@ void World::emit(Ev type, int unit, int other, int value, std::string name) {
 // Tick
 
 void World::tick_units(const InputFrame& in) {
-    // Sys_process_frame_input: the controller runs before the clock advances (Part B §1.2).
-    if (unit(pc_.unit)) pc_.process(*this, in);
+    // Sys_process_frame_input: the controller runs before the clock advances (Part B §1.2). In RTS (mode 4)
+    // ViewCtrl_process_key 0x42e1a0 dispatches to PlayerCtrl_rts 0x440b30 (engine GameCamera) instead: the hero is AI.
+    if (unit(pc_.unit) && game_mode != 4) pc_.process(*this, in);
     for (auto& [id, src] : pads_)
         if (Unit* u = unit(id)) {
             const InputFrame f = src(*this, *u);
@@ -530,7 +546,7 @@ void World::tick_units(const InputFrame& in) {
         }
         const bool busy = !u.ai_controlled || u.hp > 0 || u.lives != 0 || u.retreat == -2 ||
                           (u.action == DIE && now_ - u.ts_state < anim_length(u) + 3000);
-        if (!busy) { u.deleted = true; continue; }
+        if (!busy) { delete_unit(id); continue; }
         if (u.lod_tier <= 1) unit_process(u, 0), unit_process(u, 1);
     }
     // Passes 1..12 (budgets are never exhausted here: every unit, ascending recno).
@@ -567,6 +583,7 @@ void World::unit_process(Unit& u, int phase) {
     if (u.deleted) return;
     switch (phase) {
     case 0:
+        if (auto_pickup) auto_pickup(u);   // Unit_auto_pickup 0x49da30 (phase-0 head)
         if (u.id == player_ && critical_attack_enabled) crit_check(u);
         if (u.no_react && u.action != IDLE_T && u.action != IDLE && u.action != DIE) set_action(u, u.m.bound ? IDLE_T : IDLE);
         break;
@@ -582,10 +599,11 @@ void World::unit_process(Unit& u, int phase) {
         // actor (+0x2f5), which Unit_deactivate 0x41fcc0 destroys: inactive units freeze (CONFIRMED).
         // Movement runs unless turning (AI or cut scene); a turning body has its velocity and move
         // request cleared (body +0x142/+0x146/+0x260).
+        u.root_vel = {};
         if (u.m.active) {
             update_action(u);
             const bool turning = turn_step(u);
-            if (!turning || (!u.ai_controlled && !cut_scene)) siege_vehicle_move(*this, u), unit_move(u);
+            if (!turning || (!u.ai_controlled && !cut_scene)) siege_vehicle_move(*this, u), unit_move(u), root_motion(u);
             if (turning) u.vel.x = u.vel.y = 0;
         }
         regen(u);
@@ -752,6 +770,25 @@ void World::unit_move(Unit& u) {
     u.vel.y = std::sin(d) * speed;
 }
 
+// Unit_process_movement 0x52daa0, root-motion actions (root_motion_action): the move record's root
+// track (FUN_00417f20) is sampled at t and t - dt (t = now - anim start, ms, clamped at 0); the delta,
+// rotated by the body heading ((dx cos - dy sin, dy cos + dx sin)), becomes the body's move request
+// for this tick (x 21.691975 / dt = 1000 / 46.1 / dt m/s, Body_set_move). Skipped while airborne
+// (+0x355) and for dead units except THROWN.
+void World::root_motion(Unit& u) {
+    if (!root_motion_action(u.action) || u.airborne || (dead(u) && u.action != THROWN)) return;
+    const MoveRecord* r = move(u);
+    const ClipInfo* c = r ? gd_.clip(*r) : nullptr;
+    if (!c || c->root.empty()) return;
+    const int t = now_ - u.anim_start, tp = std::max(0, t - kTickMs);
+    float x1, y1, x0, y0;
+    root_offset(*c, float(t), x1, y1);
+    root_offset(*c, float(tp), x0, y0);
+    const float y = u.yaw_rad(), cs = std::cos(y), sn = std::sin(y), dx = x1 - x0, dy = y1 - y0;
+    const float k = 1000.0f / float(kTickMs);
+    u.root_vel = {(dx * cs - dy * sn) * k, (dy * cs + dx * sn) * k, 0.0f};
+}
+
 // Regeneration, Unit_process phase 1 (asm 0x52ccd2..0x52cf3c).
 void World::regen(Unit& u) {
     const Consts& c = gd_.c;
@@ -787,7 +824,7 @@ void World::integrate_units(float dt) {
             if (std::fabs(u.vel.x) < 1 && std::fabs(u.vel.y) < 1) u.vel.x = u.vel.y = 0;
         }
         if (u.airborne) u.vel.z -= 9.81f * float(u.gravity_scale) * kUnitsPerMetre * dt;
-        Vec3 n{u.pos.x + u.vel.x * dt, u.pos.y + u.vel.y * dt, u.pos.z + u.vel.z * dt};
+        Vec3 n{u.pos.x + (u.vel.x + u.root_vel.x) * dt, u.pos.y + (u.vel.y + u.root_vel.y) * dt, u.pos.z + u.vel.z * dt};
         if (terrain_ && !terrain_->walkable(n.x, n.y)) n.x = u.pos.x, n.y = u.pos.y, u.vel.x = u.vel.y = 0;
         const float ground = terrain_ ? terrain_->height(n.x, n.y) : 0.0f;
         if (u.airborne) {
@@ -865,7 +902,7 @@ Snapshot World::snapshot() const {
     }
     for (const Projectile& p : projectiles_)
         s.projectiles.push_back({p.id, p.type, {p.pos_m.x * kUnitsPerMetre, p.pos_m.y * kUnitsPerMetre, p.pos_m.z * kUnitsPerMetre},
-                                 {p.vel_m.x * kUnitsPerMetre, p.vel_m.y * kUnitsPerMetre, p.vel_m.z * kUnitsPerMetre}});
+                                 {p.vel_m.x * kUnitsPerMetre, p.vel_m.y * kUnitsPerMetre, p.vel_m.z * kUnitsPerMetre}, p.item});
     return s;
 }
 

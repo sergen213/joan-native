@@ -2,7 +2,10 @@
 // Spec: docs/reverse-engineering/GAMEPLAY_AI_TROOPS.md Part C §4-§5.
 #pragma once
 
+#include <cstdint>
 #include <map>
+#include <span>
+#include <vector>
 
 #include "game/multimap_nav.hpp"
 #include "game/world_sim.hpp"
@@ -37,6 +40,10 @@ public:
     // nav may be null: then World::terrain() (height / walkable) is used.
     explicit CharPhysics(const NavWorld* nav) : nav_(nav) {}
     void integrate(World& w, float dt_s) override;
+    // Pending push-asides (Mission save section "PHYS", written only while one is active).
+    bool pushing() const { return !push_.empty(); }
+    std::vector<std::uint8_t> save_state() const;
+    bool load_state(std::span<const std::uint8_t> b);
 
 private:
     struct Push { float x = 0, y = 0; int until = 0; };
@@ -44,7 +51,7 @@ private:
     bool walkable(const World& w, float x, float y, float z) const;
 
     const NavWorld* nav_;
-    std::map<int, Push> push_;   // ponytail: transient (<= 4 frames), not serialized
+    std::map<int, Push> push_;   // idle blockers being pushed aside (<= 4 frames)
 };
 
 }  // namespace joa::game

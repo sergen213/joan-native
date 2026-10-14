@@ -1,11 +1,13 @@
 #pragma once
 // Runs the menus/HUD inside the client loop (and the screenshot tests): device state -> UiInput,
 // screens -> UiQuads, and the few UiCommands the client can honour without a game layer.
+#include "engine/audio_system.hpp"
 #include "engine/input.hpp"
 #include "engine/ui_core.hpp"
 #include "engine/ui_screens.hpp"
 
 #include <bitset>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -26,6 +28,7 @@ public:
     HudModel hud;
     bool show_hud = false;
     std::vector<UiCommand> commands;  // everything emitted so far (tests inspect it)
+    std::unique_ptr<AudioSystem> audio;  // optional: plays ui.sounds after each frame (tests read ui.sounds instead)
 };
 
 // Window mouse/keyboard -> UiInput. Edge detection against the previous call's state.

@@ -40,7 +40,7 @@
     "--enable-avutil",
     "--enable-swscale",
     "--enable-swresample",
-    "--enable-decoder=wmav1,wmav2,wmv1,wmv2,wmv3",
+    "--enable-decoder=wmav1,wmav2,wmv1,wmv2,wmv3,vc1,pcm_s16le",
     "--enable-demuxer=asf",
     "--enable-protocol=file",
     "--enable-x86asm",
@@ -52,7 +52,7 @@
     "--optflags=-O3",
     "--extra-cflags=-march=x86-64 -mtune=generic"
   ],
-  "decoder_dependency": "wmv3 selects the internal vc1 decoder; wmv1/wmv2 select msmpeg4dec (+ intrax8, wmv2dsp); wmav1/wmav2 select sinewin and wma_freqs. ASF carries complete packets, so no parsers are enabled. swresample converts WMA planar float to interleaved 44.1 kHz stereo; swscale converts WMV YUV 4:2:0 to RGBA.",
+  "decoder_dependency": "wmv3 selects the internal vc1 decoder (vc1 is also enabled explicitly); wmv1/wmv2 select msmpeg4dec (+ intrax8, wmv2dsp); wmav1/wmav2 select sinewin and wma_freqs; pcm_s16le covers uncompressed ASF audio. ASF carries complete packets, so no parsers are enabled. swresample converts WMA planar float to interleaved 44.1 kHz stereo; swscale converts WMV YUV 4:2:0 to RGBA.",
   "libraries": [
     {
       "name": "avcodec",

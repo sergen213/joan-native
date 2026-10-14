@@ -37,7 +37,7 @@ std::string slashes(std::string s) {
 
 WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::Mission& mission,
                      std::vector<std::filesystem::path> hd_packs)
-    : vfs_(vfs), db_(vfs_) {
+    : vfs_(vfs), db_(vfs_), objects_(&mission.objects()) {
     assets_ = std::make_unique<AssetCache>(vfs_, renderer, std::move(hd_packs));
     // MAP\scenarioN + the nodes of <WorldFileName>.wor at their origins (the game's own node list).
     const std::string dir = slashes(mission.map_dir());
@@ -103,6 +103,11 @@ const Character* WorldView::actor(int unit_id) const {
     return it == actors_.end() ? nullptr : it->second.character.get();
 }
 
+std::string WorldView::actor_model(int unit_id) const {
+    const auto it = actors_.find(unit_id);
+    return it == actors_.end() || !it->second.character ? std::string() : it->second.model;
+}
+
 void WorldView::equip(Actor& a, const game::World& world, const game::Unit& u) {
     // Hand weapons, else the ranged weapon (archers hold their bow; weapon mode 2 = ranged only).
     // HYPOTHESIS, matches the original captures of archers. Armour does not hang on a bone.
@@ -118,13 +123,8 @@ void WorldView::equip(Actor& a, const game::World& world, const game::Unit& u) {
     for (const int id : want) {
         if (id <= 0 || id >= int(items.size())) continue;
         const auto item = db_.item(items[std::size_t(id)].code);
-        if (!item) continue;  // not a carried mesh
-        // Animated items (bows, e_bmlb.am1) are posed at their first key: item/anim/<name>.am2.
-        std::string anim;
-        if (lower(item->model).ends_with(".am1")) {
-            const auto slash = item->model.rfind('/');
-            anim = "item/anim/" + item->model.substr(slash + 1, item->model.size() - slash - 5) + ".am2";
-        }
+        if (!item || item->bone.empty()) continue;  // not a carried mesh
+        const std::string anim = item_anim(item->model);
         const std::string shadow = item->model.substr(0, item->model.rfind('.')) + "#s.SMO";
         const formats::Mesh* caster = anim.empty() && vfs_.exists(shadow) ? assets_->static_mesh(shadow) : nullptr;
         if (c.attach(assets_->model(item->model, anim), item->bone, caster)) ++unit_stats_.items;
@@ -144,17 +144,30 @@ void WorldView::sync(const game::World& world, const game::Snapshot& prev, const
     for (const game::UnitView& v : cur.units) {
         auto [it, fresh] = actors_.try_emplace(v.id);
         Actor& a = it->second;
-        if (fresh) {
+        const game::Unit* u = world.unit(v.id);
+        const int level = u ? u->model_level : 0;
+        if (fresh || level != a.level) {
+            // Unit_set_model_level 0x511060 (armour use 0x6d8ac0, broken siege weapon in Unit_die): a new actor
+            // with the level's mesh (class +0x84 + n*4) and animation group (+0x90 + n*4) replaces the old one.
+            a.level = level;
             try {
-                const auto look = db_.look(v.class_code);
+                auto look = db_.look(v.class_code, level);
                 if (!look) throw std::runtime_error("no unit.res record / idle animation");
-                a.character = std::make_unique<Character>(*assets_, look->model, look->anim);
-                a.character->play(look->anim, look->idle);
+                auto c = std::make_unique<Character>(*assets_, look->model, look->anim);
+                c->play(look->anim, look->idle);
+                if (!look->shadow.empty()) c->set_shadow_model(assets_->model(look->shadow));
                 a.anim_file = lower(look->anim), a.clip = lower(look->idle);
-                if (!look->shadow.empty()) a.character->set_shadow_model(assets_->model(look->shadow));
+                a.t0 = a.t1 = 0;
+                // A level with its own animation group (BROKEN_CANNON...) holds that group's idle: the game layer
+                // keeps playing the class table, whose clips do not fit the wreck. HYPOTHESIS (static wrecks).
+                const auto base = level ? db_.look(v.class_code) : look;
+                a.own_anim = base && !formats::iequals(base->anim_code, look->anim_code);
+                a.character = std::move(c);
+                a.model = look->model;
+                a.items = {-1, -1, -1};
             } catch (const std::exception& e) {
-                ++unit_stats_.missing;
-                std::fprintf(stderr, "joan-native: unit %d %s: %s\n", v.id, v.class_code.c_str(), e.what());
+                if (fresh) ++unit_stats_.missing;
+                std::fprintf(stderr, "joan-native: unit %d %s level %d: %s\n", v.id, v.class_code.c_str(), level, e.what());
             }
         }
         const auto pi = before.find(v.id);
@@ -165,10 +178,12 @@ void WorldView::sync(const game::World& world, const game::Snapshot& prev, const
         Character& c = *a.character;
         // Snapshot clip = anim/<UPPERFILE>.am2 : UPPERNAME at the game's clip time (looping actions wrap,
         // one-shots clamp: a dead unit holds the last frame of its death clip until it is deleted).
-        const std::string file = v.clip_file.empty() ? a.anim_file : lower("anim/" + v.clip_file + ".am2");
-        const std::string clip = v.clip.empty() ? a.clip : lower(v.clip);
+        const std::string file = v.clip_file.empty() || a.own_anim ? a.anim_file : lower("anim/" + v.clip_file + ".am2");
+        const std::string clip = v.clip.empty() || a.own_anim ? a.clip : lower(v.clip);
         a.wrap = false;
-        if (file != a.anim_file || clip != a.clip) {
+        if (a.own_anim) {
+            a.t0 = a.t1 = 0;
+        } else if (file != a.anim_file || clip != a.clip) {
             if (!c.play(file, clip)) std::fprintf(stderr, "joan-native: unit %d: clip %s:%s missing\n", v.id, file.c_str(), clip.c_str());
             a.anim_file = file, a.clip = clip;
             a.t0 = a.t1 = v.clip_time_ms;
@@ -181,9 +196,16 @@ void WorldView::sync(const game::World& world, const game::Snapshot& prev, const
                 else a.t0 = a.t1;
             }
         }
-        if (const game::Unit* u = world.unit(v.id)) equip(a, world, *u);
+        // FUN_00417f20 overwrites the Bip01 x/y keys of root-motion clips with the start key: the game layer moves
+        // the body by that travel (World::root_motion), so the drawn pose must not repeat it.
+        a.root = nullptr;
+        if (u && !a.own_anim && game::root_motion_action(u->action))
+            if (const game::MoveRecord* r = world.move(*u))
+                if (const game::ClipInfo* ci = world.data().clip(*r); ci && !ci->root.empty()) a.root = ci;
+        if (u) equip(a, world, *u);
     }
     unit_stats_.actors = int(std::count_if(actors_.begin(), actors_.end(), [](const auto& kv) { return kv.second.character != nullptr; }));
+    sync_items(world, prev, cur);
 }
 
 void WorldView::spawn_slot(const std::string& script, std::size_t slot, const game::UnitView& at) {
@@ -236,6 +258,15 @@ void WorldView::on_events(const std::vector<game::GameEvent>& events, const game
         case game::Ev::Effect: {
             // flash.txt (level up, FUN_00522c40 non-quiet, every unit) / spiritual.txt (recovery items):
             // pscript on the unit's actor, locked, 5000 ms. CONFIRMED (0x41baf0 call, uVar = 5000).
+            if (e.name == "PICKUP") {
+                // Unit_auto_pickup 0x49da30: the item's emitter (+0x17a = EmitterName slot 2, "*_eaten") at the
+                // item for 5000 ms (0x41baf0). Slot choice HIGH (every "_eaten" pscript sits in slot 2).
+                if (e.other >= 1 && e.other <= int(world_->items().size()))
+                    spawn_item_emitter(e.value, 2, world_->items()[std::size_t(e.other - 1)].pos);
+                else if (const auto g = gone_.find(e.other); g != gone_.end())  // map item (-recno), deleted
+                    spawn_item_emitter(e.value, 2, g->second);
+                break;
+            }
             const std::string name = e.name == "LEVELUP" ? std::string("flash.txt") : e.name;
             if (!lower(name).ends_with(".txt")) break;
             effects_->spawn(name.substr(0, name.size() - 4), glm::vec3(unit_frame(v->second->pos, v->second->yaw_deg)[3]),
@@ -275,6 +306,9 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     const glm::vec3 sun = lighting_.sun_direction;
     shadow_stats_ = {};
     frames_.clear();
+    // Range mode (0x42a6c0 enter / 0x42b6e0 exit): the hero's actor is hidden (FUN_0042cf20(0/1): actor +0x10a)
+    // behind the first-person aim camera. HIGH (the call's ECX = unit +0x2f5 actor is inferred from the guard).
+    const bool aiming = world_ && world_->controller().range_mode;
     for (auto& [id, a] : actors_) {
         if (!a.character) continue;
         const glm::vec3 p = glm::mix(a.p0, a.p1, alpha);
@@ -282,10 +316,13 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         frames_[id] = t;
         const glm::vec3 at(t[3]);
         if (glm::distance(eye, at) > kWorldFar + 200.0f) continue;  // beyond the far plane: no skinning
+        if (aiming && id == player_) continue;
         Character& c = *a.character;
         float ms = a.t0 + (a.t1 - a.t0) * alpha;
         if (a.wrap) ms = std::fmod(ms, c.clip_length());
-        c.pose(ms);
+        float rx = 0, ry = 0;
+        if (a.root) game::root_offset(*a.root, ms, rx, ry);
+        c.pose(ms, rx, ry);
         // Hardware-skinned units get one point light (Shader_build_vertex_shader clamps the skinned light
         // counts to 1 point + 1 directional): the first light of their sector.
         const std::size_t first = draws.size();
@@ -300,6 +337,8 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         else if (d <= 2000.0f)
             c.build_shadow(t, sun, Character::ShadowKind::Model, draws), ++shadow_stats_.models;
     }
+    build_items(alpha, draws);
+    build_rings(draws);
     effects_->follow(frames_);
     effects_->build(dt, view.view, view_proj, draws);
 }

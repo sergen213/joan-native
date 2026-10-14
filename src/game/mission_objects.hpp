@@ -47,6 +47,7 @@ struct ObjRes {
     int struction = 0;      // +0x1c StructionType
     std::vector<ObjStage> stages;  // +0x62 count
     bool pickable = false, unique = false, open_with_interact = false;  // +0x1c4 / +0x25b / +0x25e
+    std::string description;  // +0x20 Description (interact prompt text "Press %1s to ..."), raw cp1252
 };
 
 // Item (base 0xc2 bytes + per-class tail). Offsets of the original in the comments.

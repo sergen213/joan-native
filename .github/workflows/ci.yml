@@ -5,27 +5,80 @@ on:
   pull_request:
 permissions:
   contents: read
+# Arch container: Ubuntu 24.04 lacks SDL3 and current Qt/Vulkan packages. Package list shared with
+# release.yml: packaging/ci/arch-packages.txt. No game data in CI: asset-backed tests exit 77
+# (skipped). The updater refuses root, so tests run as the unprivileged user `ci`.
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    # Arch container: Ubuntu 24.04 lacks SDL3 and current Qt/Vulkan packages.
     container: archlinux:latest
     timeout-minutes: 60
     steps:
-      - name: Install build dependencies
-        run: |
-          pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf python python-cryptography \
-            libsodium curl libarchive nlohmann-json openssl zstd sdl3 qt6-base qt6-svg qt6-wayland \
-            vulkan-headers vulkan-icd-loader shaderc glslang glm freetype2 ffmpeg openal
+      - name: Bootstrap git
+        run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@v4
-      - name: Configure and build
+      - name: Install build dependencies
+        run: pacman -S --noconfirm --needed - < packaging/ci/arch-packages.txt
+      - name: Configure and build (all components)
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build
-      # No game data in CI: asset-backed tests exit 77 (skipped). The updater refuses to
-      # run as root, so tests run as an unprivileged user.
-      - name: Tests
+      # GL tests render with Mesa llvmpipe on a private xvfb-run server, serially (concurrent
+      # `xvfb-run -a` race for display numbers; one retry for the intermittent Xvfb loss seen in
+      # engine.gl_remaster). Vulkan (vk_*) tests need a GPU/lavapipe ICD and stay local.
+      - name: Tests (non-GPU + llvmpipe GL)
         run: |
-          useradd -m ci
-          chown -R ci: .
-          su ci -c "ctest --test-dir build --output-on-failure"
+          useradd -m ci && chown -R ci: .
+          su ci -c "export LIBGL_ALWAYS_SOFTWARE=1; ctest --test-dir build --output-on-failure -j4 -E '\.vk_|\.gl_' \
+            && ctest --test-dir build --output-on-failure -R '\.gl_' --repeat until-pass:2"
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+      options: --cap-add=SYS_PTRACE  # LeakSanitizer
+    timeout-minutes: 90
+    steps:
+      - name: Bootstrap git
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: pacman -S --noconfirm --needed - < packaging/ci/arch-packages.txt
+      - name: ASan + UBSan build
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DJOA_SANITIZE=ON
+          cmake --build build-asan
+      - name: Sanitized tests
+        run: |
+          useradd -m ci && chown -R ci: .
+          su ci -c "export LIBGL_ALWAYS_SOFTWARE=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 ASAN_OPTIONS=detect_leaks=1; \
+            ctest --test-dir build-asan --output-on-failure -j4 -E '\.vk_|\.gl_' \
+            && ctest --test-dir build-asan --output-on-failure -R '\.gl_' --repeat until-pass:2"
+
+  reproducibility:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    timeout-minutes: 120
+    steps:
+      - name: Bootstrap git
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: pacman -S --noconfirm --needed - < packaging/ci/arch-packages.txt
+      - name: Cache LGPL FFmpeg + pinned downloads
+        uses: actions/cache@v4
+        with:
+          path: work/tools
+          key: release-tools-${{ hashFiles('packaging/ffmpeg/*', 'packaging/appimage/runtime.lock.json', 'packaging/ci/arch-packages.txt') }}
+      - name: LGPL FFmpeg
+        run: test -d work/tools/ffmpeg-prefix || python3 packaging/ffmpeg/build_ffmpeg.py --prefix work/tools/ffmpeg-prefix --tools-dir work/tools
+      # release.dist builds every artifact; release.reproducible rebuilds them in another directory
+      # (different path, umask 077, TMPDIR) and byte-compares; appimage / product_update /
+      # license_audit exercise the result (install_flow skips: no game data).
+      - name: Release checks
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd -m ci && chown -R ci: .
+          su ci -c "cmake -S . -B build-release-checks -G Ninja -DCMAKE_BUILD_TYPE=Release -DJOA_FFMPEG_PREFIX=$PWD/work/tools/ffmpeg-prefix \
+            && cmake --build build-release-checks --target joa-updater-testhttp \
+            && ctest --test-dir build-release-checks -L release --output-on-failure"

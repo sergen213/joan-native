@@ -143,6 +143,7 @@ struct Unit {
     int str = 0, dex = 0, def = 0, lead = 0;  // +0x155..+0x15b base stats
     int armor_level = 0;        // +0x15d (class EArmorId)
     int armor_item = 0;         // +0x15f
+    int model_level = 0;        // +0x3c5 body mesh: 0 unit.res Model, n ModelName n (Unit_set_model_level 0x511060)
     int loyalty = 0, morale = 0, reputation = 0;  // +0x161 / +0x163 / +0x165
     int mode = 0;               // +0x167 1 ATTACK 2 ACTIVE 3 IDLE
     int attack_behaviour = 1;   // +0x16b 1 NEAREST..5
@@ -189,6 +190,7 @@ struct Unit {
     // Actor / physics body (actor+0x4c anim start, +0x5c body).
     int anim_start = 0;
     Vec3 vel;                   // world units / s
+    Vec3 root_vel;              // root-motion move request of this tick (Body_set_move in 0x52daa0), units / s
     bool airborne = false;
     bool shot_spawned = false;  // fire state: projectile already released this shot
     int range_target = 0;       // +0x2db locked ranged target
@@ -203,7 +205,7 @@ struct Unit {
             v(leader), v(cls), v(name), v(short_name), v(title), v(ai_controlled), v(rank), v(kingdom), v(race),
             v(retreat), v(ts_hp_regen), v(max_lives), v(lives), v(level), v(xp), v(skill_points), v(attr_points),
             v(level_arrow), v(ts_level), v(hp), v(hp_trail), v(base_max_hp), v(ep), v(base_max_ep),
-            v(ts_ep_regen), v(str), v(dex), v(def), v(lead), v(armor_level), v(armor_item), v(loyalty),
+            v(ts_ep_regen), v(str), v(dex), v(def), v(lead), v(armor_level), v(armor_item), v(model_level), v(loyalty),
             v(morale), v(reputation), v(mode), v(attack_behaviour), v(ai_class), v(archery), v(horse_riding), v(swimming),
             v(elephant_riding), v(wide_animal), v(preaching), v(power_jump), v(disguise), v(persuade), v(lock_picking),
             v(mountain), v(upgrades), v(medals),
@@ -212,7 +214,7 @@ struct Unit {
             v(invuln_ms), v(down_attacked), v(mount), v(ride_ready), v(gear_ts), v(gear_speed), v(ts_state), v(posture), v(action), v(prev_action),
             v(item_using), v(special), v(combo), v(combo_idx), v(idle_variant), v(follow_queued), v(win_open),
             v(win_close), v(combo_lock), v(gravity_scale), v(think_ts), v(target), v(threat), v(no_react),
-            v(takeoff_ts), v(aim_dir), v(upgrade_ts), v(anim_start), v(vel), v(airborne), v(shot_spawned),
+            v(takeoff_ts), v(aim_dir), v(upgrade_ts), v(anim_start), v(vel), v(root_vel), v(airborne), v(shot_spawned),
             v(range_target), v(cues), v(m), v(deleted);
     }
 };

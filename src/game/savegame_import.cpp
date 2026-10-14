@@ -56,10 +56,56 @@ Unit decode_unit(std::span<const std::uint8_t> u) {
     x.str = at<std::int16_t>(u, 0x155), x.dex = at<std::int16_t>(u, 0x157);
     x.def = at<std::int16_t>(u, 0x159), x.lead = at<std::int16_t>(u, 0x15b);
     x.armor_level = at<std::int16_t>(u, 0x15d), x.armor_item = at<std::int16_t>(u, 0x15f);
+    x.model_level = at<std::int32_t>(u, 0x3c5);
     x.loyalty = at<std::int16_t>(u, 0x161), x.morale = at<std::int16_t>(u, 0x163), x.reputation = at<std::int16_t>(u, 0x165);
     x.mode = at<std::int32_t>(u, 0x167), x.attack_behaviour = at<std::int32_t>(u, 0x16b);
     x.medals = at<std::int16_t>(u, 0x1ae), x.kills = at<std::int16_t>(u, 0x1b0), x.officer_kills = at<std::int16_t>(u, 0x1b2);
     return x;
+}
+
+// The records after a Unit dump (FUN_0047dbe0, record mode): [+0x33: 0x58], 0x3b (+0x16f), 4 (+0x1aa) [+ raw u32 n
+// + n x 8 upgrades], then the inventory if +0x1c1 (FUN_0047e850): 0x1e, a 0x12 instance per set slot pointer
+// (+2/+6/+0xa/+0xe), per set bag (+0x12 enhancers 4x1 / +0x16 personal 6x8 / +0x1a troop 6x4, FUN_0047ede0): H grid
+// rows of W bytes, raw u32 slot count, per slot raw u16 used + 0x18 item (+0 id, +2 quantity, +4 level, +0x15 col,
+// +0x16 row), raw u32 n + n x 8 free list. False when the records do not line up (inventory left empty).
+bool decode_inventory(std::span<const std::uint8_t> rest, std::span<const std::uint8_t> u, Inventory& inv) {
+    Rec in{formats::ByteReader(rest)};
+    auto rec = [&](std::size_t n) {
+        const auto b = in.rec();
+        if (b.size() != n) in.r.fail();
+        return b;
+    };
+    if (at<std::uint32_t>(u, 0x33)) rec(0x58);
+    rec(0x3b);
+    if (at<std::uint32_t>(rec(4), 0)) {
+        const std::uint32_t n = in.r.u32();
+        for (std::uint32_t k = 0; k < n && in.r.ok(); ++k) rec(8);
+    }
+    if (!at<std::uint32_t>(u, 0x1c1)) return in.r.ok();
+    const auto raw = rec(0x1e);
+    Inventory out;
+    out.weapon_mode = at<std::int16_t>(raw, 0);
+    ItemInstance* slots[4] = {&out.melee[0], &out.melee[1], &out.ranged, &out.ammo};
+    for (std::size_t s = 0; s < 4 && in.r.ok(); ++s)
+        if (at<std::uint32_t>(raw, 2 + 4 * s)) {
+            const auto it = rec(0x12);
+            *slots[s] = {at<std::int16_t>(it, 0), at<std::int16_t>(it, 2), at<std::int16_t>(it, 4)};
+        }
+    static constexpr int kW[3] = {4, 6, 6}, kH[3] = {1, 8, 4};
+    for (int g = 0; g < 3 && in.r.ok(); ++g) {
+        if (!at<std::uint32_t>(raw, 0x12 + 4 * std::size_t(g))) continue;
+        for (int h = 0; h < kH[g]; ++h) rec(std::size_t(kW[g]));
+        const std::uint32_t n = in.r.u32();
+        for (std::uint32_t k = 0; k < n && in.r.ok(); ++k)
+            if (in.raw_short()) {
+                const auto it = rec(0x18);
+                if (in.r.ok()) out.bag.push_back({at<std::int16_t>(it, 0), at<std::int16_t>(it, 2), at<std::int16_t>(it, 4), g, it[0x15], it[0x16]});
+            }
+        if (const std::uint32_t f = in.r.u32(); f && in.r.ok()) rec(std::size_t(f) * 8);
+    }
+    if (!in.r.ok()) return false;
+    inv = std::move(out);
+    return true;
 }
 }  // namespace
 
@@ -142,11 +188,16 @@ std::optional<OriginalSave> import_original_save(std::span<const std::uint8_t> b
         if (!gd.units[x.cls].hero) continue;
         bool dup = false;
         for (const auto& h : o.heroes) dup |= h.code == gd.units[x.cls].code;
-        if (!dup) o.heroes.push_back({gd.units[x.cls].code, std::move(x)});
+        if (!dup) {
+            ImportedHero h{gd.units[x.cls].code, std::move(x)};
+            h.inventory = decode_inventory(units.subspan(p + 2 + kUnit), u, h.unit.inv);
+            if (!h.inventory) o.notes.push_back(h.code + ": inventory records not decoded");
+            o.heroes.push_back(std::move(h));
+        }
         p += kUnit;
     }
     o.notes.push_back("world (units, items, places, AI) is not decoded: the mission restarts from its map with the "
-                      "decoded script flags, objectives and hero progression");
+                      "decoded script flags, objectives and hero progression / inventories");
     return o;
 }
 
@@ -177,6 +228,7 @@ void apply_original_save(Mission& m, const OriginalSave& o) {
             u.medals = s.medals, u.kills = s.kills, u.officer_kills = s.officer_kills;
             w.set_hp(u, s.hp);
             w.set_ep(u, s.ep);
+            if (h.inventory) u.inv = s.inv;   // equipment + bag items with their grid cells (+0x15 / +0x16)
             break;
         }
 }

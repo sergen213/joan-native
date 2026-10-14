@@ -33,7 +33,9 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
+#include <QThread>
 #include <algorithm>
+#include <csignal>
 #include <utility>
 
 namespace {
@@ -97,6 +99,27 @@ public:
         });
     }
     QTabWidget* tabs() const { return tabs_; }
+    // Play button / `--play [-- ENGINE_ARGS]`: start joan-native detached; its pid, or 0 if it did not start.
+    qint64 play(const QStringList& extra = {}) {
+        const QString exe = findTool("joan-native");
+        if (exe.isEmpty()) {
+            QMessageBox::warning(this, "Game not found", "joan-native was not found next to the launcher or on PATH.");
+            return 0;
+        }
+        saveSettings();
+        QDir().mkpath(qs(paths_.logs()));
+        const QString log = qs(paths_.logs()) + "/game-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd'T'HHmmss'Z'") + ".log";
+        QProcess p;
+        p.setProgram(exe);
+        p.setArguments(QStringList{"--game-dir", qs(gameDir()), "--settings", qs(paths_.settings())} + extra);
+        p.setWorkingDirectory(qs(gameDir()));
+        p.setStandardOutputFile(log, QIODevice::Append);
+        p.setStandardErrorFile(log, QIODevice::Append);
+        qint64 pid = 0;
+        const bool started = p.startDetached(&pid);
+        append(started ? "Started joan-native; log: " + log : "Cannot start joan-native: " + p.errorString());
+        return started ? pid : 0;
+    }
 
 private:
     ji::Paths paths_;
@@ -126,7 +149,7 @@ private:
     QWidget* gameTab() {
         auto* w = new QWidget;
         auto* v = new QVBoxLayout(w);
-        play_ = button("Play", &Launcher::play);
+        play_ = button("Play", &Launcher::playClicked);
         play_->setMinimumHeight(56);
         QFont f = play_->font();
         f.setPointSizeF(f.pointSizeF() * 1.5);
@@ -383,24 +406,7 @@ private:
         runJob("Repairing from " + source, [opt, paths, source] { return describe(ji::repair(fp(source), paths, opt)); });
     }
 
-    void play() {
-        const QString exe = findTool("joan-native");
-        if (exe.isEmpty()) {
-            QMessageBox::warning(this, "Game not found", "joan-native was not found next to the launcher or on PATH.");
-            return;
-        }
-        saveSettings();
-        QDir().mkpath(qs(paths_.logs()));
-        const QString log = qs(paths_.logs()) + "/game-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd'T'HHmmss'Z'") + ".log";
-        QProcess p;
-        p.setProgram(exe);
-        p.setArguments({"--game-dir", qs(gameDir()), "--settings", qs(paths_.settings())});
-        p.setWorkingDirectory(qs(gameDir()));
-        p.setStandardOutputFile(log, QIODevice::Append);
-        p.setStandardErrorFile(log, QIODevice::Append);
-        if (p.startDetached()) append("Started joan-native; log: " + log);
-        else append("Cannot start joan-native: " + p.errorString());
-    }
+    void playClicked() { play(); }
 
     // ---- joa-updater (contract in docs/LAUNCHER.md) ----
     void runUpdater(const QString& command) {
@@ -474,6 +480,14 @@ int main(int argc, char** argv) {
     QGuiApplication::setDesktopFileName("joan-native"); // Wayland app-id = desktop entry id
     const QStringList args = app.arguments();
     Launcher window;
+    // --play [-- ENGINE_ARGS]: start the game exactly like the Play button (desktop action), then stay
+    // until it exits: inside an AppImage the game's files vanish when the launcher process ends.
+    if (const int play = args.indexOf("--play"); play > 0) {
+        const int sep = args.indexOf("--");
+        const qint64 pid = window.play(sep > play ? args.mid(sep + 1) : QStringList{});
+        while (pid > 0 && ::kill(static_cast<pid_t>(pid), 0) == 0) QThread::msleep(200);
+        return pid > 0 ? 0 : 1;
+    }
     window.show();
     // --screenshot FILE [--tab N]: render the window offscreen (QWidget::grab), save, exit.
     const int shot = args.indexOf("--screenshot");

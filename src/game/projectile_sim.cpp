@@ -123,6 +123,7 @@ int World::spawn_projectile(Unit& s) {
     p.id = next_projectile_++;
     p.type = type;
     p.shooter = s.id;
+    p.item = ammo;
     p.tl = tc.tl;
     p.dl = type == 0 ? bonus(s, RANGE_DISTANCE) * tc.dl / 100 : tc.dl;   // integer imul/idiv
     p.m = tc.m, p.tr = tc.tr, p.gl = tc.gl;
@@ -248,7 +249,7 @@ void World::integrate_projectiles(float dt_ms) {
             // Swept segment vs unit cylinders (shape forced to cylinder for throw items).
             const Vec3 s0 = scale(old, kUnitsPerMetre), s1 = scale(p.pos_m, kUnitsPerMetre);
             for (Unit& v : units_) {
-                if (v.deleted || v.id == p.shooter) continue;
+                if (v.deleted || v.id == p.shooter || v.m.climb) continue;   // climbers have no body (0x4ac910)
                 if (shooter && !hostile(shooter->nation, v.nation)) continue;
                 if (is_knocked(v.action) || v.action == STANDUP || v.action == DNATKED || v.action == H_DROP) continue;
                 const UnitClass& vc = gd_.units[v.cls];

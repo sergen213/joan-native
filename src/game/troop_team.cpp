@@ -395,4 +395,24 @@ void AiSystem::rts_exit(Unit& p) {  // Rts_deinit 0x4404c0 (gameplay part)
         if (Unit* mu = w_.unit(m)) { stop_all_order(*mu); st(*mu).task = {}; }
 }
 
+// Rts_dismiss_siege_crew 0x44a690: every reserved (+0x37c) then attached (+0x378) slot unit drops its task and
+// orders and is released from the weapon; attached crew also stand (Unit_stop). Voice RTS_SIEGE_007 not played here.
+void AiSystem::rts_dismiss_crew(int weapon) {
+    Unit* wpn = w_.unit(weapon);
+    if (!wpn || !wpn->m.can_attach) return;
+    for (std::vector<int>* slots : {&wpn->m.reserved, &wpn->m.crew})
+        for (std::size_t k = 0; k < slots->size(); ++k) {
+            Unit* u = w_.unit((*slots)[k]);
+            if (!u) continue;
+            const bool attached = slots == &wpn->m.crew;
+            clear_task(*u);
+            stop_all_order(*u);
+            if (k < wpn->m.reserved.size()) wpn->m.reserved[k] = 0;
+            if (k < wpn->m.crew.size()) wpn->m.crew[k] = 0;
+            u->m.vehicle = u->m.slot = 0;
+            st(*u).push_slot = -1;
+            if (attached) w_.stop(*u);
+        }
+}
+
 }  // namespace joa::game

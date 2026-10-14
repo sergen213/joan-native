@@ -22,6 +22,9 @@ void menu_remap(Ui& ui, MenuModel& model, std::vector<UiCommand>& out);
 void menu_saveload(Ui& ui, MenuModel& model, std::vector<UiCommand>& out);  // Load and Save
 void menu_ingame(Ui& ui, MenuModel& model, std::vector<UiCommand>& out);
 void hud_game(Ui& ui, HudModel& model, std::vector<UiCommand>& out);
+// Minimap px per world unit at the current zoom (0 without minimap tiles): the FUN_00717a90 "inside the minimap
+// view" test of the party portraits and Ctrl_switch_commander.
+glm::vec2 hud_minimap_scale(Ui& ui, const HudModel& model);
 
 // Shared backdrops (owners: menu_main.cpp, menu_ingame.cpp). Front-end = main-menu art (stone ring, crowd,
 // logo bar) behind Main/Difficulty and Load/Options opened from the main menu. In-game = INGAME_B wood ring +

@@ -87,10 +87,36 @@ struct Facility {
     int list1 = 0, list2 = 0, spawn_barrack = 0, available = 0, can_recruit = 1, recruit_level = 1;
     // workshop (kind 16): +0xec RECRUIT.RES list, +0x79 type (NORMAL 0 IRON 1 WOOD 2), +0x2f0a resource
     int recruit_list = 0, workshop_type = 0, resource = 0;
+    // RecruitWorkshop: recruit order queue (RecruitFacility_queue_order 0x468cd0, fed to the spawn barrack one
+    // unit per free tick by RecruitFacility_process 0x468600). Team 9999 = no troop.
+    struct Queued {
+        int type = 0, team = 0, count = 0;
+        template <class V> void visit(V& v) { v(type), v(team), v(count); }
+    };
+    std::vector<Queued> queue;
+    // RecruitWorkshop: siege workshop (f_work.cpp). +0x7d capacity (12, FUN_00469fa0), products +0xa2 (max 4):
+    // type +0xa4, cost +0xac (class Gold), crew +0xb4 (builders needed), build ms +0xbc; queued +0xcc / built +0xdc
+    // per product; build queue +0x112 (max 0x50, 0x93-byte entries), +0x2f04 entry being built (-1), +0x2f06
+    // last queue time.
+    struct Product {
+        int type = 0, cost = 0, crew = 0, ms = 0, queued = 0, built = 0;
+        template <class V> void visit(V& v) { v(type), v(cost), v(crew), v(ms), v(queued), v(built); }
+    };
+    struct Build {
+        int type = 0, team = 0, building = 0;
+        std::uint32_t queued_ms = 0, start_ms = 0;
+        int ms = 0;
+        template <class V> void visit(V& v) { v(type), v(team), v(building), v(queued_ms), v(start_ms), v(ms); }
+    };
+    int capacity = 12, current = -1;
+    std::uint32_t last_queue_ms = 0;
+    std::vector<Product> products;
+    std::vector<Build> builds;
     template <class V> void visit(V& v) {
         v(recno), v(kind), v(name), v(place), v(pos), v(angle), v(box_min), v(box_max), v(entrances), v(barrack),
             v(sell_list), v(can_regen), v(list1), v(list2), v(spawn_barrack), v(available),
             v(can_recruit), v(recruit_level), v(recruit_list), v(workshop_type), v(resource);
+        v(queue), v(capacity), v(current), v(last_queue_ms), v(products), v(builds);   // RecruitWorkshop
     }
 };
 
@@ -182,12 +208,28 @@ public:
     struct RecruitRec {
         std::string code;
         int level = -1, population = -1;
+        // RecruitWorkshop: RecruitRes_parse_record 0x4ca980 +0x2b Location, +0x23 entries "CODE : time : crew"
+        // (unit type id 1-based, time in s -> ms as Workshop_set_recruit_list 0x46b730 (x1000), crew = int field).
+        std::string location;
+        struct Entry { int type = 0, ms = 0, crew = 0; };
+        std::vector<Entry> entries;
     };
     const RecruitRec* recruit_rec(int id) const;
+
+    // RecruitWorkshop: barracks screen commit (BarrUI_confirm 0x6bdc00 -> RecruitFacility_queue_order 0x468cd0):
+    // queue `count` units of `type` (1-based) for `team` (9999 = no troop) on a RECRUIT facility; gold and the
+    // owner place's population are the screen's bookkeeping. Returns false for a non-recruit facility.
+    bool recruit(int facility, int type, int team, int count);
+    // Siege workshop screen commit (FUN_006ea1a0 -> 0x46ab40): queue one weapon of `type` (team 9999). Fails
+    // (as the original, silently) without a live player, an unknown product, too few builders or 20 queued.
+    bool build_siege(Mission& m, int facility, int type);
+    void set_workshop_list(int facility, int list);   // Workshop_set_recruit_list 0x46b730
 
 private:
     void sync_ai(Mission& m) const;                      // places / zones / tracks hooks of AiSystem
     void tick_barrack(Mission& m, Facility& f);
+    void tick_recruit(Mission& m, Facility& f);          // RecruitWorkshop: RecruitFacility_process 0x468600
+    void tick_workshop(Mission& m, Facility& f);         // RecruitWorkshop: workshop process 0x46a040
     void tick_territories(Mission& m);
 
     Mission* m_ = nullptr;

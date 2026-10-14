@@ -64,8 +64,9 @@ bool PlayerController::process(World& w, const InputFrame& in) {
     // Riding (+0xc4): horse controller 0x43c5c0. Climbing / vehicle (+0xcd): 0x42d270.
     if (ride_mode && w.unit(u.mount)) return horse(w, u, in, move_code, rel, magnitude);
     if (u.m.climb && w.ladder_input && w.ladder_input(u, in)) return true;
-    // On foot, step 1: interact handlers (R).
-    if (in.pressed[IN_INTERACT] && w.interact && w.interact(u)) return true;
+    // On foot, step 1: interact handlers (R). 0x430480 ignores their result: the mount (0x43c7d0) and
+    // ladder (0x42d300) steps below still see the same R press.
+    if (in.pressed[IN_INTERACT] && w.interact) w.interact(u);
     if (down_attack(w, u, def)) return true;
     if (block(w, u, def)) return true;
     if (energy_attack(w, u, C || (A && B))) return true;

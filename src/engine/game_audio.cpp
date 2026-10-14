@@ -84,7 +84,11 @@ void GameAudio::on_tick(const game::Mission& cm, const std::vector<game::GameEve
         // b == 0: UI / script sounds at the listener (FUN_004ceef0). Otherwise set_dialog_voice (voices()),
         // keg_explode (Keg_on_event plays nothing) or a map trigger the player entered (ambient()).
         if (e.kind == K::Sound) {
-            if (e.b == 0) audio_.play_sound(e.text);
+            // Workshop start 0x46a040: RTS_SIEGE_008 only when no RTS_SIEGE_009 still plays (0x473140).
+            if (e.b == 0 && !(e.text == "RTS_SIEGE_008" && siege_built_ && audio_.mixer().playing(siege_built_))) {
+                const VoiceId v = audio_.play_sound(e.text);
+                if (e.text == "RTS_SIEGE_009") siege_built_ = v;
+            }
         } else if (e.kind == K::Dialog || e.kind == K::DialogClosed) {  // ids restart after del_all_dialog
             if (auto it = dialog_voices_.find(e.a); it != dialog_voices_.end()) {
                 audio_.mixer().stop(it->second);  // dialog destructor stops its voice (FUN_0063b5e0 tail)

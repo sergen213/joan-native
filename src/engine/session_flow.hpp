@@ -50,12 +50,17 @@ public:
     std::function<void()> options_changed;  // re-read MenuModel options/bindings (audio volumes, input map)
     std::function<std::vector<SaveSlot>()> list_saves;  // Load/Save screens (UiBridge list_saves)
     bool persist_options = true;            // write options.ini on OptionsChanged (tests: false)
+    // SaveCapture: world frame without UI as a save thumbnail (save_thumbnail). Taken when the in-game menu or the
+    // Save screen opens (Esc / F7: the menus pause the world, so it equals the original's render at save time) and
+    // at F5; Save / quick save write it as <save>.bmp. Unset (tests) = saves without thumbnail.
+    std::function<Image()> capture_world;
 
 private:
     void enter_mission();
     void to_menu();
     void open(MenuScreen screen);
     std::string save_path_for(const UiCommand& c) const;
+    void rescan_saves();
 
     Session& s_;
     MenuModel& menu_;
@@ -64,6 +69,8 @@ private:
     std::function<bool(std::string*)> pending_;
     int loading_mission_ = 0;
     int generation_ = -1;
+    Image shot_;                               // last capture_world() result
+    MenuScreen listed_ = MenuScreen::None;     // screen of the last update(): Load/Save re-scan when they open
 };
 
 }  // namespace joa::engine

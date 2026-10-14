@@ -4,7 +4,9 @@
 #include "engine/vk_memory.hpp"
 #include "engine/pbr_env.hpp"
 #include "engine/post_frame.hpp"
+#include "engine/rt_scene.hpp"
 #include "engine/shadow_volume.hpp"
+#include "engine/vk_rt.hpp"
 
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
@@ -81,9 +83,30 @@ const std::uint32_t kPostEasu[] = {
 const std::uint32_t kPostRcas[] = {
 #include "post_rcas.frag.inc"
 };
+// Ray-traced effects (docs/RAYTRACING.md): RT variant of mesh_pbr.frag + compute passes; used only when the
+// device has ray queries (the SPIR-V declares RayQueryKHR, so it is never handed to other drivers).
+const std::uint32_t kRtMeshFrag[] = {
+#include "rt_mesh_pbr.frag.inc"
+};
+const std::uint32_t kRtShadow[] = {
+#include "rt_shadow.comp.inc"
+};
+const std::uint32_t kRtReflect[] = {
+#include "rt_reflect.comp.inc"
+};
+const std::uint32_t kRtDenoise[] = {
+#include "rt_denoise.comp.inc"
+};
+const std::uint32_t kRtProbeTrace[] = {
+#include "rt_probe_trace.comp.inc"
+};
+const std::uint32_t kRtProbeBlend[] = {
+#include "rt_probe_blend.comp.inc"
+};
 
 std::atomic<std::uint32_t> g_validation_errors{0};
 std::atomic<bool> g_validation_active{false};
+std::atomic<bool> g_rt_available{false};
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
                                               const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
@@ -103,8 +126,11 @@ constexpr VkMemoryPropertyFlags kHost = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK
 // OpenGL clip space (y up, z in [-1,1]) -> Vulkan (y down, z in [0,1]); camera code stays GL-convention.
 const glm::mat4 kClipCorrection(1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0.5f, 1);
 
-// Timestamp queries per frame slot.
-enum Query : std::uint32_t { QFrameBegin, QSceneBegin, QUiBegin, QSceneEnd, QPresentBegin, QPresentEnd, QCount };
+// Timestamp queries per frame slot; the ray-tracing ones are written only on RT frames (rt_timed).
+enum Query : std::uint32_t {
+    QFrameBegin, QSceneBegin, QUiBegin, QSceneEnd, QPresentBegin, QPresentEnd,
+    QRtBegin, QRtAccel, QRtPrepass, QRtGi, QRtShadow, QRtReflect, QCount
+};
 
 struct FrameUniforms {
     glm::mat4 view_proj;
@@ -129,6 +155,19 @@ struct UiVertex {
     glm::vec2 position, uv;
     glm::vec4 color;
 };
+struct RtInstanceGpu {  // std430 mirror of `RtInstance` in shaders/vk/rt_common.glsl
+    VkDeviceAddress vertices, indices;
+    std::uint32_t first_index, albedo, layer2, lightmap;
+    glm::vec4 tint, diffuse;
+    float cutoff;
+    std::uint32_t flags, pad0, pad1;
+};
+static_assert(sizeof(RtInstanceGpu) == 80);
+struct RtPush {  // rt_denoise.comp push block
+    std::uint32_t mode, signal;
+    std::int32_t step;
+    std::uint32_t images;  // src | dst << 8 | history << 16 (u_img indices)
+};
 
 struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -138,6 +177,12 @@ struct Buffer {
 struct Mesh {
     Buffer vertices, indices;
     std::uint32_t index_count = 0;
+    // Ray tracing (docs/RAYTRACING.md): device addresses (0 without RT), object-space bounds, CPU-skinning state.
+    std::uint32_t vertex_count = 0, generation = 0;
+    bool dynamic = false;
+    VkDeviceAddress vertex_address = 0, index_address = 0;
+    glm::vec3 centre{0.0f};
+    float radius = 0.0f;
 };
 struct Texture {
     VkImage image = VK_NULL_HANDLE;
@@ -158,9 +203,11 @@ struct Slot {
     Buffer uniforms, draws, lights, ui;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkQueryPool queries = VK_NULL_HANDLE;
-    bool timed = false, present_timed = false;
+    bool timed = false, present_timed = false, rt_timed = false;
     Buffer rm_ubo, rm_materials;  // remaster frame block, MaterialExtra table (set 2)
     VkDescriptorSet rm_set = VK_NULL_HANDLE;
+    Buffer rt_ubo, rt_instances;  // RtFrame, RtInstance table (set 3)
+    VkDescriptorSet rt_set = VK_NULL_HANDLE;
 };
 
 VkImageSubresourceRange range(VkImageAspectFlags aspect, std::uint32_t mip = 0, std::uint32_t mips = VK_REMAINING_MIP_LEVELS) {
@@ -204,7 +251,7 @@ public:
         }
         pick_device();
         create_device();
-        allocator_.init(vk_, device_, memory_props_);
+        allocator_.init(vk_, device_, memory_props_, rt_caps_.usable());  // buffer device addresses for RT
         create_descriptors();
         create_pipelines();
         create_slots();
@@ -220,6 +267,7 @@ public:
             for (auto& [id, m] : meshes_) destroy(m);
             for (auto& [id, t] : textures_) destroy(t);
             for (auto& g : graveyard_) g.second();
+            destroy_rt();
             destroy_remaster();
             destroy_target();
             destroy_swapchain(swapchain_);
@@ -271,18 +319,41 @@ public:
         // staging copy and no queue wait; the old buffers retire once the GPU is done with them.
         Mesh m;
         const VkDeviceSize vbytes = data.vertices.size() * sizeof(Vertex), ibytes = data.indices.size() * sizeof(std::uint32_t);
-        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, kHost, 0);
-        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, kHost, 0);
+        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_usage(), kHost, 0);
+        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_usage(), kHost, 0);
         if (vbytes) std::memcpy(m.vertices.memory.mapped, data.vertices.data(), vbytes);
         if (ibytes) std::memcpy(m.indices.memory.mapped, data.indices.data(), ibytes);
         m.index_count = std::uint32_t(data.indices.size());
+        m.dynamic = true;  // CPU-skinned: refit BLAS (vk_rt.hpp)
+        m.generation = it->second.generation + 1;
+        rt_mesh_info(m, data);
         it->second = m;
         return true;
+    }
+
+    // Ray tracing: AS build input + shader device address usage on every mesh buffer when the device has RT.
+    VkBufferUsageFlags rt_usage() const {
+        return rt_caps_.usable() ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR : 0;
+    }
+    VkDeviceAddress address(const Buffer& b) const {
+        const VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, nullptr, b.buffer};
+        return vk_.vkGetBufferDeviceAddress(device_, &info);
+    }
+    void rt_mesh_info(Mesh& m, const MeshData& data) {
+        if (!rt_caps_.usable()) return;
+        m.vertex_count = std::uint32_t(data.vertices.size());
+        m.vertex_address = address(m.vertices);
+        m.index_address = address(m.indices);
+        glm::vec3 lo(1e30f), hi(-1e30f);
+        for (const Vertex& v : data.vertices) lo = glm::min(lo, v.position), hi = glm::max(hi, v.position);
+        m.centre = data.vertices.empty() ? glm::vec3(0.0f) : (lo + hi) * 0.5f;
+        m.radius = data.vertices.empty() ? 0.0f : glm::length(hi - lo) * 0.5f;
     }
 
     void destroy_mesh(MeshHandle h) override {
         if (auto it = meshes_.find(h.id); it != meshes_.end()) {
             retire([this, m = it->second]() mutable { destroy(m); });
+            if (rt_ready_) rt_accel_.forget_mesh(h.id);
             meshes_.erase(it);
         }
     }
@@ -290,9 +361,9 @@ public:
     Mesh upload(const MeshData& data) {
         Mesh m;
         const VkDeviceSize vbytes = data.vertices.size() * sizeof(Vertex), ibytes = data.indices.size() * sizeof(std::uint32_t);
-        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_usage(),
                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | rt_usage(),
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
         Buffer staging = create_buffer(vbytes + ibytes + 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kHost, 0);
         if (vbytes) std::memcpy(staging.memory.mapped, data.vertices.data(), vbytes);
@@ -313,6 +384,7 @@ public:
         });
         destroy(staging);
         m.index_count = std::uint32_t(data.indices.size());
+        rt_mesh_info(m, data);
         return m;
     }
 
@@ -417,8 +489,24 @@ public:
         gfx_ = g;
         remaster_ = g.remastered();
         history_.valid = false;
+        rt_history_ = false;
         if (remaster_) std::fprintf(stderr, "joan-native: vulkan graphics preset %s (remaster path)\n", preset_name(g.preset));
+        // Ray tracing is optional everywhere: without a remastered preset or ray-query hardware the raster
+        // path of the same settings runs (shadow map or stencil volumes, IBL ambient + reflections) -- docs/RAYTRACING.md.
+        if (g.rt.any()) {
+            const std::string want = std::string(g.rt.reflections ? " reflections" : "") + (g.rt.shadows ? " shadows" : "") + (g.rt.gi ? " gi" : "");
+            if (!remaster_)
+                std::fprintf(stderr, "joan-native: vulkan ray tracing (%s ) ignored: the Original preset never changes\n", want.c_str());
+            else if (!rt_caps_.usable())
+                std::fprintf(stderr, "joan-native: vulkan ray tracing (%s ) unavailable (%s), using the raster path\n", want.c_str(),
+                             rt_caps_.missing().c_str());
+            else
+                std::fprintf(stderr, "joan-native: vulkan ray tracing:%s (%d ray/px, max roughness %.2f, denoise %s)\n", want.c_str(),
+                             g.rt.rays_per_pixel, g.rt.max_roughness, g.rt.denoise ? "on" : "off");
+        }
     }
+
+    bool rt_active() const { return remaster_ && gfx_.rt.any() && rt_caps_.usable(); }
 
     void set_material_maps(TextureHandle albedo, const MaterialMaps& maps) override {
         if (albedo) material_maps_[albedo.id] = maps;
@@ -702,6 +790,42 @@ private:
         }
         if (!physical_) throw std::runtime_error("no usable Vulkan 1.3 device");
         vk_.vkGetPhysicalDeviceMemoryProperties(physical_, &memory_props_);
+        probe_rt();
+    }
+
+    // Ray tracing capability (docs/RAYTRACING.md). JOA_VK_DISABLE_RT=1 forces the raster fallback.
+    void probe_rt() {
+        std::uint32_t n = 0;
+        vk_.vkEnumerateDeviceExtensionProperties(physical_, nullptr, &n, nullptr);
+        std::vector<VkExtensionProperties> exts(n);
+        vk_.vkEnumerateDeviceExtensionProperties(physical_, nullptr, &n, exts.data());
+        const auto has = [&](const char* e) {
+            return std::any_of(exts.begin(), exts.end(), [&](const auto& p) { return std::strcmp(p.extensionName, e) == 0; });
+        };
+        RtCaps& c = rt_caps_;
+        c.deferred_host_operations = has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        c.ray_tracing_pipeline = has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        const bool as_ext = has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME), rq_ext = has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        VkPhysicalDeviceRayQueryFeaturesKHR rq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12};
+        // Extension feature structs only when the extension exists.
+        if (as_ext) as.pNext = f12.pNext, f12.pNext = &as;
+        if (rq_ext) rq.pNext = f12.pNext, f12.pNext = &rq;
+        vk_.vkGetPhysicalDeviceFeatures2(physical_, &f);
+        c.acceleration_structure = as_ext && as.accelerationStructure;
+        c.ray_query = rq_ext && rq.rayQuery;
+        c.buffer_device_address = f12.bufferDeviceAddress;
+        c.storage_image_indexing = f.features.shaderStorageImageArrayDynamicIndexing;
+        const char* off = std::getenv("JOA_VK_DISABLE_RT");
+        c.forced_off = off && *off && std::strcmp(off, "0") != 0;
+        g_rt_available = c.usable();
+        if (c.usable())
+            std::fprintf(stderr, "joan-native: vulkan ray tracing available (ray query + acceleration structures%s)\n",
+                         c.ray_tracing_pipeline ? "; RT pipeline present, unused" : "");
+        else
+            std::fprintf(stderr, "joan-native: vulkan ray tracing unavailable: %s\n", c.missing().c_str());
     }
 
     void create_device() {
@@ -722,12 +846,26 @@ private:
         VkPhysicalDeviceFeatures core{};
         core.samplerAnisotropy = anisotropy_;
         core.independentBlend = independent_blend_;  // remaster stencil fill: colour + masked ambient attachment
-        const char* swapchain_ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        std::vector<const char*> exts;
+        if (surface_) exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        // Ray tracing: ray queries over acceleration structures, buffer references to the mesh data.
+        VkPhysicalDeviceRayQueryFeaturesKHR rq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, &rq};
+        if (rt_caps_.usable()) {
+            f12.bufferDeviceAddress = VK_TRUE;
+            f12.pNext = &as;
+            as.accelerationStructure = VK_TRUE;
+            rq.rayQuery = VK_TRUE;
+            core.shaderStorageImageArrayDynamicIndexing = VK_TRUE;
+            for (const char* e : {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+                                  VK_KHR_RAY_QUERY_EXTENSION_NAME})
+                exts.push_back(e);
+        }
         VkDeviceCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &f13};
         info.queueCreateInfoCount = 1;
         info.pQueueCreateInfos = &queue;
-        info.enabledExtensionCount = surface_ ? 1 : 0;
-        info.ppEnabledExtensionNames = &swapchain_ext;
+        info.enabledExtensionCount = std::uint32_t(exts.size());
+        info.ppEnabledExtensionNames = exts.data();
         info.pEnabledFeatures = &core;
         check(vk_.vkCreateDevice(physical_, &info, nullptr, &device_), "vkCreateDevice");
         vk_.load_device(device_);
@@ -764,8 +902,9 @@ private:
                                                   VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
         const VkDescriptorSetLayoutBindingFlagsCreateInfo flags{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, nullptr,
                                                                 1, &bindless};
-        const VkDescriptorSetLayoutBinding tex{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                               nullptr};
+        // FRAGMENT + COMPUTE: the ray-traced compute passes fetch albedo for alpha tests and hit shading.
+        const VkDescriptorSetLayoutBinding tex{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures,
+                                               VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, &flags,
                                            VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, 1, &tex};
         check(vk_.vkCreateDescriptorSetLayout(device_, &li, nullptr, &textures_layout_), "vkCreateDescriptorSetLayout");
@@ -1408,6 +1547,7 @@ private:
         std::int32_t cls, blend, pad0, pad1;
     };
     static constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    static constexpr VkShaderStageFlags kRmStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     static constexpr VkFormat kLdrFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
     VkPipeline make_rm_pipeline(const RmPipe& p) {
@@ -1517,9 +1657,9 @@ private:
         si.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         check(vk_.vkCreateSampler(device_, &si, nullptr, &rm_shadow_sampler_), "vkCreateSampler");
 
-        // Set 2 (remaster_vk.glsl): 0 frame block, 1-10 + 12 textures, 11 MaterialExtra table.
+        // Set 2 (remaster_vk.glsl): 0 frame block, 1-10 + 12 textures, 11 MaterialExtra table. Compute: the RT passes.
         VkDescriptorSetLayoutBinding b[13];
-        const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        const VkShaderStageFlags stages = kRmStages;
         for (std::uint32_t i = 0; i < 13; ++i)
             b[i] = {i, i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : i == 11 ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     1, stages, nullptr};
@@ -1536,7 +1676,7 @@ private:
             s.rm_ubo = create_buffer(sizeof(RemasterFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         }
         const VkDescriptorSetLayout sets[3] = {textures_layout_, frame_layout_, rm_layout_};
-        const VkPushConstantRange push{stages, 0, sizeof(std::uint32_t)};
+        const VkPushConstantRange push{stages, 0, 16};  // = the RT layout's range, so sets 0-2 stay bound across both
         const VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 3, sets, 1, &push};
         check(vk_.vkCreatePipelineLayout(device_, &pl, nullptr, &rm_pipe_layout_), "vkCreatePipelineLayout");
 
@@ -1656,6 +1796,7 @@ private:
         env_radiance_ = create_texture(m.radiance);
         env_irradiance_ = create_texture(m.irradiance);
         env_levels_ = m.radiance_levels;
+        env_sky_up_ = m.sky_up;
         env_key_ = key;
     }
 
@@ -1708,15 +1849,16 @@ private:
         return a;
     }
 
+    // `stencil`: the depth image's stencil is an attachment too, described by `stencil_info` (default: same as depth).
     void begin_rendering(glm::ivec2 size, std::span<const VkRenderingAttachmentInfo> colors, const VkRenderingAttachmentInfo* depth,
-                         bool stencil) {
+                         bool stencil, const VkRenderingAttachmentInfo* stencil_info = nullptr) {
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, {std::uint32_t(size.x), std::uint32_t(size.y)}};
         info.layerCount = 1;
         info.colorAttachmentCount = std::uint32_t(colors.size());
         info.pColorAttachments = colors.data();
         info.pDepthAttachment = depth;
-        info.pStencilAttachment = stencil ? depth : nullptr;
+        info.pStencilAttachment = stencil ? (stencil_info ? stencil_info : depth) : nullptr;
         vk_.vkCmdBeginRendering(cmd_, &info);
         const VkViewport viewport{0.0f, 0.0f, float(size.x), float(size.y), 0.0f, 1.0f};
         const VkRect2D scissor{{0, 0}, {std::uint32_t(size.x), std::uint32_t(size.y)}};
@@ -1753,13 +1895,14 @@ private:
         std::memcpy(s.rm_ubo.memory.mapped, &rf, sizeof rf);
         upload_frame_uniforms(s, f);  // the UI reads its framebuffer size from set 1
         const bool shadows = gfx_.shadow_map_size > 0;
+        const bool rt = rt_active(), rt_shadows = rt && gfx_.rt.shadows;  // RT shadows replace the stencil volumes too
 
         // Draw table: opaque/alpha-tested, stencil volumes (no shadow map only), blended back to front.
         order_.clear();
         for (const DrawItem& d : f.draws)
             if (d.material.blend == BlendMode::Opaque || d.material.blend == BlendMode::AlphaTest) order_.push_back(&d);
         const std::size_t first_volume = order_.size();
-        if (!shadows && l.shadow_color.a > 0.0f)
+        if (!shadows && !rt_shadows && l.shadow_color.a > 0.0f)
             for (const DrawItem& d : f.draws)
                 if (d.material.blend == BlendMode::ShadowVolume) order_.push_back(&d);
         const std::size_t first_blended = order_.size();
@@ -1788,6 +1931,7 @@ private:
         write_rm_set(s, rmt_.hist[r].view, resolved.view, easu ? rmt_.easu.view : resolved.view);
         const VkDescriptorSet sets[3] = {textures_set_, s.set, s.rm_set};
         vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_pipe_layout_, 0, 3, sets, 0, nullptr);
+        if (rt) rt_prepare(s, f, scene, first_volume, first_blended);  // instance table, RtFrame, set 3 (graphics + compute)
 
         const Mesh* bound_mesh = nullptr;
         int cull = -1;
@@ -1812,7 +1956,7 @@ private:
             vk_.vkCmdDrawIndexed(cmd_, count, 1, first, 0, std::uint32_t(i));
         };
         const auto push_pass = [&](std::uint32_t pass) {
-            vk_.vkCmdPushConstants(cmd_, rm_pipe_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pass, &pass);
+            vk_.vkCmdPushConstants(cmd_, rm_pipe_layout_, kRmStages, 0, sizeof pass, &pass);
         };
         const auto ds = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 
@@ -1833,10 +1977,40 @@ private:
                        VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         }
 
+        // Ray tracing (docs/RAYTRACING.md): acceleration structures, G-buffer prepass (depth + normal/roughness),
+        // then the compute passes; the forward opaque pass below reloads that depth and reads their results.
+        if (rt) {
+            if (s.timed) timestamp(QRtBegin);
+            rt_accel_.build(cmd_, slot_);
+            rt_bind(s);
+            if (s.timed) timestamp(QRtAccel);
+            rm_barrier(rmt_.ambient.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+            VkClearValue zero{}, depth_clear{};
+            depth_clear.depthStencil = {1.0f, 0};
+            const VkRenderingAttachmentInfo colors[2] = {
+                attachment(rt_gbuf_[rt_frame_ & 1u].view, VK_IMAGE_LAYOUT_GENERAL, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, zero),
+                attachment(rmt_.ambient.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                           VK_ATTACHMENT_STORE_OP_DONT_CARE)};
+            const VkRenderingAttachmentInfo d = attachment(rmt_.depth.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                           VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, depth_clear);
+            begin_rendering(scene, colors, &d, false);
+            cull = -1;
+            vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rt_prepass_);
+            push_pass(2);
+            for (std::size_t i = 0; i < first_volume; ++i) draw(i, false);
+            vk_.vkCmdEndRendering(cmd_);
+            if (s.timed) timestamp(QRtPrepass);
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            rt_compute(s, scene);
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        } else {
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        }
+
         // Opaque into HDR colour + ambient (+ stencil volumes and fill without a shadow map).
         rm_barrier(rmt_.hdr.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         rm_barrier(rmt_.ambient.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         {
             VkClearValue cc{}, zero{}, depth_clear{};
             cc.color = {{l.clear_color.r, l.clear_color.g, l.clear_color.b, l.clear_color.a}};
@@ -1845,11 +2019,15 @@ private:
                 attachment(rmt_.hdr.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, cc),
                 attachment(rmt_.ambient.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
                            zero)};
+            // RT: depth comes from the prepass (same jittered matrices, invariant positions), stencil starts at 0.
             const VkRenderingAttachmentInfo d = attachment(rmt_.depth.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                                           VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, depth_clear);
-            begin_rendering(scene, colors, &d, true);
+                                                           rt ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                                           VK_ATTACHMENT_STORE_OP_STORE, depth_clear);
+            const VkRenderingAttachmentInfo stencil = attachment(rmt_.depth.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                                 VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, depth_clear);
+            begin_rendering(scene, colors, &d, true, &stencil);
             cull = -1;
-            vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_opaque_);
+            vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rt ? rt_opaque_ : rm_opaque_);
             push_pass(0);
             std::uint32_t ref = ~0u;
             for (std::size_t i = 0; i < first_volume; ++i) {
@@ -1867,6 +2045,7 @@ private:
                 vk_.vkCmdPushConstants(cmd_, fill_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof color, &color);
                 vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
                 vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_pipe_layout_, 0, 3, sets, 0, nullptr);
+                if (rt) vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rt_pipe_layout_, 3, 1, &s.rt_set, 0, nullptr);
             }
             vk_.vkCmdEndRendering(cmd_);
         }
@@ -1894,7 +2073,7 @@ private:
             push_pass(0);
             VkPipeline bound = VK_NULL_HANDLE;
             for (std::size_t i = first_blended; i < order_.size(); ++i) {
-                const VkPipeline p = order_[i]->material.blend == BlendMode::Additive ? rm_additive_ : rm_blend_;
+                const VkPipeline p = order_[i]->material.blend == BlendMode::Additive ? (rt ? rt_additive_ : rm_additive_) : (rt ? rt_blend_ : rm_blend_);
                 if (p != bound) vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = p);
                 draw(i, false);
             }
@@ -1920,6 +2099,270 @@ private:
         if (s.timed) timestamp(QUiBegin);
         draw_ui(s, f.ui);
         vk_.vkCmdEndRendering(cmd_);
+        if (rt) {
+            rt_prev_camera_ = cam;
+            rt_history_ = true;
+            ++rt_frame_;
+        }
+    }
+
+    // ---- ray tracing (docs/RAYTRACING.md) --------------------------------------------------------------
+
+    static constexpr std::uint32_t kRtImages = 10;  // u_img: shadow raw, accumulation x2, filter x2; reflection the same
+    static constexpr std::uint32_t kRtBindings = 14;
+    static constexpr VkDescriptorType kRtTypes[kRtBindings] = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+
+    VkPipeline make_compute(std::span<const std::uint32_t> code) {
+        VkShaderModule module = VK_NULL_HANDLE;
+        const VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, code.size_bytes(), code.data()};
+        check(vk_.vkCreateShaderModule(device_, &mi, nullptr, &module), "vkCreateShaderModule (RT)");
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
+        ci.layout = rt_pipe_layout_;
+        VkPipeline p = VK_NULL_HANDLE;
+        const VkResult r = vk_.vkCreateComputePipelines(device_, pipeline_cache_, 1, &ci, nullptr, &p);
+        vk_.vkDestroyShaderModule(device_, module, nullptr);
+        check(r, "vkCreateComputePipelines (RT)");
+        return p;
+    }
+
+    // Set 3 layout, pipelines, DDGI volume and the acceleration-structure manager, on the first RT frame.
+    void ensure_rt() {
+        if (rt_ready_) return;
+        VkDescriptorSetLayoutBinding b[kRtBindings];
+        for (std::uint32_t i = 0; i < kRtBindings; ++i) b[i] = {i, kRtTypes[i], i == 9 ? kRtImages : 1, kRmStages, nullptr};
+        const VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, kRtBindings, b};
+        check(vk_.vkCreateDescriptorSetLayout(device_, &li, nullptr, &rt_layout_), "vkCreateDescriptorSetLayout (RT)");
+        const VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight},
+                                               {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kFramesInFlight},
+                                               {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * kFramesInFlight},
+                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * kFramesInFlight},
+                                               {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, (kRtImages + 2) * kFramesInFlight}};
+        const VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, kFramesInFlight, 5, sizes};
+        check(vk_.vkCreateDescriptorPool(device_, &pi, nullptr, &rt_pool_), "vkCreateDescriptorPool (RT)");
+        for (Slot& s : slots_) {
+            const VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, rt_pool_, 1, &rt_layout_};
+            check(vk_.vkAllocateDescriptorSets(device_, &ai, &s.rt_set), "vkAllocateDescriptorSets (RT)");
+            s.rt_ubo = create_buffer(sizeof(RtFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+        const VkDescriptorSetLayout sets[4] = {textures_layout_, frame_layout_, rm_layout_, rt_layout_};
+        const VkPushConstantRange push{kRmStages, 0, 16};
+        const VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 4, sets, 1, &push};
+        check(vk_.vkCreatePipelineLayout(device_, &pl, nullptr, &rt_pipe_layout_), "vkCreatePipelineLayout (RT)");
+
+        const VkPipelineLayout L = rt_pipe_layout_;
+        const VkFormat D = depth_format_;
+        rt_prepass_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat, kHdrFormat}, D, false, true, true, RmStencil::None,
+                                        RmBlend::Off, 0xf, false, false, L});
+        rt_opaque_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat, kHdrFormat}, D, true, true, true, RmStencil::Write,
+                                       RmBlend::Off, 0xf, false, false, L});
+        rt_blend_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Alpha,
+                                      0xf, false, false, L});
+        rt_additive_ = make_rm_pipeline({kMeshPbrVert, kRtMeshFrag, true, {kHdrFormat}, D, true, true, false, RmStencil::None, RmBlend::Add,
+                                         0xf, false, false, L});
+        rt_shadow_pipe_ = make_compute(kRtShadow);
+        rt_reflect_pipe_ = make_compute(kRtReflect);
+        rt_denoise_ = make_compute(kRtDenoise);
+        rt_probe_trace_ = make_compute(kRtProbeTrace);
+        rt_probe_blend_ = make_compute(kRtProbeBlend);
+
+        // DDGI volume: 8x8 texels per probe in two atlases, per-probe state, one ray buffer.
+        const ProbeGrid g;
+        const std::uint32_t probes = std::uint32_t(g.dims.x * g.dims.y * g.dims.z);
+        const VkExtent2D atlas{std::uint32_t(g.dims.x * g.dims.y * 8), std::uint32_t(g.dims.z * 8)};
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        rt_irr_ = create_image(kHdrFormat, atlas, 1, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+        rt_depth_atlas_ = create_image(kHdrFormat, atlas, 1, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+        rt_probe_state_ = create_buffer(probes * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+        rt_probe_rays_ = create_buffer(VkDeviceSize(probes) * kProbeRays * 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+        immediate([&](VkCommandBuffer cmd) {
+            const VkClearColorValue zero{};
+            const VkImageSubresourceRange r = range(VK_IMAGE_ASPECT_COLOR_BIT);
+            for (const Image2D* i : {&rt_irr_, &rt_depth_atlas_}) {
+                image_barrier(cmd, i->image, r, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_NONE, 0,
+                              VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                vk_.vkCmdClearColorImage(cmd, i->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &r);
+            }
+        });
+        rt_probes_reset_ = true;
+        rt_accel_.init(vk_, device_, physical_, allocator_, sizeof(Vertex), [this](std::function<void()> fn) {
+            graveyard_.emplace_back(timeline_value_ + (recording_ ? 1 : 0), std::move(fn));  // the frame being recorded may use it
+        });
+        rt_ready_ = true;
+    }
+
+    // Scene-size targets, all kept in GENERAL: G-buffer x2 (prepass attachment, read by compute), u_img table.
+    void ensure_rt_targets(glm::ivec2 scene) {
+        if (rt_size_ == scene && rt_gbuf_[0].image) return;
+        vk_.vkDeviceWaitIdle(device_);
+        destroy_rt_targets();
+        const VkExtent2D e{std::uint32_t(scene.x), std::uint32_t(scene.y)};
+        for (Image2D& g : rt_gbuf_)
+            g = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        for (Image2D& i : rt_img_) i = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        immediate([&](VkCommandBuffer cmd) {
+            for (Image2D* i : {&rt_gbuf_[0], &rt_gbuf_[1]}) rt_general(cmd, *i);
+            for (Image2D& i : rt_img_) rt_general(cmd, i);
+        });
+        rt_size_ = scene;
+        rt_history_ = false;
+    }
+    void rt_general(VkCommandBuffer cmd, const Image2D& i) {
+        image_barrier(cmd, i.image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_NONE,
+                      0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    }
+
+    void destroy_rt_targets() {
+        for (Image2D& g : rt_gbuf_) destroy(g);
+        for (Image2D& i : rt_img_) destroy(i);
+        rt_size_ = {0, 0};
+    }
+
+    void destroy_rt() {
+        if (!rt_ready_) return;
+        const auto& st = rt_accel_.stats;
+        std::fprintf(stderr, "joan-native: vulkan ray tracing: %u BLAS (%u static built, %u compacted %.1f -> %.1f MiB, %u skinned rebuilds, %u refits), "
+                             "%u TLAS instances last frame\n", st.blas, st.built, st.compacted, double(st.compacted_from) / 1048576.0,
+                     double(st.compacted_to) / 1048576.0, st.rebuilds, st.refits, st.instances);
+        rt_accel_.destroy();
+        destroy_rt_targets();
+        destroy(rt_irr_);
+        destroy(rt_depth_atlas_);
+        destroy(rt_probe_state_);
+        destroy(rt_probe_rays_);
+        for (Slot& s : slots_) {
+            destroy(s.rt_ubo);
+            destroy(s.rt_instances);
+        }
+        for (VkPipeline p : {rt_prepass_, rt_opaque_, rt_blend_, rt_additive_, rt_shadow_pipe_, rt_reflect_pipe_, rt_denoise_, rt_probe_trace_,
+                             rt_probe_blend_})
+            vk_.vkDestroyPipeline(device_, p, nullptr);
+        vk_.vkDestroyPipelineLayout(device_, rt_pipe_layout_, nullptr);
+        vk_.vkDestroyDescriptorPool(device_, rt_pool_, nullptr);
+        vk_.vkDestroyDescriptorSetLayout(device_, rt_layout_, nullptr);
+        rt_ready_ = false;
+    }
+
+    // CPU side of an RT frame: TLAS instances (+ their RtInstance records) from the draw table, the RtFrame block.
+    void rt_prepare(Slot& s, const FrameData& f, glm::ivec2 scene, std::size_t first_volume, std::size_t first_blended) {
+        ensure_rt();
+        ensure_rt_targets(scene);
+        const glm::vec3 cam = f.view.camera_position;
+        rt_table_.clear();
+        rt_accel_.begin(completed_value_, timeline_value_ + 1);
+        for (std::size_t i = 0; i < order_.size(); ++i) {
+            if (i >= first_volume && i < first_blended) continue;  // stencil volumes
+            const DrawItem& d = *order_[i];
+            const Material& m = d.material;
+            const auto maps = material_maps_.find(m.albedo.id);
+            const RtInstanceClass ic = rt_instance_class(m, maps == material_maps_.end() ? MaterialClass::Generic : maps->second.cls, is_terrain(m));
+            const auto it = meshes_.find(d.mesh.id);
+            if (!ic.mask || it == meshes_.end()) continue;
+            const Mesh& mesh = it->second;
+            const float scale = std::max({glm::length(glm::vec3(d.model[0])), glm::length(glm::vec3(d.model[1])), glm::length(glm::vec3(d.model[2]))});
+            if (!rt_keep_instance(glm::vec3(d.model * glm::vec4(mesh.centre, 1.0f)), mesh.radius * scale, cam)) continue;
+            const std::uint32_t first = std::min(d.first_index, mesh.index_count);
+            std::uint32_t count = d.index_count ? std::min(d.index_count, mesh.index_count - first) : mesh.index_count - first;
+            if ((count -= count % 3) == 0) continue;
+            rt_accel_.add({d.mesh.id, mesh.generation, mesh.dynamic, mesh.vertex_address, mesh.index_address, mesh.vertex_count, first, count},
+                          d.model, std::uint32_t(rt_table_.size()), ic.mask, !ic.alpha_test);
+            rt_table_.push_back({mesh.vertex_address, mesh.index_address, first, texture_slot(m.albedo),
+                                 m.layer2 ? texture_slot(m.layer2) : kNoTexture, m.lightmap ? texture_slot(m.lightmap) : kNoTexture, m.tint,
+                                 glm::vec4(m.diffuse, m.vertex_diffuse ? 1.0f : 0.0f), ic.cutoff,
+                                 // thin foliage cards have no inside; two-sided solids (walls) keep their back faces
+                                 (is_terrain(m) ? 1u : 0u) | (m.two_sided && ic.mask == kRtMaskFoliage ? 2u : 0u), 0, 0});
+        }
+        ensure(s, s.rt_instances, std::max<std::size_t>(rt_table_.size(), 1) * sizeof(RtInstanceGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        if (!rt_table_.empty()) std::memcpy(s.rt_instances.memory.mapped, rt_table_.data(), rt_table_.size() * sizeof(RtInstanceGpu));
+        const RtFrame rf = build_rt_frame(gfx_.rt, f.lighting, cam, rt_prev_camera_, rt_history_, rt_frame_, env_sky_up_);
+        std::memcpy(s.rt_ubo.memory.mapped, &rf, sizeof rf);
+    }
+
+    // After the TLAS build: set 3 for this frame (ping-pong targets) bound for graphics and compute.
+    void rt_bind(Slot& s) {
+        const std::uint32_t cur = rt_frame_ & 1u, shadow = gfx_.rt.denoise ? 3 : 0, reflection = gfx_.rt.denoise ? 8 : 5;
+        const auto G = VK_IMAGE_LAYOUT_GENERAL;
+        const VkDescriptorImageInfo sampled[6] = {{rm_nearest_, rt_gbuf_[cur].view, G},   {rm_nearest_, rt_gbuf_[1 - cur].view, G},
+                                                  {rm_nearest_, rt_img_[shadow].view, G},  {rm_nearest_, rt_img_[reflection].view, G},
+                                                  {samplers_[0][0], rt_irr_.view, G},     {samplers_[0][0], rt_depth_atlas_.view, G}};
+        VkDescriptorImageInfo storage[kRtImages + 2];
+        for (std::uint32_t i = 0; i < kRtImages; ++i) storage[i] = {VK_NULL_HANDLE, rt_img_[i].view, G};
+        storage[kRtImages] = {VK_NULL_HANDLE, rt_irr_.view, G};
+        storage[kRtImages + 1] = {VK_NULL_HANDLE, rt_depth_atlas_.view, G};
+        const VkDescriptorBufferInfo buffers[4] = {{s.rt_ubo.buffer, 0, VK_WHOLE_SIZE}, {s.rt_instances.buffer, 0, VK_WHOLE_SIZE},
+                                                   {rt_probe_state_.buffer, 0, VK_WHOLE_SIZE}, {rt_probe_rays_.buffer, 0, VK_WHOLE_SIZE}};
+        const VkAccelerationStructureKHR tlas = rt_accel_.tlas();
+        const VkWriteDescriptorSetAccelerationStructureKHR as{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR, nullptr, 1, &tlas};
+        VkWriteDescriptorSet w[kRtBindings]{};
+        for (std::uint32_t i = 0; i < kRtBindings; ++i) {
+            w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[i].dstSet = s.rt_set;
+            w[i].dstBinding = i;
+            w[i].descriptorCount = i == 9 ? kRtImages : 1;
+            w[i].descriptorType = kRtTypes[i];
+            if (i == 0) w[i].pBufferInfo = &buffers[0];
+            else if (i == 1) w[i].pNext = &as;
+            else if (i == 2) w[i].pBufferInfo = &buffers[1];
+            else if (i <= 8) w[i].pImageInfo = &sampled[i - 3];
+            else if (i <= 11) w[i].pImageInfo = &storage[i == 9 ? 0 : kRtImages + (i - 10)];
+            else w[i].pBufferInfo = &buffers[i - 10];
+        }
+        vk_.vkUpdateDescriptorSets(device_, kRtBindings, w, 0, nullptr);
+        const VkDescriptorSet sets[4] = {textures_set_, s.set, s.rm_set, s.rt_set};
+        vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rt_pipe_layout_, 3, 1, &s.rt_set, 0, nullptr);
+        vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, rt_pipe_layout_, 0, 4, sets, 0, nullptr);
+    }
+
+    // GI probe update, then per signal: trace -> temporal -> 3 a-trous iterations (steps 1, 2, 4).
+    void rt_compute(Slot& s, glm::ivec2 scene) {
+        const auto sync = [&] {
+            memory_barrier(cmd_, {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT});
+        };
+        const auto run = [&](VkPipeline p, std::uint32_t x, std::uint32_t y, const RtPush* push) {
+            vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+            if (push) vk_.vkCmdPushConstants(cmd_, rt_pipe_layout_, kRmStages, 0, sizeof *push, push);
+            vk_.vkCmdDispatch(cmd_, x, y, 1);
+            sync();
+        };
+        if (rt_probes_reset_) {  // every slot "holds" an impossible cell: probes restart from their first update
+            vk_.vkCmdFillBuffer(cmd_, rt_probe_state_.buffer, 0, VK_WHOLE_SIZE, 0x7fffffffu);
+            sync();
+            rt_probes_reset_ = false;
+        }
+        const ProbeGrid g;
+        const std::uint32_t probes = std::uint32_t(g.dims.x * g.dims.y * g.dims.z);
+        if (gfx_.rt.gi) {
+            run(rt_probe_trace_, probes, 1, nullptr);
+            run(rt_probe_blend_, probes, 1, nullptr);
+        }
+        if (s.timed) timestamp(QRtGi);
+        const std::uint32_t gx = std::uint32_t(scene.x + 7) / 8, gy = std::uint32_t(scene.y + 7) / 8, cur = rt_frame_ & 1u;
+        const auto signal = [&](std::uint32_t sig, VkPipeline trace) {
+            const std::uint32_t b = sig * 5;
+            run(trace, gx, gy, nullptr);
+            if (!gfx_.rt.denoise) return;
+            RtPush p{0, sig, 1, b | (b + 1 + cur) << 8 | (b + 2 - cur) << 16};
+            run(rt_denoise_, gx, gy, &p);
+            std::uint32_t src = b + 1 + cur, dst = b + 3;
+            for (std::int32_t step : {1, 2, 4}) {
+                p = {1, sig, step, src | dst << 8};
+                run(rt_denoise_, gx, gy, &p);
+                src = dst;
+                dst = dst == b + 3 ? b + 4 : b + 3;
+            }
+        };
+        if (gfx_.rt.shadows) signal(0, rt_shadow_pipe_);
+        if (s.timed) timestamp(QRtShadow);
+        if (gfx_.rt.reflections) signal(1, rt_reflect_pipe_);
+        if (s.timed) timestamp(QRtReflect);
+        s.rt_timed = s.timed;
     }
 
     // ---- sync / helpers ---------------------------------------------------------------------------
@@ -1988,7 +2431,7 @@ private:
     void collect_timings(Slot& s) {
         if (!s.timed) return;
         std::uint64_t t[QCount] = {};
-        const std::uint32_t n = s.present_timed ? QCount : QPresentBegin;
+        const std::uint32_t n = s.present_timed ? QRtBegin : QPresentBegin;
         if (vk_.vkGetQueryPoolResults(device_, s.queries, 0, n, sizeof t, t, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
             return;
         const double ms = double(props_.limits.timestampPeriod) * 1e-6;
@@ -2000,7 +2443,13 @@ private:
             ++timing_.presents;
         }
         ++timing_.frames;
-        s.timed = false;
+        std::uint64_t r[QCount - QRtBegin] = {};
+        if (s.rt_timed && vk_.vkGetQueryPoolResults(device_, s.queries, QRtBegin, QCount - QRtBegin, sizeof r, r, sizeof(std::uint64_t),
+                                                    VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            for (std::uint32_t i = 0; i + 1 < QCount - QRtBegin; ++i) rt_timing_.pass[i] += double(r[i + 1] - r[i]) * ms;
+            ++rt_timing_.frames;
+        }
+        s.timed = s.rt_timed = false;
     }
 
     void report_timings() {
@@ -2010,6 +2459,13 @@ private:
         std::fprintf(stderr, "joan-native: vulkan gpu timing (%llu frames, mean ms): scene %.3f, ui %.3f, frame %.3f, present-blit %.3f\n",
                      static_cast<unsigned long long>(timing_.frames), timing_.scene / n, timing_.ui / n, timing_.frame / n,
                      timing_.presents ? timing_.present / double(timing_.presents) : 0.0);
+        if (rt_timing_.frames) {
+            const double k = double(rt_timing_.frames);
+            const double* p = rt_timing_.pass;
+            std::fprintf(stderr, "joan-native: vulkan ray tracing gpu timing (%llu frames, mean ms): acceleration structures %.3f, "
+                                 "G-buffer prepass %.3f, gi probes %.3f, shadows %.3f, reflections %.3f\n",
+                         static_cast<unsigned long long>(rt_timing_.frames), p[0] / k, p[1] / k, p[2] / k, p[3] / k, p[4] / k);
+        }
     }
 
     SDL_Window* window_;
@@ -2087,6 +2543,27 @@ private:
     int env_levels_ = 1;
     RemasterHistory history_{};
 
+    // Ray tracing (docs/RAYTRACING.md).
+    RtCaps rt_caps_;
+    bool rt_ready_ = false, rt_history_ = false, rt_probes_reset_ = true;
+    RtAccel rt_accel_;
+    VkDescriptorSetLayout rt_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool rt_pool_ = VK_NULL_HANDLE;
+    VkPipelineLayout rt_pipe_layout_ = VK_NULL_HANDLE;
+    VkPipeline rt_prepass_ = VK_NULL_HANDLE, rt_opaque_ = VK_NULL_HANDLE, rt_blend_ = VK_NULL_HANDLE, rt_additive_ = VK_NULL_HANDLE,
+               rt_shadow_pipe_ = VK_NULL_HANDLE, rt_reflect_pipe_ = VK_NULL_HANDLE, rt_denoise_ = VK_NULL_HANDLE, rt_probe_trace_ = VK_NULL_HANDLE,
+               rt_probe_blend_ = VK_NULL_HANDLE;
+    Image2D rt_gbuf_[2]{}, rt_img_[kRtImages]{}, rt_irr_{}, rt_depth_atlas_{};
+    glm::ivec2 rt_size_{0, 0};
+    Buffer rt_probe_state_, rt_probe_rays_;
+    std::vector<RtInstanceGpu> rt_table_;
+    glm::vec3 rt_prev_camera_{0.0f}, env_sky_up_{1.0f};
+    std::uint32_t rt_frame_ = 0;
+    struct {
+        double pass[QCount - QRtBegin - 1] = {};  // accel, prepass, gi, shadows, reflections
+        std::uint64_t frames = 0;
+    } rt_timing_;
+
     struct {
         double scene = 0, ui = 0, frame = 0, present = 0;
         std::uint64_t frames = 0, presents = 0;
@@ -2100,5 +2577,6 @@ std::unique_ptr<IRenderer> create_vk_renderer(SDL_Window* window, const Options&
 }
 std::uint32_t vk_validation_errors() { return g_validation_errors; }
 bool vk_validation_active() { return g_validation_active; }
+bool vk_ray_tracing_available() { return g_rt_available; }
 
 }  // namespace joa::engine

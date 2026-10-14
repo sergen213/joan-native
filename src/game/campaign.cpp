@@ -53,6 +53,7 @@ void copy_persistent_unit(const Unit& s, Unit& d) {
     d.lock_picking = s.lock_picking, d.mountain = s.mountain;
     d.upgrades = s.upgrades;  // FUN_00531230
     d.inv = s.inv;            // FUN_00497a10
+    d.model_level = s.model_level;  // +0x3c5
 }
 
 namespace {
@@ -170,7 +171,7 @@ constexpr Field kFields[] = {
     {0x16f, 4, &Unit::archery}, {0x173, 4, &Unit::horse_riding}, {0x177, 4, &Unit::swimming},
     {0x17b, 4, &Unit::elephant_riding}, {0x17f, 4, &Unit::wide_animal}, {0x183, 4, &Unit::preaching},
     {0x187, 4, &Unit::power_jump}, {0x18b, 4, &Unit::disguise}, {0x18f, 4, &Unit::persuade},
-    {0x193, 4, &Unit::lock_picking}, {0x197, 4, &Unit::mountain},
+    {0x193, 4, &Unit::lock_picking}, {0x197, 4, &Unit::mountain}, {0x3c5, 4, &Unit::model_level},
 };
 
 void put(PlayerBytes& b, std::size_t off, std::int32_t v, std::size_t size) { std::memcpy(b.data() + off, &v, size); }
@@ -194,7 +195,8 @@ std::string get_str(const PlayerBytes& b, std::size_t off, std::size_t n) {
 // Bag geometry (0x457290 args: rows 1, cell bytes = width, cols = height) for inventory +0x12/+0x16/+0x1a.
 constexpr int kBagW[3] = {4, 6, 6}, kBagH[3] = {1, 8, 4};
 
-// FUN_004575a0 first fit (y outer, x inner) + FUN_00458090 grid fill + FUN_004576f0 append.
+// FUN_004575a0 first fit (y outer, x inner) + FUN_00458090 grid fill + FUN_004576f0 append. RecruitWorkshop: an item
+// placed in this bag (ItemInstance bag/col/row) keeps its cell when it is free.
 bool place(formats::PlayerItemBag& bag, int g, const ItemInstance& it, int w, int h) {
     const int W = kBagW[g], H = kBagH[g];
     auto free = [&](int x, int y) {
@@ -203,19 +205,22 @@ bool place(formats::PlayerItemBag& bag, int g, const ItemInstance& it, int w, in
                 if (bag.grid[size_t(yy * W + xx)]) return false;
         return true;
     };
+    auto put_at = [&](int x, int y) {
+        const auto idx = std::uint8_t(bag.items.size() + 1);
+        for (int yy = y; yy < y + h; ++yy)
+            for (int xx = x; xx < x + w; ++xx) bag.grid[size_t(yy * W + xx)] = idx;
+        PlayerBytes r(0x18, 0);
+        put(r, 0, it.item, 2), put(r, 2, it.quantity, 2), put(r, 4, it.level, 2);
+        r[0x12] = std::uint8_t(w), r[0x13] = std::uint8_t(h), r[0x15] = std::uint8_t(x), r[0x16] = std::uint8_t(y);
+        r[0x17] = idx;
+        bag.items.push_back(std::move(r));
+        return true;
+    };
+    if (it.bag == g && it.col >= 0 && it.row >= 0 && it.col <= W - w && it.row <= H - h && free(it.col, it.row))
+        return put_at(it.col, it.row);
     for (int y = 0; y <= H - h; ++y)
-        for (int x = 0; x <= W - w; ++x) {
-            if (!free(x, y)) continue;
-            const auto idx = std::uint8_t(bag.items.size() + 1);
-            for (int yy = y; yy < y + h; ++yy)
-                for (int xx = x; xx < x + w; ++xx) bag.grid[size_t(yy * W + xx)] = idx;
-            PlayerBytes r(0x18, 0);
-            put(r, 0, it.item, 2), put(r, 2, it.quantity, 2), put(r, 4, it.level, 2);
-            r[0x12] = std::uint8_t(w), r[0x13] = std::uint8_t(h), r[0x15] = std::uint8_t(x), r[0x16] = std::uint8_t(y);
-            r[0x17] = idx;
-            bag.items.push_back(std::move(r));
-            return true;
-        }
+        for (int x = 0; x <= W - w; ++x)
+            if (free(x, y)) return put_at(x, y);
     return false;
 }
 
@@ -275,9 +280,9 @@ Unit import_unit(const formats::PlayerUnit& p) {
     ItemInstance* slots[4] = {&u.inv.melee[0], &u.inv.melee[1], &u.inv.ranged, &u.inv.ammo};
     for (size_t s = 0; s < 4; ++s)
         if (inv.slots[s].size() == 0x12) *slots[s] = {get(inv.slots[s], 0, 2), get(inv.slots[s], 2, 2), get(inv.slots[s], 4, 2)};
-    for (const auto& bag : inv.bags)
-        for (const auto& r : bag.items)
-            if (r.size() == 0x18) u.inv.bag.push_back({get(r, 0, 2), get(r, 2, 2), get(r, 4, 2)});
+    for (int g = 0; g < int(inv.bags.size()); ++g)   // RecruitWorkshop: + the item's bag cell (+0x15 col, +0x16 row)
+        for (const auto& r : inv.bags[size_t(g)].items)
+            if (r.size() == 0x18) u.inv.bag.push_back({get(r, 0, 2), get(r, 2, 2), get(r, 4, 2), g, r[0x15], r[0x16]});
     return u;
 }
 }  // namespace

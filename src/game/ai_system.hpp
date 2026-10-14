@@ -213,6 +213,7 @@ public:
     // 0x44f750 branch B: join a leader's team / follow a commander. Returns false when nothing happened.
     // confirmed=false and over capacity -> returns false and sets *needs_confirm.
     bool rts_assign(std::span<const int> sel, int target, bool confirmed, bool* needs_confirm = nullptr);
+    void rts_dismiss_crew(int weapon);                 // Rts_dismiss_siege_crew 0x44a690 (double-click weapon)
     void rts_enter(Unit& player);                      // Rts_init: player handed to AI
     void rts_exit(Unit& player);                       // Rts_deinit: park tasks, members inherit
 

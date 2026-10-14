@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <map>
+#include <utility>
 
 #include "game/world_sim.hpp"
 
@@ -95,9 +96,10 @@ bool World::equip(Unit& u, int bag_index) {
     case 0xd: case 0xe: case 0xf: case 0x10: case 0x11: case 0x12: case 0x13: case 0x14: slot = &u.inv.ammo; break;
     default:
         if (d.item_class == "ARMOR") {
-            std::swap(u.armor_item, it.item);
-            if (it.item) u.inv.bag[size_t(bag_index)] = {it.item, 1, gd_.items[size_t(it.item)].min_level};
-            else u.inv.bag.erase(u.inv.bag.begin() + bag_index);
+            // 0x6d8ac0 (CONFIRMED): the armour is consumed; it raises the armour level only (Defense +0x56)
+            // and then selects the hero mesh Unit_set_model_level(Damage +0x4e) (0x511060).
+            if (u.armor_level < d.defense) u.armor_level = d.defense, u.model_level = d.damage, u.armor_item = it.item;
+            u.inv.bag.erase(u.inv.bag.begin() + bag_index);
             return true;
         }
         return false;
@@ -108,6 +110,54 @@ bool World::equip(Unit& u, int bag_index) {
     else u.inv.bag.erase(u.inv.bag.begin() + bag_index);
     if (u.inv.melee[0].item || u.inv.melee[1].item) u.inv.weapon_mode = 1;
     else if (u.inv.ranged.item) u.inv.weapon_mode = 2;
+    return true;
+}
+
+// Inventory right-click (0x6d8ac0): red potion 0x15 -> 0x50b4f0, blue 0x17 -> 0x50ba00, all 0x19 -> 0x50bcd0, each
+// called with "force" = 1 (consumed even at full HP). HP overflow: a team leader gives every live member amount/2;
+// a member passes the rest to the most hurt units of its leader's team (0x50b4f0). ARMOR class -> equip().
+bool World::use_item(Unit& u, int bag_index) {
+    if (bag_index < 0 || bag_index >= int(u.inv.bag.size()) || dead(u)) return false;
+    ItemInstance& it = u.inv.bag[size_t(bag_index)];
+    const ItemDef& d = gd_.items[size_t(it.item)];
+    if (d.item_class == "ARMOR") return equip(u, bag_index);
+    if (d.type != 0x15 && d.type != 0x17 && d.type != 0x19) return false;
+    const int amount = d.damage;   // +0x4e
+    if (d.type != 0x15) set_ep(u, std::min(max_ep(u), u.ep + amount));
+    if (d.type != 0x17) {
+        const int hp = std::min(max_hp(u), u.hp + amount);
+        int rest = amount - (hp - u.hp);
+        set_hp(u, hp);
+        u.hp_trail = hp;
+        if (!u.members.empty()) {
+            for (int id : u.members)
+                if (Unit* m = unit(id); m && m->id != u.id && !dead(*m)) set_hp(*m, std::min(max_hp(*m), m->hp + amount / 2)), m->hp_trail = m->hp;
+        } else if (Unit* l = unit(u.leader); l && l->id != u.id) {
+            while (rest > 0) {
+                Unit* worst = nullptr;
+                for (int id : l->members)
+                    if (Unit* m = unit(id); m && !dead(*m) && m->hp < max_hp(*m) &&
+                                            (!worst || float(m->hp) / float(max_hp(*m)) < float(worst->hp) / float(max_hp(*worst))))
+                        worst = m;
+                if (!worst) break;
+                const int v = std::min(max_hp(*worst), worst->hp + rest);
+                rest -= v - worst->hp;
+                set_hp(*worst, v);
+                worst->hp_trail = v;
+            }
+        }
+    }
+    emit(Ev::Effect, u.id, it.item, amount, "spiritual.txt");
+    if (--it.quantity < 1) u.inv.bag.erase(u.inv.bag.begin() + bag_index);
+    return true;
+}
+
+bool World::unequip(Unit& u, int slot) {
+    ItemInstance* s = slot == 0 ? &u.inv.melee[0] : slot == 1 ? &u.inv.melee[1] : slot == 2 ? &u.inv.ranged : slot == 3 ? &u.inv.ammo : nullptr;
+    if (!s || !s->item) return false;
+    u.inv.bag.push_back(std::exchange(*s, {}));
+    if (u.inv.melee[0].item || u.inv.melee[1].item) u.inv.weapon_mode = 1;
+    else u.inv.weapon_mode = u.inv.ranged.item ? 2 : 0;
     return true;
 }
 

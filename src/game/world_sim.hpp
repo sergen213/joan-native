@@ -63,6 +63,7 @@ struct Projectile {
     int id = 0;
     int type = 0;            // 0 ARW 1 PROJ 2 EXPL 3 STM 4 STC 5 CAN
     int shooter = 0;
+    int item = 0;            // +0x08 ItemArray object: the ammo item index (model at level 2, 0x507fc0)
     int launch_ms = 0;
     Vec3 launch;             // +0x18 (z overwritten with 0, CONFIRMED quirk)
     Vec3 pos_m, vel_m;       // body position / velocity (m, m/s)
@@ -75,7 +76,7 @@ struct Projectile {
     bool collided = false, ground = false, destroyed = false, exploded = false;
     template <class V> void visit(V& v) {
         v(id), v(type), v(shooter), v(launch_ms), v(launch), v(pos_m), v(vel_m), v(force), v(force_start), v(force_left_ms),
-            v(tl), v(dl), v(m), v(tr), v(gl), v(hit_id), v(collided), v(ground), v(destroyed), v(exploded);
+            v(tl), v(dl), v(m), v(tr), v(gl), v(hit_id), v(collided), v(ground), v(destroyed), v(exploded), v(item);
     }
 };
 
@@ -84,7 +85,8 @@ struct WorldItem {
     int id = 0, item = 0, level = 0, quantity = 1;
     Vec3 pos;
     bool deleted = false;
-    template <class V> void visit(V& v) { v(id), v(item), v(level), v(quantity), v(pos), v(deleted); }
+    float yaw_deg = 0;   // heading of the dropping unit (Unit_dropItem 0x406631 -> 0x499fd0(unit +0x1a))
+    template <class V> void visit(V& v) { v(id), v(item), v(level), v(quantity), v(pos), v(deleted), v(yaw_deg); }
 };
 
 // Critical-attack key sequence (HUD object 0xa4f820, Part C §4.4).
@@ -109,7 +111,7 @@ struct UnitView {
     int nation = 0, team = 0, level = 1;
     bool dead = false;
 };
-struct ProjectileView { int id = 0, type = 0; Vec3 pos, vel; };
+struct ProjectileView { int id = 0, type = 0; Vec3 pos, vel; int item = 0; };
 struct Snapshot {
     int time_ms = 0;
     std::vector<UnitView> units;
@@ -149,6 +151,7 @@ public:
     const std::vector<Unit>& units() const { return units_; }
     WorldItem* item(int id);
     std::vector<WorldItem>& items() { return items_; }
+    const std::vector<WorldItem>& items() const { return items_; }
     int player_id() const { return player_; }
     void set_player(int id);                             // switch_controllable_unit
     int difficulty = 1;                                  // config 0xa57fc2: 0 easy .. 3 very difficult
@@ -175,6 +178,7 @@ public:
     void tick(const InputFrame& in) { tick_units(in); tick_physics(); }
 
     PlayerController& controller() { return pc_; }
+    const PlayerController& controller() const { return pc_; }
     // Drive a non-player unit with a virtual pad (stand-in AI). The source is not serialized.
     void attach_pad(int unit, std::function<InputFrame(World&, const Unit&)> source);
     void set_brain(IUnitBrain* b) { brain_ = b; }
@@ -187,6 +191,8 @@ public:
     // Player interact key (R) handlers 0x43bef0, 0x43bd40, 0x43be40, 0x43c210, 0x43bc50, 0x43bfe0,
     // 0x43c080 in that order (mission layer: interact_player.cpp). True when one consumed the key.
     std::function<bool(Unit&)> interact;
+    // Unit_auto_pickup 0x49da30 (unit phase 0): floor items walked over (mission layer: items_pickup.cpp).
+    std::function<void(Unit&)> auto_pickup;
 
     // --- output ----------------------------------------------------------------------------
     const std::vector<GameEvent>& events() const { return events_; }
@@ -262,6 +268,8 @@ public:
     bool use_recovery_item(Unit& u, bool energy);          // F3 0x43b490 / F4 0x43b990
     bool give_item(Unit& u, std::string_view code, int level, int quantity);
     bool equip(Unit& u, int bag_index);                    // move a bag weapon/armour into its slot
+    bool use_item(Unit& u, int bag_index);                 // inventory right-click 0x6d8ac0 (potions, armour)
+    bool unequip(Unit& u, int slot);                       // 0 melee0, 1 melee1, 2 ranged, 3 ammo -> bag
 
     // player-side HUD state that gameplay reads
     int combo_hits = 0, combo_hits_ts = 0;                 // DAT_00a5ba62 (XP bonus)
@@ -273,6 +281,7 @@ private:
     void unit_process(Unit& u, int phase);
     void update_action(Unit& u);                           // Unit_updateAction 0x7c7ab0
     void unit_move(Unit& u);                               // Unit_move 0x4f0b50
+    void root_motion(Unit& u);                             // Unit_process_movement 0x52daa0 root-track branch
     bool turn_step(Unit& u);                               // 0x4f2190: body toward yaw_goal; true = still turning
     void regen(Unit& u);
     void process_triggers();

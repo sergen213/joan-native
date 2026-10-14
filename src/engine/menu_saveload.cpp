@@ -23,10 +23,12 @@ void ui_text_in_rect(Ui& ui, const UiFont* f, std::string_view s, glm::ivec4 r, 
 namespace {
 const glm::vec4 kBlack = ui_rgba(0, 0, 0);
 
-// Save/<stem>.BMP thumbnail of an original .SAV (SaveSlot::file = name or path); native saves have none.
+// Thumbnail of a save: Save/<stem>.BMP next to an original .SAV (game path), <stem>.bmp next to a native .jsav
+// (absolute path, Session::save).
 std::string thumbnail(const SaveSlot& s) {
-    const std::filesystem::path p(s.file);
-    return p.extension() == ".jsav" ? std::string() : "Save/" + p.stem().string() + ".BMP";
+    std::filesystem::path p(s.file);
+    if (p.extension() == ".jsav") return p.replace_extension(".bmp").string();
+    return "Save/" + p.stem().string() + ".BMP";
 }
 
 // MARK diamonds left/right of a centred label of width w (0x6f5200 / 0x754220 / 0x7538b0), y = y1 + 8.
@@ -44,12 +46,93 @@ std::string page_text(std::string_view fmt, int page, int pages) {
     return s;
 }
 
-// UTF-8 text input -> raw cp1252 bytes (codepoints < 256 only).
-void append_text(std::string& dst, std::string_view utf8) {
-    for (std::size_t i = 0; i < utf8.size() && dst.size() < 63; ++i) {
-        const auto c = static_cast<unsigned char>(utf8[i]);
-        if (c >= 0x20 && c < 0x80) dst += char(c);
-        else if ((c == 0xc2 || c == 0xc3) && i + 1 < utf8.size()) dst += char(((c & 3) << 6) | (utf8[++i] & 0x3f));
+// Unicode -> Windows-1252 byte, 0 = not representable (0x80..0x9f are the cp1252 specials, the rest is Latin-1).
+unsigned char cp1252(char32_t c) {
+    static constexpr char16_t k80[32] = {0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
+                                         0x2039, 0x0152, 0, 0x017D, 0, 0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
+                                         0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178};
+    if (c < 0x80 || (c >= 0xa0 && c < 0x100)) return static_cast<unsigned char>(c);
+    for (int i = 0; i < 32; ++i)
+        if (k80[i] && k80[i] == c) return static_cast<unsigned char>(0x80 + i);
+    return 0;
+}
+
+// UTF-8 (SDL text input) -> cp1252 bytes; unrepresentable characters are dropped.
+std::string to_cp1252(std::string_view s) {
+    std::string out;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto b = static_cast<unsigned char>(s[i++]);
+        const int n = b >= 0xf0 ? 3 : b >= 0xe0 ? 2 : b >= 0xc0 ? 1 : 0;
+        char32_t c = n ? b & (0x3f >> n) : b;
+        for (int k = 0; k < n && i < s.size(); ++k) c = (c << 6) | (static_cast<unsigned char>(s[i++]) & 0x3f);
+        if (b >= 0x80 && b < 0xc0) continue;  // stray continuation byte
+        if (const unsigned char ch = cp1252(c)) out += char(ch);
+    }
+    return out;
+}
+
+// Description text box, en2d txtbox2d as the Save screen sets it up (FUN_0074cb10: FUN_0062d4f0(0x11e, y, 0x2e2,
+// obj+0x449d, 0x40, Goudy14(22) white, left aligned), moved to y 0x29f + lc on entry): keys FUN_0062dd10, mouse
+// FUN_0062e490, draw FUN_0062d730. Characters 0x20..0xff except '~' insert at the caret (replacing the selection)
+// while the text stays <= 63 bytes and narrower than the box (453 px); Backspace/Delete/Left/Right/Home/End edit;
+// a press in the box places the caret (largest index whose x <= mouse, 0x62e9a0) and dragging selects (+0x84).
+// Caret: 1 px line x1 + width(text[0..caret]) from y1 to y2 = y1 - 1 + line height, blinking with a 400 ms period
+// (visible in its second half), restarted visible by every handled key (Misc_get_time - 200). Selection: line at y2.
+void description_box(Ui& ui, MenuModel& m, const UiFont* f, int lc, float t) {
+    if (!f) return;
+    std::string& s = m.save_description;
+    const int x1 = 286, x2 = 738, y1 = 671 + lc, y2 = y1 - 1 + f->metrics.line_height();
+    const auto x_at = [&](int i) { return x1 + f->metrics.measure(std::string_view(s).substr(0, std::size_t(i))); };
+    const auto caret_at = [&](float mx) {
+        int i = int(s.size());
+        while (i > 0 && float(x_at(i)) > mx) --i;
+        return i;
+    };
+    int& caret = m.save_caret;
+    int& anchor = m.save_anchor;
+    caret = std::min(caret, int(s.size())), anchor = std::min(anchor, int(s.size()));  // 0x62ea70
+    const auto erase_selection = [&] {
+        const int lo = std::min(caret, anchor), hi = std::max(caret, anchor);
+        s.erase(std::size_t(lo), std::size_t(hi - lo));
+        caret = anchor = lo;
+    };
+    bool keyed = false;
+    for (const char c : to_cp1252(ui.input().text)) {
+        keyed = true;
+        if (static_cast<unsigned char>(c) < 0x20 || c == '~' || s.size() >= 63) continue;
+        const int lo = std::min(caret, anchor), hi = std::max(caret, anchor);
+        std::string next = s.substr(0, std::size_t(lo)) + c + s.substr(std::size_t(hi));
+        if (f->metrics.measure(next) < x2 - x1 + 1) s = std::move(next), caret = anchor = lo + 1;
+    }
+    switch (ui.input().key_pressed) {
+        case SDL_SCANCODE_BACKSPACE:
+            if (caret != anchor) erase_selection();
+            else if (caret > 0) s.erase(std::size_t(--caret), 1), anchor = caret;
+            keyed = true;
+            break;
+        case SDL_SCANCODE_DELETE:
+            if (caret != anchor) erase_selection();
+            else if (caret < int(s.size())) s.erase(std::size_t(caret), 1);
+            keyed = true;
+            break;
+        case SDL_SCANCODE_LEFT: caret = anchor = std::max(caret - 1, 0), keyed = true; break;
+        case SDL_SCANCODE_RIGHT: caret = anchor = std::min(caret + 1, int(s.size())), keyed = true; break;
+        case SDL_SCANCODE_HOME: caret = anchor = 0, keyed = true; break;
+        case SDL_SCANCODE_END: caret = anchor = int(s.size()), keyed = true; break;
+        default: break;
+    }
+    const glm::vec4 box{float(x1), float(y1), float(x2 - x1 + 1), float(y2 - y1 + 1)};
+    if (m.save_drag && !ui.input().mouse_down) m.save_drag = false;
+    if (m.save_drag) caret = caret_at(ui.mouse().x);
+    else if (ui.pressed(box)) caret = anchor = caret_at(ui.mouse().x), m.save_drag = true, keyed = true;
+    if (keyed) m.save_blink = t - 0.2f;
+
+    ui.text(f, s, {float(x1), float(y1)}, kUiWhite);
+    if (std::fmod(t - m.save_blink, 0.4f) >= 0.2f)
+        if (const int x = x_at(caret); x <= x2) ui.fill({float(x), float(y1), 1, float(y2 - y1 + 1)}, kUiWhite);
+    if (caret != anchor) {
+        const int a = x_at(std::min(caret, anchor)), b = x_at(std::max(caret, anchor));
+        ui.fill({float(a), float(y2), float(b - a + 1), 1}, kUiWhite);
     }
 }
 }  // namespace
@@ -101,6 +184,7 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     else menu_frontend_backdrop(ui, m);
 
     const SaveTimeline tl = save_timeline();
+    if (!exiting) ui.sound_at("BUTTON_SLIDE_MANY", t, 0.0f);  // FUN_00751750: first slide step
     const bool live = !exiting && t >= tl.settled;  // FUN_0074f230 acts only in state 1 (obj+0x4b02)
     // Distance along a slide of `dist` px: in = start time on the chain, out = delay after the exit click.
     auto pos = [&](float in_start, float out_delay, float dist) {
@@ -153,6 +237,7 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
         ui.sprite("COMMELE2", name, {r.x, r.y}, pc);
         if (hot && ui.clicked(r)) page_step = side ? 1 : -1;
     }
+    if (!page_step && live && m.save_state == 0) page_step = ui.nav_page();  // GamepadPlay: LB / RB turn the page
     // Label 5 px above the page_ot centre (measured in s04_07_save_menu / s04_03_load_campaign).
     ui_text_in_rect(ui, f14, page_text(ui.text("SAVEMENU", 22), pages ? m.save_page + 1 : 0, pages), {116, py - 5, 580, py + 47}, pc);
 
@@ -192,15 +277,13 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     const float ba = exiting ? 1.0f - ui_fade(e, 0, 6) : ui_fade(t, tl.settled, 6);
     auto button = [&](int text, int x1) { return ui_text_button(ui, fb, ui.text("SAVEMENU", text), {x1, by, x1 + 150, by + 30}, ba); };
     const bool enter = live && (ui.key(SDL_SCANCODE_RETURN) || ui.key(SDL_SCANCODE_KP_ENTER));
-    const bool escape = live && ui.key(SDL_SCANCODE_ESCAPE);
+    const bool escape = live && ui.shortcut(SDL_SCANCODE_ESCAPE);  // CANCEL / BACK key
     if (m.save_state == 2) {
-        // Description entry (IN_FRAME / IN_BG moved to y 0x294 / 0x29e + lc; text field 0x11e..0x2e2, 63 chars).
+        // Description entry (IN_FRAME / IN_BG moved to y 0x294 / 0x29e + lc, text box to 0x29f + lc).
         ui.sprite("SAVEMENU", "in_frame", {228, float(660 + lc)});
         ui.sprite("SAVEMENU", "in_bg", {286, float(670 + lc)});
-        append_text(m.save_description, ui.input().text);
-        if (ui.key(SDL_SCANCODE_BACKSPACE) && !m.save_description.empty()) m.save_description.pop_back();
-        const std::string shown = m.save_description + (int(t * 2.0f) % 2 ? "" : "_");
-        ui.text(f14, shown, {286, float(671 + lc)}, wh);
+        if (live) description_box(ui, m, f14, lc, t);
+        else ui.text(f14, m.save_description, {286, float(671 + lc)}, wh);
     }
     if (m.save_state != 0) {
         if (button(4, 262) || enter) {
@@ -213,7 +296,7 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     } else if (sel) {
         if (button(load ? 2 : 1, 237)) {
             if (load) out.push_back({UiCommand::Type::Load, 0, sel->file, {}});
-            else m.save_state = 2, m.save_description = sel->description;
+            else m.save_state = 2, m.save_description = sel->description, m.save_blink = t - 0.2f;
         } else if (button(3, 437)) {
             m.save_state = 1;
         } else if (button(5, 637) || escape) {
@@ -221,8 +304,8 @@ void menu_saveload(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
         }
     } else {
         const bool save_new = !load && button(9, 262);
-        if (save_new) m.save_state = 2, m.save_description.clear();
-        else if (button(19, load ? 437 : 612) || escape) m.save_exit_time = t;  // slide out (FUN_0074dbc0), then back
+        if (save_new) m.save_state = 2, m.save_description.clear(), m.save_blink = t - 0.2f;
+        else if (button(19, load ? 437 : 612) || escape) m.save_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");  // slide out (FUN_0074dbc0), then back
     }
     if (m.in_game) {
         ingame_backdrop_front(ui, bt);

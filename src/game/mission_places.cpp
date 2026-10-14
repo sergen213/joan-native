@@ -121,8 +121,14 @@ bool Places::load(Mission& m, const formats::Vfs& vfs, const std::string& map_di
                 RecruitRec rec;
                 for (const auto& kv : formats::parse_kv_text(std::string_view(reinterpret_cast<const char*>(d.data()), d.size()))) {
                     if (ieq(kv.key, "Code")) rec.code = clip32(kv.value);
+                    else if (ieq(kv.key, "Location")) rec.location = kv.value.substr(0, 0x80);   // RecruitWorkshop
                     else if (ieq(kv.key, "Level")) rec.level = atoi_(kv.value);
                     else if (ieq(kv.key, "Population")) rec.population = atoi_(kv.value);
+                    else if (const int t = gd.unit_index(kv.key); t >= 0) {   // RecruitWorkshop: "CODE : time : crew"
+                        const size_t c = kv.value.find(':');
+                        rec.entries.push_back({t + 1, int(std::atof(kv.value.c_str()) * 1000.0f),
+                                               c == std::string::npos ? 0 : atoi_(kv.value.substr(c + 1))});
+                    }
                 }
                 recruit_.push_back(std::move(rec));
             }
@@ -207,7 +213,9 @@ bool Places::load(Mission& m, const formats::Vfs& vfs, const std::string& map_di
                         fc.resource = atoi_(f.value());
                     }
                     if (Place* p = place(fc.place)) p->facilities.push_back(fc.recno);  // FUN_004c39d0
+                    const int list = fc.kind == Facility::Workshop ? fc.recruit_list : 0;
                     facilities_.push_back(std::move(fc));
+                    if (list) set_workshop_list(int(facilities_.size()), list);   // RecruitWorkshop: products
                 }
             }
         }
@@ -419,13 +427,9 @@ void Places::tick(Mission& m) {
     // facility_array FacilityArray_process 0x46d4a0: vtbl+0x10 of each facility, ascending.
     for (Facility& f : facilities_) {
         if (f.kind == Facility::Barrack) tick_barrack(m, f);
-        else if (f.kind == Facility::Recruit) {
-            // RecruitFacility_process 0x468600: available recruits; its order queue is filled only
-            // by the barracks interface (not modelled), so no member groups are fed from it here.
-            if (const Place* o = place(f.place)) f.available = int(double(o->pop) - 0.95 * double(o->pop_max));
-        }
-        // SHOP 0x469710 (hourly restock of the buy-interface stock) and WORKSHOP 0x46a040 (build
-        // queue of the siege-workshop interface) only act on interface data.
+        else if (f.kind == Facility::Recruit) tick_recruit(m, f);   // RecruitWorkshop: RecruitFacility_process 0x468600
+        else if (f.kind == Facility::Workshop) tick_workshop(m, f); // RecruitWorkshop: build queue 0x46a040
+        // SHOP 0x469710 (hourly restock of the buy-interface stock) only acts on interface data.
     }
     tick_territories(m);
 }

@@ -17,4 +17,5 @@ std::unique_ptr<IRenderer> create_vk_renderer(SDL_Window* window, const Options&
 // Process-wide counters from the validation debug messenger (tests assert errors == 0).
 std::uint32_t vk_validation_errors();
 bool vk_validation_active();  // the Khronos layer was loaded by the last Vulkan renderer
+bool vk_ray_tracing_available();  // the last Vulkan renderer's device can run the ray-traced effects (docs/RAYTRACING.md)
 }  // namespace joa::engine

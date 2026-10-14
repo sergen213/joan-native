@@ -145,6 +145,12 @@ void menu_main(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     float start = kButtons;
     if (m.main_entry == 1) s = {kDone, -kDone, fade(t, 0.0f, 1.0f), fade(t, 0.7f, 2.0f)}, start = 1.2f;
     if (m.main_entry == 2) s = {}, start = 0.0f;
+    // SE (FUN_0070acb0): MENU_SLIDE_IN as "main" starts fading in (full opening only), BUTTON_SLIDE_MANY as the
+    // first button starts sliding in; the exit click plays BUTTON_SLIDE_MANY again (slide-out start).
+    if (m.frontend_exit < 0) {
+        if (m.main_entry == 0) ui.sound_at("MENU_SLIDE_IN", t, kMain);
+        ui.sound_at("BUTTON_SLIDE_MANY", t, start);
+    }
 
     // Exit (FUN_0070acb0 with +0x3412 set): the buttons slide out; then New Campaign -> Difficulty and Quit at
     // once, Load/Options after Joan + stripe fade out at 4/s, Credits after that plus the reverse sequence.
@@ -161,7 +167,7 @@ void menu_main(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     for (int i = 0; i < 5; ++i) {
         const float x = exit >= 0 ? out_x(e - float(i) * kOutStagger) : button_x(t - start - float(i) * kStagger);
         if (button(ui, kLarge, {x, 224.0f + 76.0f * float(i)}, ui.text("MAINMENU", kLabel[i]), ready))
-            m.frontend_exit = i, m.frontend_exit_time = t;
+            m.frontend_exit = i, m.frontend_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");
     }
     backdrop_upper(ui, s);
 
@@ -191,16 +197,19 @@ void menu_difficulty(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
     Stage s;
     if (exit >= 0 && exit < 4) s = {kDone, e - kFade - 0.7f, 1.0f - fade(e, kFade, 1.0f), 1.0f - fade(e, kFade, 4.0f)};
 
+    if (exit < 0) ui.sound_at("BUTTON_SLIDE_MANY", t, 0.0f);       // buttons start sliding in (+0x3414 branch)
+    if (exit >= 0 && exit < 4) ui.sound_at("MENU_SLIDE_OUT", e, kFade);  // stripe/Joan fade out starts
     backdrop_lower(ui, s);
     const bool ready = exit < 0 && t >= 4.0f * kStagger + kSlideIn;
     for (int i = 0; i < 5; ++i) {
         const float x = exit >= 0 ? out_x(e - float(i) * kOutStagger) : button_x(t - float(i) * kStagger);
         if (button(ui, kMedium, {x, 224.0f + 52.0f * float(i)}, ui.text("MAINMENU", 5 + i), ready))
-            m.frontend_exit = i, m.frontend_exit_time = t;
+            m.frontend_exit = i, m.frontend_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");
     }
     backdrop_upper(ui, s);
 
-    if (ready && m.frontend_exit < 0 && ui.key(SDL_SCANCODE_ESCAPE)) m.frontend_exit = 4, m.frontend_exit_time = t;  // CANCEL hotkey
+    if (ready && m.frontend_exit < 0 && ui.shortcut(SDL_SCANCODE_ESCAPE))  // CANCEL hotkey
+        m.frontend_exit = 4, m.frontend_exit_time = t, ui.sound("BUTTON_SLIDE_MANY");
     if (exit == 4 && e >= kMainOut) m.screen = MenuScreen::Main, m.frontend_exit = -1;
     if (exit >= 0 && exit < 4 && e >= kStart && e - ui.dt() < kStart) out.push_back({UiCommand::Type::NewGame, exit, {}, {}});
 }

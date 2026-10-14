@@ -187,11 +187,50 @@ because the World has no events for those engine paths.
 
 ```
 joa-campaign [--mission N] [--ticks N] [--seed S] [--save-at T]... [--save-dir DIR] [--load FILE.jsav]
-             [--import FILE.SAV] [--win-at T] [--continue] [--game-dir DIR] [--trace]
+             [--import FILE.SAV] [--win-at T] [--continue] [--game-dir DIR] [--trace] [--autopilot] [--retries N]
 ```
 Prints every MissionEvent (`t=<tick> <kind> a b text`), save paths/hashes, and at the end the
 scenario, tick, finish, gold, state hash and any unimplemented builtin calls / script errors.
 `joa-campaign --mission 1 --ticks 9000 --save-at 3000`.
+
+`--autopilot` lets the campaign bot play instead (`--ticks` = budget per attempt, a loss is retried
+`--retries` times, `--continue` chains missions with carried progression) and prints one report line
+per mission: result, ticks, attempts, deaths, kills, finished/enabled WIN+SIDE objectives, hash, and
+for a loss/timeout the blocking WIN objective, the bot's goal and the player position.
+
+### 8.1 Campaign bot (`src/game/autopilot_player.{hpp,cpp}`, test/diagnostic only)
+Drives the player through `Mission::tick(InputFrame)` with only player inputs (W + camera yaw along a
+navmesh path, A/A/A/B combos, Q guard against any facing swing, R when the interact indicator shows
+talk/prisoner/item/recruit, F3 under 45 % HP) plus the character-screen attribute allocation
+(STR/HP/DEF). Targets, in order: close archers (< 350), whoever targets the player, the nearest enemy
+within 450; then an ally hero left > 700 behind (regroup), the first active minimap way point / followed
+unit, then — once a marker was stood at for 10 s without the script moving it — the territory of the
+open WIN objective (`territory_link`), the nearest enemy, items. Below 30 % HP with F3 ineffective it
+retreats to the nearest allied hero, guarding, until 70 %.
+Not done yet: siege use, RTS orders / troop hold-follow-recruit, chokepoint play, mounting, bribes,
+choice dialogs (the headless UI answers choice 1).
+
+`game.campaign_legit` runs the chain from a new game (Normal, 40000 ticks per attempt, 2 retries) twice,
+checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (0 today).
+`joa-campaign --autopilot --difficulty D` measures other difficulties. Mission 1 (seed 1, 3 attempts each):
+
+| difficulty | result | ticks | kills | HP dealt / taken by the player | furthest progress | death |
+|---|---|---|---|---|---|---|
+| 0 Easy (hostile dmg ×0.7) | LOST ×3 | 23349 | 21 | 2025 / 171 | event-1 marker, camp fight | while retreating at 5 % HP, (5773,10277) |
+| 1 Normal (×1.0) | LOST ×3 | 61803 | 21 | 2499 / 456 | messenger met (objectives 6/7 enabled, 0/4 done), tick 20601 | while retreating at 1 % HP, (12475,7948) |
+| 2 Hard (×1.5) | LOST ×3 | 5712 | 6 | 426 / 183 | camp fight | at 1 % HP, (10599,13808) |
+
+The player deals 5–12× the damage it takes; deaths come from attrition (Joan's regen is
+`max(DEF·0.1, 1)` HP per 10 s, ~1 HP/10 s at level 1–2, and the bot runs out of potions) and from
+fighting groups, not from a damage/difficulty mismatch: EASY_D..VDIFF_D 0.7/1.0/1.5/2.0 on
+player-hostile attack power match GAMEPLAY.RES and 0x5104f0/0x510bf0 (`melee_attack_power`). Easy
+dying sooner than Normal is trajectory divergence (different fights), not balance. Missions 2–8 are
+not reached: the chain stops at the first loss.
+
+No port bug blocked mission 1. Port bugs found and fixed while bringing the bot up: see
+GAMEPLAY_IMPLEMENTATION.md "AI riders" (move-record lookup order, combo END_TIME, last-waypoint
+radius, Unit_deinit mount unlink) and the `PHYS` save section (pending push-asides were lost on load,
+breaking the `game.multimap_nav` round trip).
 
 ## 9. Gaps
 

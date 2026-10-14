@@ -26,8 +26,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${JOA_GL_SHADERS}
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gl_shaders.cpp
   CONTENT "#include \"engine/gl_shaders.hpp\"\nnamespace joa::engine::gl_shaders {\n@JOA_GL_SHADER_DEFS@}\n" @ONLY)
 
-# shaders/vk/*.{vert,frag} -> SPIR-V as C initialiser lists (glslc -mfmt=num), #included by renderer_vk.cpp.
-file(GLOB JOA_VK_SHADERS CONFIGURE_DEPENDS "${JOA_ROOT}/shaders/vk/*.vert" "${JOA_ROOT}/shaders/vk/*.frag")
+# shaders/vk/*.{vert,frag,comp} -> SPIR-V as C initialiser lists (glslc -mfmt=num), #included by renderer_vk.cpp.
+file(GLOB JOA_VK_SHADERS CONFIGURE_DEPENDS "${JOA_ROOT}/shaders/vk/*.vert" "${JOA_ROOT}/shaders/vk/*.frag" "${JOA_ROOT}/shaders/vk/*.comp")
 set(JOA_VK_SPIRV "")
 foreach(s ${JOA_VK_SHADERS})
   get_filename_component(n ${s} NAME)
@@ -56,6 +56,7 @@ endif()
 
 add_executable(joan-native main.cpp)
 target_link_libraries(joan-native PRIVATE joa_engine)
+target_compile_definitions(joan-native PRIVATE JOA_VERSION="${PROJECT_VERSION}")
 install(TARGETS joan-native RUNTIME DESTINATION bin)
 
 # tests/engine/<name>_test.cpp -> CTest engine.<name>; exit 77 = skipped.
@@ -104,3 +105,8 @@ foreach(t ${JOA_ENGINE_TESTS})
     set_tests_properties(engine.${short} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR}" SKIP_RETURN_CODE 77)
   endif()
 endforeach()
+
+# Ray tracing smoke test renders S1L1 eight times (docs/RAYTRACING.md).
+if(TEST engine.vk_rt_smoke)
+  set_tests_properties(engine.vk_rt_smoke PROPERTIES TIMEOUT 600)
+endif()

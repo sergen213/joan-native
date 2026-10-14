@@ -2,6 +2,7 @@
 
 #include "formats/pfd_mesh.hpp"
 #include "formats/world_text.hpp"
+#include "game/items_pickup.hpp"
 #include "game/multimap_nav.hpp"
 #include "game/orders_queue.hpp"
 #include "game/script_host.hpp"
@@ -194,6 +195,8 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
         if (err) *err = e;
         return false;
     }
+    install_interact(*this);
+    install_auto_pickup(*this);
     for (const auto& n : nodes) {
         auto uni = read_blocks(vfs_, dir + "\\" + n.name + ".uni");
         if (!uni) continue;
@@ -291,6 +294,10 @@ void Mission::tick(const InputFrame& in) {
             if (!u.deleted && u.rank > 3 && u.cls >= 0 && gd_.units[u.cls].hero) world_->add_xp(u, exp, true, false);
     });
     ui_.tick(*this);
+    if (const InteractTarget p = interact_target(*this); !(p == prompt_)) {   // FUN_006d3590
+        prompt_ = p;
+        emit(MissionEvent::Kind::InteractPrompt, p.kind != 0, p.id, interact_kind_name(p.kind));
+    }
     world_->tick_physics();
     feed();
 
@@ -399,6 +406,21 @@ SaveFile Mission::save() const {
     section("PLCS", [&](ByteWriter& w) { places_.save(w); });
     section("UIST", [&](ByteWriter& w) { ui_.save(w); });
     if (nav_ && nav_->levels().size() > 1) f.add("NAVL", nav_->save_levels());  // level load states
+    if (phys_->pushing()) f.add("PHYS", phys_->save_state());  // only while a push-aside is pending
+    {   // RecruitWorkshop: bag-grid cells (ItemInstance bag/col/row, item +0x15/+0x16), per unit with bag items;
+        // RecruitFix: the carried heroes of the profile (MISN) too, as id -1 - hero index.
+        std::vector<std::uint8_t> d;
+        ByteWriter w(d);
+        auto put = [&](int id, const Inventory& inv) {
+            if (inv.bag.empty()) return;
+            w.i32(id), w.u32(std::uint32_t(inv.bag.size()));
+            for (const ItemInstance& it : inv.bag) w.put(std::int8_t(it.bag)), w.u8(std::uint8_t(it.col)), w.u8(std::uint8_t(it.row));
+        };
+        for (const Unit& u : world_->units())
+            if (!u.deleted) put(u.id, u.inv);
+        for (std::size_t i = 0; i < profile_.heroes.size(); ++i) put(-1 - int(i), profile_.heroes[i].unit.inv);
+        if (!d.empty()) f.add("INVG", std::move(d));
+    }
     return f;
 }
 
@@ -436,6 +458,25 @@ bool Mission::load(const SaveFile& f, std::string* err) {
         const auto* s = f.find("NAVL");
         if (!s || !nav_->load_levels(s->data)) return fail("bad NAVL section");
         nav_->resync(*world_);
+    }
+    static constexpr std::uint8_t kNoPush[4] = {};  // count 0
+    const auto* ph = f.find("PHYS");
+    if (!phys_->load_state(ph ? std::span<const std::uint8_t>(ph->data) : std::span<const std::uint8_t>(kNoPush)))
+        return fail("bad PHYS section");
+    if (const auto* g = f.find("INVG")) {   // RecruitWorkshop: optional (older saves: items placed first-fit)
+        formats::ByteReader r(g->data);
+        while (r.ok() && !r.at_end()) {
+            const int id = r.i32();
+            Unit* u = id < 0 ? (-1 - id < int(profile_.heroes.size()) ? &profile_.heroes[std::size_t(-1 - id)].unit : nullptr)
+                             : world_->unit(id);
+            const std::uint32_t n = r.u32();
+            if (!r.ok() || n > r.remaining() / 3) return fail("bad INVG section");
+            for (std::uint32_t i = 0; i < n; ++i) {
+                const int bag = std::int8_t(r.u8()), col = r.u8(), row = r.u8();
+                if (u && n == u->inv.bag.size()) u->inv.bag[i].bag = bag, u->inv.bag[i].col = col, u->inv.bag[i].row = row;
+            }
+        }
+        if (!r.ok()) return fail("bad INVG section");
     }
     return true;
 }

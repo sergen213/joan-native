@@ -3,13 +3,14 @@
 // World, AiSystem and script VM (joa_game). No rendering: the client reads snapshots and events after
 // each 33 ms tick (World::kTickMs, the original's fixed step) and renders interpolated between the last
 // two snapshots. docs/PLAYING.md.
+#include "engine/renderer.hpp"  // Image
 #include "formats/vfs_fs.hpp"
 #include "game/campaign_runner.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <filesystem>
-#include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,14 @@ struct SaveMeta {
     int mission = 0;          // campaign number 1..8
     std::int64_t unix_time = 0;
 };
+
+// Save thumbnail as the original renders it (FUN_004731e0 into the 512x256 D3D_create_render_texture, written as
+// Save/<name>.BMP): the 4:3 centre of the frame's viewport, box-filtered to 320x240. Empty if `frame` is empty.
+Image save_thumbnail(const Image& frame, glm::ivec4 viewport);
+// F10 Capture Screen (DEFAULTK 55, FUN_00603b20: ScreenShot\JOAN%03d.JPG, first free index): JOAN%03d.png in
+// $XDG_PICTURES_DIR (environment, else ~/.config/user-dirs.dirs as xdg-user-dir reads it, else
+// $XDG_STATE_HOME/joan-native/screenshots), first name that does not exist yet (creates the directory).
+std::filesystem::path next_screenshot_path();
 
 class Session {
 public:
@@ -50,8 +59,11 @@ public:
 
     // Native .jsav (any CampaignRunner save) or an original Save/*.SAV (imported, never written).
     bool load(const std::filesystem::path& path, std::string* err = nullptr);
-    // Native save to `path` (atomic, rotated backups); refuses original install directories.
-    bool save(const std::filesystem::path& path, const std::string& description, std::string* err = nullptr);
+    // Native save to `path` (atomic, rotated backups); refuses original install directories. `thumbnail`
+    // (save_thumbnail, 320x240) is written as <stem>.bmp next to it: 512x256 24-bit, picture top-left, rest black,
+    // like the original's Save/<name>.BMP; without one a stale <stem>.bmp is removed.
+    bool save(const std::filesystem::path& path, const std::string& description, std::string* err = nullptr,
+              const Image* thumbnail = nullptr);
     static std::filesystem::path quick_save_path();  // <native_save_dir>/QuickSave.jsav
     static std::optional<SaveMeta> read_meta(const std::filesystem::path& path);  // native saves only
 
@@ -75,6 +87,13 @@ public:
     bool toggle_rts();
     bool rts_unlocked = false;
     bool in_rts() const;
+    // Rts_deinit's view part, run before the gameplay part on leaving RTS (GameCamera::rts_deinit: hero switch to
+    // the last chosen commander).
+    std::function<void(game::Mission&)> on_rts_exit;
+    // View-control block of the client (GameCamera::save_view): written as the optional native save section "VIEW"
+    // (not part of Mission::hash); a native load leaves the loaded section (empty if none) in `view_section`.
+    std::function<std::vector<std::uint8_t>()> save_view;
+    std::vector<std::uint8_t> view_section;
 
 private:
     void started(bool fresh);  // after any mission start (fresh) or native load: snapshots, generation

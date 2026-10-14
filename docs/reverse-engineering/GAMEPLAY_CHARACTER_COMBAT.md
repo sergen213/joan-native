@@ -1959,3 +1959,54 @@ The per-part "Open items" lists above hold the details. Summary:
 - **Siege crews.** Crew operation and siege AI appear to be scripted (Part D §7). Gate and wall damage rules are CONFIRMED.
 - **Game mode 8.** The meaning of `0xa58fa7 == 8` in the F_ATTACK/250 branch is UNKNOWN. HYPOTHESIS: multiplayer.
 - **No dynamic verification.** None of the above was checked in-game. The DynamicRef agent's captures can validate the HP regen period, the knockdown durations and the damage numbers.
+
+---------------------------------------------------------------------------------------------------
+### Item models, armour meshes, floor items (EquipVisuals)
+
+- **Unit model level** `Unit+0x3c5` (int): class record `+0x84 + n*4` mesh / `+0x90 + n*4` animation group; n = 0 is
+  unit.res `Model`/`Animation`, n ≥ 1 the n-th `ModelName`/`AnimationName` after `ModelLevel` (UnitRes_load_record
+  0x404afc). CONFIRMED. Starts at 0; copied with the hero across missions (0x4c96f0, last line); saved in the unit image.
+- `Unit_set_model_level` 0x511060(level): when the handle changes, destroys the actor and builds a new one with the
+  level's mesh and animation group (+0x311). CONFIRMED. Callers: armour use 0x6d8ac0 and Unit_die 0x408571 only
+  (script `set_unit_armor_id` 0x6562b0 writes +0x15f without a mesh change).
+- **Armour use** 0x6d8ac0 (inventory right-click, CONFIRMED): class 0x10 item usable by the unit (+0x255 = 0 or the
+  unit's class): `if armor_level(+0x15d) < item.Defense(+0x56) { armor_level = Defense; set_model_level(item.Damage
+  +0x4e); armor_item(+0x15f) = code }`, and the armour item leaves the bag either way. Joan: LV1 (Def 1, Dmg 0)
+  joan_armorC, LV2 (Def 2, Dmg 1) Joan_of_Arc.am1, LV3 (Def 3, Dmg 2) joan_armorB.
+- **Broken siege weapons**: Unit_die, class unit_class 8 with special 4,5,6,9,10,11,12 → set_model_level(1)
+  (broken_cannon.am1 + BROKEN_CANNON animation group). CONFIRMED. The renderer holds that group's idle (HYPOTHESIS:
+  wrecks are static).
+- **Item model levels** ItemRes_model 0x4a3f20(level): 0 = `Model`, n = n-th `ModelName` (+0x73 + n*4), `Model` when
+  empty. CONFIRMED. Item vtable +0x18 sets the level: 1 = carried in a hand (range-mode exit 0x42b6e0 re-equips the melee
+  item at level 1), 2 = projectile (ThrowItem_create 0x507fc0, every type), 0 = ItemArray_create default (floor drops).
+- Projectile orientation: launch 0x5133e0 turns the model to the shot direction; ThrowItem_update 0x4fcc00 re-orients
+  PROJ/EXPL along the velocity. Impact emitter = item EmitterName slot 3 (explosion_arrow / CannonImpact) at the last
+  position: HYPOTHESIS (slot naming; spawn site not decoded). Trail 0x687500(TL) not reproduced.
+- **Range mode** 0x42b3c0 clears the right-hand item (0x50a480(0,0,0,0)) and hides the hero actor (0x42a6c0 →
+  FUN_0042cf20(0), actor +0x10a; exit 0x42b6e0 → (1)). HIGH (ECX of the call inferred).
+- **Unit_dropItem** 0x406631: ItemArray_create(drop item) at the unit position/heading (+0x1a), floor marker 0x456cd0
+  with quantity = item Quantity (+0x2a). CONFIRMED.
+- **Unit_auto_pickup** 0x49da30 (unit phase 0 head, CONFIRMED structure): rank (+0x104) > 3, active body; for each
+  floor item with Pickable (+0x1c4) and (class != MISSION or hero +0x120): horizontal distance ≤ item radius + unit
+  radius (actor +0xc8 / +0xf0 × scale), |dz| ≤ unit actor height (+0xf4). Then: red potion (type 0x15) whose amount
+  (+0x4e) < max HP − HP → used (0x50b4f0); MISSION S7_GOLDBAR → gold-crate counter + message; MISSION S7_food* → food
+  counter (gated by set_food_can_be_picked); GOLD → DAT_00a596c4 += max(1, qty) × Price (+0x2e) + message; else
+  add to inventory 0x495f40 (may fail → item stays). Each pickup: item emitter (+0x17a, the EmitterName slot-2
+  "*_eaten" pscript, HIGH) at the item for 5000 ms, sound "PICKUP" at the unit, item deleted 0x49f370.
+  Native: items_pickup.cpp walks World drops and MapObjects items with a floor marker (item radius fixed at 15:
+  HYPOTHESIS). Marker (0x456cd0): +0 item, +2 quantity (ItemRes +0x2a), +4 level, +6/+10/+14 ints = 0, so GOLD adds
+  Price once. No .pro sets Pickable 1 and .stg CreateObject names only .pro files: every pickable map item is
+  runtime-created (box drop FUN_00463ed0, script add_item 0x651ad0), so no static scene copy exists to hide.
+- **Pickup messages** (player only, `*unit == DAT_00a5b9e8`): FUN_006e5700 (interfac\i_sms.cpp) queues an SMS line.
+  Inventory pickup: 0x5a6660(MessageName +0x18, marker quantity) into t_interf SMS 3 "You have picked up %1s."
+  (FUN_004dd6a0); GOLD: same with the gold value; script give_item 0x65c5f0: SMS 4 "You have been given %1s!"
+  (FUN_004dd6e0); S7_GOLDBAR: SMS 11/12 "You have collected %1d barrel(s) of gold" with type 1 (replaces queued
+  counter lines); S7_food* while food_can_be_picked is clear: attention message MESSAGE 3, item stays. Format codes of
+  0x5a6660: %Ns/%Nd, %N?{a|b}, %Nj{1st|2nd|..} (none out of range), %Np{one|many} (0/1 = one), %Nq{zero|one|many}.
+  Items without MessageName (potions) give "You have picked up ." (empty format, HYPOTHESIS of the NULL case).
+  SMS widget (setup 0x6e4f10, slide 0x6e5280, draw 0x6e5140): QSAVE QLC_BAR at (x, 516), Goudy14(22) black text at
+  (x, 518), in from -width at 2700 px/s (-1000 px/s^2) fading in 1.5/s, hold 3000 ms, text out (+1600 px/s^2), bar
+  follows at 20 %. Native: GameUiBridge::sms_line (BottomLeft frame).
+- **Arrow orientation**: arrow01_hold.smo lies along mesh +X (x 8..69, head end narrower than the vanes);
+  ThrowItem_launch sets the item yaw to the velocity heading, so +X along the velocity is correct (engine.equip_visuals
+  asserts head . velocity > 0.9; side/behind captures in engine.gl_/vk_equip_visuals).

@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 
@@ -77,9 +78,11 @@ int main(int argc, char** argv) {
         last = percent;
         std::cerr << "progress " << percent << " " << message << std::endl;
     };
+    // Desktop entry target, same rule as the launcher: the AppImage itself, else the sibling joa-launcher.
     std::error_code ec;
     const auto launcher = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path() / "joa-launcher";
-    if (!ec && std::filesystem::exists(launcher)) opt.launcher_exec = launcher;
+    if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage) opt.launcher_exec = appimage;
+    else if (!ec && std::filesystem::exists(launcher)) opt.launcher_exec = launcher;
 
     json out;
     int code = 0;

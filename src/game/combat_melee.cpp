@@ -185,6 +185,15 @@ int flinch_for(float a) {
 // Unit_onMessage 0x75d540 for TRIGGER_ATTACK / DOWN_ATTACK / ranged event types.
 int World::on_attack_message(Unit& d, const Trigger& t) {
     const Consts& c = gd_.c;
+    // 0x75d540 head: task-locked units (+0x2e1, prisoners) take only TRIGGER_INTERACT unless +0x358 is
+    // set; busy units (Unit_get_busy_state 0x42d690 = +0x1fd, ladder climbers) take no message at all,
+    // so a climber is never hit (C_DROP has no setter in joan.exe).
+    if (d.no_react && t.type != 0x200 && !d.m.prisoner_can_be_attacked) return 0;
+    if (d.m.climb) return 0;
+    if (t.type == 0x200) {   // case 0x200: the sender's +0x2e3 = receiver
+        if (Unit* s = t.src_kind == 1 ? unit(t.sender) : nullptr; s && !s->deleted) s->m.interact_unit = d.id;
+        return 1;
+    }
     if (t.type == 0x4000 && t.src_kind == 2) {   // explosive keg (0x505650 -> 0x49d5f0): A = keg item damage
         if (d.action == DIE || dead(d) || d.invuln_ms > 0) return 0;
         const float atk = float(t.param);
@@ -293,10 +302,17 @@ void World::unit_die(Unit& v, int killer) {
         return;
     }
     if (v.drop_item) {
-        const int id = add_item(gd_.items[v.drop_item].code, v.drop_level, 1, v.pos);
+        // Unit_dropItem 0x406631: floor marker quantity = item Quantity (+0x2a, FUN_00456cd0).
+        const int id = add_item(gd_.items[v.drop_item].code, v.drop_level, std::max(1, gd_.items[v.drop_item].quantity), v.pos);
+        if (WorldItem* wi = item(id)) wi->yaw_deg = v.yaw_deg;
         emit(Ev::ItemDrop, v.id, id, v.drop_item, gd_.items[v.drop_item].code);
         v.drop_item = 0;
     }
+    // Unit_die 0x408571: a destroyed siege weapon (CANNON, FAUCONNEAU, CROSSBOW, BOMBARD, TREBUCHET, BATTERING_RAM,
+    // AUTOBOW) switches to its unit.res ModelName 1 mesh (Unit_set_model_level(1) 0x511060). CONFIRMED.
+    if (const UnitClass& vc = gd_.units[size_t(v.cls)]; vc.unit_class == 8 && (vc.special == 4 || vc.special == 5 || vc.special == 6 ||
+                                                                               (vc.special >= 9 && vc.special <= 12)))
+        v.model_level = 1;
     if (Unit* k = unit(killer)) {
         set_ep(*k, k->ep + (v.rank < 3 ? c.ep_nor : v.rank == 3 ? c.ep_cap : c.ep_gen));
         k->medals += v.rank < 3 ? 1 : 10;

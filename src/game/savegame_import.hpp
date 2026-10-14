@@ -5,7 +5,8 @@
 //                           win delay/start, end conditions (+ their texts), item-hint list counts;
 //                           Scenario 0x289 + step records 0x1b2: bit flags, stage, time limit,
 //                           mode, scenario name
-//   section 13 unit records  0x432-byte Unit dumps: hero (rank > 3) progression fields
+//   section 13 unit records  0x432-byte Unit dumps: hero (rank > 3) progression fields, and the records after
+//                           each dump up to its inventory (equipment, bag items with grid cells)
 // Script-tree state is not in the file (the original recompiles the script on load and resumes
 // from the bit flags / stage), so an import restarts the mission script with those restored.
 #pragma once
@@ -27,7 +28,8 @@ class Mission;
 
 struct ImportedHero {
     std::string code;  // unit class code (from the type id at +0x3b)
-    Unit unit;         // name, rank, nation, pos, yaw, level, xp, points, hp/ep, stats, morale...
+    Unit unit;         // name, rank, nation, pos, yaw, level, xp, points, hp/ep, stats, morale, inventory...
+    bool inventory = false;   // unit.inv decoded from the records after the dump
 };
 
 struct OriginalSave {

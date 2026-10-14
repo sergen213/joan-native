@@ -23,6 +23,10 @@ struct ItemInstance {
     int item = 0;
     int quantity = 0;
     int level = 0;
+    // RecruitWorkshop: bag-grid cell of a bag item (original item +0x15 col / +0x16 row in one of the three bag
+    // grids: 0 enhancers 4x1, 1 personal 6x8, 2 troop 6x4); bag -1 = not placed yet (the character window places it
+    // first-fit). UI layout only: kept out of visit() (World::hash / WRLD), saved in Mission's "INVG" section.
+    int bag = -1, col = 0, row = 0;
     template <class V> void visit(V& v) { v(item), v(quantity), v(level); }
 };
 

@@ -423,10 +423,11 @@ bool p390(Mission& m, const BuiltinCall& c) {
 }
 Value f390(Mission& m, const BuiltinCall& c) { return I(p390(m, c)); }
 
-// 393-396 minimap vision areas 0x65f740.. -> FUN_007196e0.. (C). Areas 0..9 (unchecked originally).
+// 393-396 minimap vision areas 0x65f740.. -> FUN_007196e0.. (C): area n (1..10, unchecked originally) is slot n-1
+// (+0x2f7 + n); the console cheat uses area 10.
 MissionUi::VisionArea* area(Mission& m, const BuiltinCall& c) {
     const int a = c.i(0);
-    return a >= 0 && a < 10 ? &m.ui().vision[static_cast<size_t>(a)] : nullptr;
+    return a >= 1 && a <= 10 ? &m.ui().vision[static_cast<size_t>(a - 1)] : nullptr;
 }
 Value vision_set(Mission& m, const BuiltinCall& c, std::uint8_t shape, size_t n) {
     if (MissionUi::VisionArea* v = area(m, c)) {

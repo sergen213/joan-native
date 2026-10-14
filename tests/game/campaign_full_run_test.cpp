@@ -113,6 +113,10 @@ Result run_mission(GameData& gd, const formats::Vfs& vfs, int no) {
     // skips world creation for 6): win S5L1 first, then CONTINUE.
     if (no == 6) {
         run.mission()->autosave = false;
+        // Let S5L1's first script passes disable its first-game objectives (2, 9, 27 ...) before the
+        // forced win: forcing them while still enabled leaves them finished, and S9L1 re-enables
+        // them unfinished-by-design, which ended S9L1 in a win at once.
+        for (int t = 0; t < 30; ++t) run.mission()->tick();
         run.mission()->finish_objectives();
         for (int t = 0; t < 3000 && run.mission()->finish() == 0; ++t) run.mission()->tick();
         if (!run.continue_after_win(&err)) {
