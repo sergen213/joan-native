@@ -73,13 +73,12 @@ expr   := precedence climbing; primary := number | string | ident | '(' expr ')'
   `DIALOG` 1016 calls. `GOTO CHOICE SPEAKER RESET ID UNIT OBJECT EVENTSYSTEM CAMERA FLOAT STRING
   VECTOR XYZ` never occur; the parser rejects the statement keywords among them — **CONFIRMED**
   (`script_ast_test`).
-- Semantics — **HIGH CONFIDENCE** from corpus structure: `init { }` runs once when the script is
-  loaded; the remaining body is re-run by the scenario driver, with `FUNC("get_scenario_stage")`
-  / `set_scenario_stage` forming a state machine and `exit` ending the current pass.
-  `WAIT { stmts }` suspends the script until its statements report completion (e.g.
-  `WAIT{ FUNC("is_cut_scene_finished") }`, `WAIT{ DIALOG("add_dialog", …) }` waits for the
-  line to finish). `SCRIPT("script\scenario\X.sce")` runs a sub-script inline. Exact
-  scheduling (per frame vs per tick) — **HYPOTHESIS**, not traced.
+- Run-time semantics (scheduling, `init`, `exit`, WAIT polling, SCRIPT sub-scripts, variable
+  scopes, arithmetic, RNG) — **CONFIRMED**, see
+  [../reverse-engineering/SCRIPT_VM.md](../reverse-engineering/SCRIPT_VM.md): the step script
+  root is executed once per 30 Hz logic tick and re-runs from the top every tick unless
+  suspended in a `WAIT`; `init` runs once; `exit` ends the current pass; `_des` scripts run
+  once at load.
 - `[NNNNN]` prefixes on string literals are localisation keys: joan.exe appends `EX.res` to the
   script name (string at VA 0x9da868, FUN_00638aa0) and looks the tag up there. All 1506 tagged
   literals in scripts that have an EX table resolve — **CONFIRMED** (`text_strings_test`).
@@ -205,8 +204,7 @@ joa-script dump script/unit/unitAI.res PIG
   `formats.text_strings`, `formats.text_vars`, `formats.unitdb` (exit 77 without game data).
 
 ## Gaps
-- Run-time scheduling of scripts and exact WAIT completion rules — HYPOTHESIS.
-- Per-function semantics beyond names/arity/types: not reverse-engineered individually
-  (case VAs are in the table for follow-up).
+- Run-time semantics and per-function semantics: see `reverse-engineering/SCRIPT_VM.md`
+  (407-row builtin table, one helper level deep).
 - `.uni` files, `S*_tactic.RES`, `animscr.res`, `texteff.res`, `recruit.res` UI usage — not
   analysed here.

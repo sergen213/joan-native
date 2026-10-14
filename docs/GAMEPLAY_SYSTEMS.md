@@ -208,7 +208,8 @@ SHOOT); `stop_all_order`, `stop_curr_task`; queries `is_in_danger`, `is_facing_e
 are in the formats doc. The decision logic behind them is engine code (AITroopRE).
 
 ## Open gaps
-- Exact script scheduling/WAIT semantics; `_finish.sce` reward application path.
+- `_finish.sce` reward application path. (Script scheduling/WAIT semantics: CONFIRMED in
+  `reverse-engineering/SCRIPT_VM.md`.)
 - Enhancer/potion effect decoding; meaning of FUN_00497e10 slots.
 - Uses of the difficulty `_B` globals; `CRITICAL`, `C_BOUNS` sections.
 - Mission titles for missions 2, 4–8 (likely bitmaps).
