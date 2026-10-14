@@ -47,7 +47,7 @@ MeshData make_ground_mesh(float s, float uv_repeat) {
 }
 
 TextureData make_checker_texture(int size, int cells, glm::u8vec4 a, glm::u8vec4 b) {
-    TextureData t{size, size, PixelFormat::Rgba8Srgb, {}, true, true};
+    TextureData t{size, size, PixelFormat::Rgba8Srgb, {}, true, true, {}};
     t.pixels.reserve(std::size_t(size) * size * 4);
     const int cell = std::max(1, size / std::max(1, cells));
     for (int y = 0; y < size; ++y)
@@ -75,12 +75,13 @@ DemoScene::~DemoScene() {
 Lighting DemoScene::lighting() const {
     Lighting l;
     l.sun_direction = {-0.5f, -1.0f, -0.35f};
-    l.sun_color = {1.0f, 0.93f, 0.8f};
-    l.ambient = {0.28f, 0.32f, 0.4f};
-    l.fog_color = {0.42f, 0.55f, 0.75f};
+    // Gamma-space values (renderer.hpp Lighting); fog = sRGB of the linear clear colour.
+    l.sun_color = {0.7f, 0.65f, 0.56f};
+    l.ambient = {0.42f, 0.44f, 0.42f};
+    l.fog_color = {0.678f, 0.767f, 0.879f};
     l.fog_start = 40.0f;
     l.fog_end = 180.0f;
-    l.clear_color = {l.fog_color, 1.0f};
+    l.clear_color = {0.42f, 0.55f, 0.75f, 1.0f};
     return l;
 }
 

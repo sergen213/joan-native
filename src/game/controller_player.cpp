@@ -1,0 +1,435 @@
+// Keyboard+mouse player controller 0x430480 and its helpers (Part B §3, Part C §2.2, §3.9-3.12).
+#include "game/controller_player.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+#include "game/world_sim.hpp"
+
+namespace joa::game {
+
+namespace {
+bool guarding(int a) { return a >= GUARD1 && a <= GUARDR; }
+}  // namespace
+
+bool PlayerController::process(World& w, const InputFrame& in) {
+    Unit* up = w.unit(unit);
+    if (!up) return false;
+    Unit& u = *up;
+    const int now = w.now();
+    const Consts& c = w.data().c;
+    camera_yaw_out = in.camera_yaw_deg;
+    // Dispatcher 0x42e1a0: states that swallow input.
+    if (w.dead(u) || u.action == DIE || u.action == STANDUP || is_knocked(u.action) || u.action == H_DROP) {
+        run_ts = 0;
+        return false;
+    }
+    const bool A = in.pressed[IN_ATTACK_A], B = in.pressed[IN_ATTACK_B], C = in.pressed[IN_ENERGY];
+    const bool Wh = in.held[IN_FORWARD], Sh = in.held[IN_BACKWARD], Ah = in.held[IN_STRAFE_LEFT], Dh = in.held[IN_STRAFE_RIGHT];
+    const bool def = in.held[IN_DEFEND];
+    // Jump timer (+0x9e).
+    bool jfire = false;
+    int hold = 0;
+    if (in.held[IN_JUMP]) {
+        jump_hold += World::kTickMs;
+        if (jump_hold >= c.jumpmaxd) jfire = true, hold = jump_hold, jump_hold = 0;
+    } else if (jump_hold > 0) {
+        jfire = true, hold = jump_hold, jump_hold = 0;
+    }
+    // Move code / relative angle (0x431680 / 0x431570); A+D cancel.
+    const bool l = Ah && !Dh, r = Dh && !Ah;
+    int move_code = 0, rel = -1;
+    if (Wh && l) move_code = 10, rel = 135;
+    else if (Wh && r) move_code = 0xb, rel = 45;
+    else if (Wh) move_code = 0x25, rel = 90;
+    else if (Sh && l) move_code = 0xc, rel = 225;
+    else if (Sh && r) move_code = 0xd, rel = 315;
+    else if (l) move_code = 0x1c, rel = 180;
+    else if (r) move_code = 0x22, rel = 360;
+    else if (Sh) move_code = 0x14, rel = 270;
+    const int magnitude = (Wh || Sh || Ah || Dh) ? 3 : 0;
+    // Double tap (check first, then record this frame's direction press).
+    int dt = 0;
+    if (dtap_action && unsigned(now - dtap_time) < 300u && in.pressed[size_t(dtap_action)]) dt = dtap_action;
+    if (in.key_char_event) {
+        dtap_action = in.pressed[IN_FORWARD] ? 4 : in.pressed[IN_BACKWARD] ? 5 : in.pressed[IN_STRAFE_LEFT] ? 6 : in.pressed[IN_STRAFE_RIGHT] ? 7 : 0;
+        dtap_time = now;
+    }
+    if (in.pressed[IN_HEAL_ITEM]) w.use_recovery_item(u, false);
+    if (in.pressed[IN_EP_ITEM] && !in.alt_held) w.use_recovery_item(u, true);
+    if (range_mode || in.pressed[IN_RANGE_MODE]) {
+        if (range_input(w, u, in)) return true;
+    }
+    if (down_attack(w, u, def)) return true;
+    if (block(w, u, def)) return true;
+    if (energy_attack(w, u, C || (A && B))) return true;
+    if (attack_input(w, u, A, B, dt == 4)) return true;
+    if (!(u.action >= MOVE_L && u.action <= MOVE_BR) && jump(w, u, jfire, magnitude, rel, hold, in.camera_yaw_deg)) return true;
+    if (const int ev = dt == 5 ? JUMP_B : dt == 7 ? JUMP_R : dt == 6 ? JUMP_L : 0) {
+        if (w.can_act(u) && u.posture != 1 && u.action != IDLEUP && u.action != IDLEDN && w.find_move(u, ev)) w.set_action(u, ev);
+        return true;
+    }
+    if (chain_input(w, u, in.pressed[IN_CHAIN])) return true;
+    // Movement.
+    if (l || r) strafe(w, u, Wh, Sh, l, r);
+    else if (Ah && Dh) return true;
+    else if (Sh && !Wh) strafe(w, u, false, true, false, false);
+    else if (u.action >= MOVE_L && u.action <= MOVE_BR) w.stop(u);
+    const bool forward_only = !Ah && !Dh && !Sh;
+    if (forward_only && magnitude > 0 && !guarding(u.action) && w.can_act(u)) {   // Face_move_dir 0x4352f0
+        const int wd = int(in.camera_yaw_deg + float(rel) - 90.0f) % 360;
+        w.set_yaw(u, float(wd));
+    }
+    // Mouse yaw 0x431790.
+    if ((w.can_act(u) || u.action == H_ATTACK || u.action == ATTACK || u.action == JATTACKB) && u.posture != 1 && in.mouse_dx != 0) {
+        const float s = std::clamp(in.mouse_sensitivity, -1.0f, 1.0f);
+        int d = int(in.mouse_dx * ((s + 1.0f) * 0.7f + 0.2f) * 0.2f);
+        if (u.action == ATTACK) d = std::clamp(d, -45, 45);
+        int f = int(u.yaw_deg - float(d)) % 360;
+        if (f < 0) f += 360;
+        u.yaw_deg = float(f);
+        camera_yaw_out -= float(d);
+    }
+    if (forward_only) locomotion(w, u, move_code, in.held[IN_WALK]);
+    return false;
+}
+
+// Player_attackInput 0x4367c0 (decomp 0x4367c0..0x437339 read for this port).
+bool PlayerController::attack_input(World& w, Unit& u, bool a, bool b, bool rush) {
+    const int now = w.now();
+    const bool is_player = u.id == w.player_id();
+    if (u.combo_idx < 1) fresh_a = fresh_b = fresh_ab = 1;
+    auto edge = [&](int& ph, int& fresh, bool p) {
+        if (!p) {
+            if (ph == 1 || ph == 3 || u.combo_idx > 0) ph = 2;
+            fresh = 1;
+        } else if (ph == 0) ph = 1;
+        else if (ph == 2) ph = 3;
+    };
+    edge(ph_a, fresh_a, a);
+    edge(ph_b, fresh_b, b);
+    if (!(a && b)) {
+        if (!a && !b) {
+            if (ph_ab == 1 || ph_ab == 3 || u.combo_idx > 0) ph_ab = 2;
+            fresh_ab = 1;
+        }
+    } else if (ph_ab == 0) ph_ab = 1;
+    else if (ph_ab == 2) ph_ab = 3;
+    if (u.combo_idx == -1 && unsigned(now - u.combo_lock) > 250u) u.combo_lock = 0, u.combo_idx = 0;
+    auto cost_of = [&](const MoveRecord& r) { return w.bonus(u, EP_CONSUME) * r.energy_pt / 100; };
+    if (u.combo_lock == 0 && w.can_act(u) && u.posture != 1 && rush && w.can_use_special(u, RUSH)) {
+        const MoveRecord* r = w.find_move(u, RUSH);
+        const int cost = cost_of(*r);
+        if (cost <= u.ep) {
+            w.set_ep(u, u.ep - cost);
+            w.set_action(u, RUSH);
+            run_ts = 0;
+            return true;
+        }
+    }
+    const unsigned since = unsigned(now - attack_ts);
+    auto queue = [&](int& ph, int& fresh, int letter) {
+        if ((u.combo_idx >= 1 || chain > 1) && ph == 3 && fresh == 1) {
+            fresh = 0;
+            if (unsigned(u.win_open) <= since && since < unsigned(u.win_close)) {
+                queued = letter, follow = 1, u.follow_queued = true;
+                return true;
+            }
+        }
+        return false;
+    };
+    if (a && u.combo_lock == 0) {
+        if (!w.can_act(u)) {
+            if (queue(ph_a, fresh_a, 1)) return true;
+        } else if (u.posture == 1) {
+            if (u.combo.empty() && u.action != UP && u.action != DOWN && unsigned(now - u.takeoff_ts) > 50u) {
+                w.set_action(u, ATTACK, 'D');
+                run_ts = 0, follow = 0;
+                return true;
+            }
+        } else if (!rush) {
+            if (is_player) w.crit_key('A', true);
+            w.set_action(u, ATTACK, 'A');
+            run_ts = 0, attack_ts = now, follow = 0;
+            return true;
+        } else if (const MoveRecord* r = w.find_move(u, RUSH); r && r->energy_pt <= u.ep) {
+            w.set_ep(u, u.ep - r->energy_pt);   // fallback rush: no EP_CONSUME scaling (CONFIRMED)
+            w.set_action(u, RUSH);
+            run_ts = 0;
+            return true;
+        }
+    }
+    if (b && u.combo_lock == 0) {
+        if (!w.can_act(u)) {
+            if (queue(ph_b, fresh_b, 2)) return true;
+        } else if (u.posture == 1) {
+            if (const MoveRecord* r = w.find_move(u, JATTACKB, "E"); r && (r->combo_avail == 'Y' || w.skill_level(u, 10, {}) > 0)) {
+                const int cost = cost_of(*r);
+                if (cost <= u.ep) {
+                    w.set_ep(u, u.ep - cost);
+                    w.set_action(u, JATTACKB, 'E');
+                    run_ts = 0, attack_ts = now, follow = 0;
+                    return true;
+                }
+            }
+        } else if (const MoveRecord* r = w.find_move(u, ATTACK, "B")) {
+            const int cost = cost_of(*r);
+            if (cost <= u.ep) {
+                w.set_ep(u, u.ep - cost);
+                if (is_player) w.crit_key('B', true);
+                w.set_action(u, ATTACK, 'B');
+                run_ts = 0, attack_ts = now, follow = 0;
+                return true;
+            }
+        }
+    }
+    if (since < unsigned(u.win_close) || follow != 1) {
+        if (unsigned(u.win_close) <= since && w.can_act(u) && u.combo_idx == 0) ph_a = ph_b = ph_ab = 0;
+        return false;
+    }
+    // Fire the queued follow-up: a record (same posture/action/weapon/special) whose COMBO is the
+    // current string + the queued letter, exactly one char longer, usable (free or learned).
+    const MoveRecord* found = nullptr;
+    const char letter = queued == 1 ? 'A' : queued == 2 ? 'B' : queued == 3 ? 'C' : 0;
+    if (u.action == CHAIN) found = w.find_move(u, ATTACK, std::string(1, letter));
+    else if (const MoveTable* mt = w.data().moves(u.cls); mt && letter) {
+        const std::string want = (u.combo_idx > 0 ? u.combo : std::string()) + letter;
+        for (auto it = mt->rows.rbegin(); it != mt->rows.rend(); ++it)
+            if (it->position == u.posture && it->movement == u.action && it->item_using == u.item_using &&
+                it->special == u.special && it->combo == want && w.combo_learned(u, *it)) { found = &*it; break; }
+    }
+    if (!found) {
+        ph_a = ph_b = ph_ab = 0;
+        follow = 0;
+        u.follow_queued = false;
+        return true;
+    }
+    if (letter == 'B') {
+        const int cost = cost_of(*found);
+        if (cost <= u.ep) {
+            w.set_action(u, ATTACK, 'B');
+            run_ts = 0;
+            w.set_ep(u, u.ep - cost);
+            if (is_player) w.crit_key('B', false);
+        }
+    } else {
+        w.set_action(u, ATTACK, letter);
+        run_ts = 0;
+        if (is_player) w.crit_key(letter, false);
+    }
+    attack_ts = now, follow = 0;
+    u.follow_queued = false;
+    return true;
+}
+
+// Player_energyAttack 0x437910.
+bool PlayerController::energy_attack(World& w, Unit& u, bool go) {
+    if (!go) return false;
+    const Consts& c = w.data().c;
+    const int cost_ep = int(float(w.bonus(u, EP_CONSUME)) * (float(w.max_ep(u) * c.egatk_mp) / 100.0f) / 100.0f);
+    const int cost_hp = int(float(w.max_hp(u) * c.egatk_hp) / 100.0f);
+    if (!w.can_act(u) || u.posture == 1 || u.combo_lock != 0 || u.ep < cost_ep || u.hp <= cost_hp) return false;
+    if (!w.can_use_special(u, ENGATK) && w.skill_level(u, 0xd, {}) == 0) return false;
+    if (!w.set_action(u, ENGATK)) return false;
+    run_ts = 0;
+    if (u.id == w.player_id()) w.crit_key('E', true);
+    w.set_ep(u, u.ep - cost_ep);
+    w.set_hp(u, u.hp - cost_hp);
+    u.ts_ep_regen = w.now();
+    follow = 0;
+    return true;
+}
+
+// Block 0x436250.
+bool PlayerController::block(World& w, Unit& u, bool held) {
+    if (held && w.can_act(u) && u.posture != 1) {
+        if (!guarding(u.action) && !w.set_action(u, GUARD1)) return false;
+        return true;
+    }
+    if (!held && (u.action == GUARD1 || u.action == GUARDR)) {
+        w.stop(u);
+        return true;
+    }
+    return false;
+}
+
+// Down attack 0x4363a0.
+bool PlayerController::down_attack(World& w, Unit& u, bool held) {
+    if (!held || !w.can_act(u) || guarding(u.action) || u.action == THROW || u.posture == 1) return false;
+    const MoveRecord* r = w.find_move(u, DOWNATK);
+    const AnimScript* s = w.script_of(r);
+    if (!s) return false;
+    const float a1 = float(std::min(s->h0, s->h1)), a2 = float(std::max(s->h0, s->h1));
+    for (const Unit& e : w.units()) {
+        if (e.deleted || e.id == u.id || !w.hostile(e.nation, u.nation)) continue;
+        if (!(is_knocked(e.action) || e.action == DNATKED) || e.down_attacked) continue;
+        const float dx = e.pos.x - u.pos.x, dy = e.pos.y - u.pos.y, dz = e.pos.z - u.pos.z;
+        if (dx * dx + dy * dy + dz * dz > 3600.0f) continue;
+        const float b = w.rel_angle(u, e.pos);
+        if (!((b >= a1 && b <= a2) || (b - 360 >= a1 && b - 360 <= a2) || (b + 360 >= a1 && b + 360 <= a2))) continue;
+        if (w.can_use_special(u, DOWNATK)) return w.set_action(u, DOWNATK);
+        return false;
+    }
+    return false;
+}
+
+// Jump 0x437b60.
+bool PlayerController::jump(World& w, Unit& u, bool fire, int magnitude, int rel_angle, int hold, float cam_yaw) {
+    if (!fire || !w.can_act(u) || u.posture == 1 || u.action == IDLEUP || u.action == IDLEDN) return false;
+    const Consts& c = w.data().c;
+    const int world_dir = int(cam_yaw + float(rel_angle) - 90.0f) % 360;
+    const int dir_byte = int(float(world_dir) * 0.7111111f);
+    const float ang = float(dir_byte) * (6.2831853f / 256.0f);
+    int base = 1400;
+    if (const ITerrainQuery* t = w.terrain()) {
+        const Vec3 n = t->normal(u.pos.x, u.pos.y);
+        if (n.x * std::cos(ang) + n.y * std::sin(ang) < 0) base = int(1400.0f * n.z);
+    }
+    const float vx = std::cos(ang) * float(base * magnitude), vy = std::sin(ang) * float(base * magnitude);
+    const float vz = float(std::min(hold, c.jumpmaxd)) * 5000.0f / float(c.jumpmaxd) + 5000.0f;
+    u.posture = 1;
+    if (!w.set_action(u, UP)) {
+        u.posture = 0;
+        return false;
+    }
+    // HYPOTHESIS: launch values are body units of 1/1000 m/s (gives 0.2..0.85 m hops at GravityLevel 6).
+    const float k = World::kUnitsPerMetre / 1000.0f;
+    u.vel = {vx * k, vy * k, vz * k};
+    u.airborne = true;
+    u.takeoff_ts = w.now();
+    run_ts = 0;
+    return true;
+}
+
+// Player_chain 0x438820.
+bool PlayerController::chain_input(World& w, Unit& u, bool go) {
+    if (!go) return false;
+    const MoveRecord* cur = w.move(u);
+    if (!cur || cur->chain_avail == ' ' || !w.find_move(u, CHAIN)) return false;
+    const float limit = float(w.data().c.chainpro) / 1000.0f * float(w.anim_length(u)) / float(std::max(1, chain));
+    if (float(w.anim_remaining(u)) > limit || !w.set_action(u, CHAIN)) return false;
+    ++chain;
+    if (u.id == w.player_id()) w.controller().chain = chain;
+    follow = 1;
+    attack_ts = w.now();
+    return true;
+}
+
+// Range mode: enter 0x42b3c0, draw 0x42ad50, target 0x42c260, fire 0x42ba40, exit 0x42b6e0.
+bool PlayerController::range_input(World& w, Unit& u, const InputFrame& in) {
+    const int now = w.now();
+    const Consts& c = w.data().c;
+    const bool has_ammo = u.inv.ranged.item && u.inv.ammo.item && u.inv.ammo.quantity > 0;
+    if (!range_mode) {
+        if (!w.can_act(u) || u.posture == 1 || w.dead(u)) return false;
+        w.stop(u);
+        range_mode = true;
+        range_ts = attack_ts = now;
+        range_base_yaw = u.yaw_deg;
+        range_base_pitch = in.camera_pitch_deg;
+        if (has_ammo) w.set_action(u, SHTLOAD);
+        return true;
+    }
+    if (in.pressed[IN_RANGE_MODE]) {
+        range_mode = false;
+        u.range_target = 0;
+        w.stop(u);
+        return true;
+    }
+    w.set_yaw(u, in.camera_yaw_deg);
+    if (u.action == SHTLOAD) {
+        const int need = w.anim_length(u) * 100 / (w.bonus(u, RATE_OF_FIRE) + 100);
+        if (now - attack_ts >= need) w.set_action(u, SHTIDLE);
+    }
+    if (!in.pressed[IN_ATTACK_A] || !has_ammo) return true;
+    if (u.action == SHTIDLE) {
+        const UnitClass& cls = w.data().units[size_t(u.cls)];
+        const Vec3 cam{u.pos.x, u.pos.y, u.pos.z + float(cls.height)};   // HYPOTHESIS: camera eye at class height
+        const float yaw = in.camera_yaw_deg * 0.017453292f, pitch = in.camera_pitch_deg * 0.017453292f;
+        const Vec3 f{std::cos(yaw) * std::cos(pitch), std::sin(yaw) * std::cos(pitch), std::sin(pitch)};
+        float best = c.aim_mxd;
+        int lock = 0;
+        for (const Unit& e : w.units()) {
+            if (e.deleted || w.dead(e) || !w.hostile(e.nation, u.nation)) continue;
+            const UnitClass& ec = w.data().units[size_t(e.cls)];
+            if (ec.special == 2 || ec.special == 7) continue;
+            const Vec3 v{e.pos.x - cam.x, e.pos.y - cam.y, e.pos.z + float(ec.height) * 0.5f - cam.z};
+            const float vv = v.x * v.x + v.y * v.y + v.z * v.z, vf = v.x * f.x + v.y * f.y + v.z * f.z;
+            const float d = std::sqrt(vv), perp = std::sqrt(std::max(0.0f, vv - vf * vf));
+            if (perp <= d / 100.0f + c.aim_r && d < best) best = d, lock = e.id;
+        }
+        Vec3 dir = f;
+        if (const Unit* t = w.unit(lock)) {
+            dir = {t->pos.x - cam.x, t->pos.y - cam.y, t->pos.z + 60.0f - cam.z};
+            const float l = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+            dir = {dir.x / l, dir.y / l, dir.z / l};
+        }
+        u.range_target = lock;
+        u.aim_dir = dir;
+        w.set_action(u, SHTOUT);
+    } else if (w.can_act(u)) {
+        w.set_action(u, SHTLOAD);
+        attack_ts = now;
+    }
+    return true;
+}
+
+// 0x437ed0: forward locomotion.
+void PlayerController::locomotion(World& w, Unit& u, int move_code, bool walk) {
+    if (move_code != 0) {
+        const int st = walk ? WALK : RUN;
+        if (u.action != st && w.can_act(u) && u.posture != 1 && !guarding(u.action) && w.set_action(u, st) && st == RUN) run_ts = w.now();
+    } else if (u.action == TIPTOE || u.action == WALK || u.action == RUN) {
+        w.stop(u);
+    }
+}
+
+// 0x438110: strafe / back-step states.
+void PlayerController::strafe(World& w, Unit& u, bool f, bool b, bool l, bool r) {
+    int st = 0;
+    if (b && l) st = MOVE_BL;
+    else if (b && r) st = MOVE_BR;
+    else if (f && l) st = MOVE_FL;
+    else if (f && r) st = MOVE_FR;
+    else if (l) st = MOVE_L;
+    else if (r) st = MOVE_R;
+    else if (b) st = MOVE_B;
+    if (st && u.action != st && w.can_act(u) && u.posture != 1 && !guarding(u.action)) w.set_action(u, st);
+}
+
+InputFrame DuelPad::next(World& w, const Unit& self) {
+    InputFrame f;
+    const Unit* t = w.unit(target);
+    if (!t || w.dead(*t) || w.dead(self)) return f;
+    const int now = w.now();
+    const float dx = t->pos.x - self.pos.x, dy = t->pos.y - self.pos.y;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+    f.camera_yaw_deg = std::atan2(dy, dx) / 0.017453292f;
+    // Timed block: roll once per opponent attack start, like the hero AI (BLOCKPER x difficulty).
+    if (is_attacking(t->action) && t->ts_state != last_seen_attack && dist < 200 && w.can_act(self) && !is_attacking(self.action)) {
+        last_seen_attack = t->ts_state;
+        const Consts& c = w.data().c;
+        const int chance = int(float(c.blockper) * c.diff_a[std::clamp(w.difficulty, 0, 3)]);
+        if (w.rng().next(100) <= chance && w.find_move(self, GUARD1)) block_until = now + 2000;
+    }
+    if (now < block_until && !(self.combo_idx > 0)) {
+        f.held.set(IN_DEFEND);
+        f.mouse_dx = w.rel_angle(self, t->pos) / 0.18f;
+        return f;
+    }
+    if (dist > approach) {
+        f.held.set(IN_FORWARD);
+        f.press(IN_FORWARD);
+        f.pressed.reset(IN_FORWARD);
+        return f;
+    }
+    f.mouse_dx = w.rel_angle(self, t->pos) / 0.18f;
+    press_phase ^= 1;
+    if (press_phase) {
+        const size_t i = self.combo_idx > 0 ? size_t(self.combo_idx) : 0;
+        f.press(i < combo.size() && combo[i] == 'B' ? IN_ATTACK_B : IN_ATTACK_A);
+    }
+    return f;
+}
+
+}  // namespace joa::game

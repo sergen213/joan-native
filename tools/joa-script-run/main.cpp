@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         ok = vm.load_scenario(def->steps[0]);
+        if (ok) vm.load_pass();  // Battle::load_world exec after the units are loaded (FUN_0041c810)
     } else {
         std::string path = target;
         if (path.find_first_of("\\/") == std::string::npos) path = "SCRIPT\\SCENARIO\\" + path;

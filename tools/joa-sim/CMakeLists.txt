@@ -1,0 +1,5 @@
+if(TARGET joa_game)
+  add_executable(joa-sim main.cpp)
+  target_link_libraries(joa-sim PRIVATE joa_game)
+  target_compile_options(joa-sim PRIVATE -Wall -Wextra)
+endif()

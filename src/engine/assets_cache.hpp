@@ -2,6 +2,7 @@
 // Bridge from original assets (joa_formats parsers) to renderer resources, cached by lowercase name.
 // Texture lookup and mesh layout: docs/formats/MODELS_AND_ANIMATION.md.
 #include "engine/renderer.hpp"
+#include "formats/anim_clip.hpp"
 #include "formats/dds.hpp"
 #include "formats/model_mesh.hpp"
 #include "formats/vfs_fs.hpp"
@@ -67,6 +68,11 @@ public:
     // Static model (.SMO), or .AM1 posed with `anim_am2` at time 0 (static props such as boxes).
     // Returns nullptr when the file is missing or malformed. Cached by lowercase path.
     const Model* model(std::string_view game_path, std::string_view anim_am2 = {});
+    // Parsed .AM1 / .AM2 / .AM3, shared by every character using them; nullptr if missing or malformed.
+    const formats::Mesh* skinned_mesh(std::string_view game_path);
+    const formats::Mesh* static_mesh(std::string_view game_path);  // .SMO, CPU-side (shadow casters)
+    const formats::Animation* animation(std::string_view game_path);
+    const formats::Skeleton* skeleton(std::string_view game_path);
     // Materials for a parsed mesh (textures resolved through the cache).
     std::vector<Material> materials(const formats::Mesh& mesh);
 
@@ -83,6 +89,9 @@ private:
     std::unordered_map<std::string, std::unique_ptr<TextureInfo>> textures_;
     std::unordered_map<std::string, std::unique_ptr<Model>> models_;  // value null = failed load
     std::vector<std::string> missing_textures_;
+    std::unordered_map<std::string, std::unique_ptr<formats::Mesh>> meshes_, static_meshes_;
+    std::unordered_map<std::string, std::unique_ptr<formats::Animation>> anims_;
+    std::unordered_map<std::string, std::unique_ptr<formats::Skeleton>> skeletons_;
 };
 
 std::string lower(std::string_view s);

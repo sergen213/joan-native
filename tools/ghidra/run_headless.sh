@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rebuild/refresh the canonical Ghidra project work/ghidra/joan.gpr and its exports.
 #   tools/ghidra/run_headless.sh import    # fresh import + auto-analysis + names + export (all 4 binaries)
-#   tools/ghidra/run_headless.sh reexport  # apply tools/ghidra/names.tsv to joan.exe, re-export everything
+#   tools/ghidra/run_headless.sh reexport  # apply tools/ghidra/names*.tsv to joan.exe, re-export everything
 # Env: GHIDRA_HOME (default /opt/ghidra), GHIDRA_HEADLESS_MAXMEM (default 12G).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -11,10 +11,12 @@ proj="$root/work/ghidra"
 out="$proj/export"
 scripts="$root/tools/ghidra"
 mkdir -p "$out"
+# names.tsv first, then per-area files (names_*.tsv); a later line for the same address wins.
+cat "$scripts/names.tsv" "$scripts"/names_*.tsv > "$proj/names_merged.tsv"
 cd "$root"
 
 post=(-scriptPath "$scripts"
-      -postScript ApplyNames.java "$scripts/names.tsv"
+      -postScript ApplyNames.java "$proj/names_merged.tsv"
       -postScript ExportRtti.java "$out"
       -postScript ExportAll.java "$out")
 

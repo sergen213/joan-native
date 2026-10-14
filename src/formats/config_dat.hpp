@@ -24,11 +24,11 @@ struct GameConfig {
     std::uint8_t difficulty = 0;         // 0x0A 0..3
     std::string player_name;             // 0x17 char[21], default "Player"
     std::int16_t music_volume = 0;       // 0x3A 0..100, default 77
-    std::int16_t sfx_volume = 0;         // 0x3C 0..100, default 39
+    std::int16_t sfx_volume = 0;         // 0x3C 0..100, default 39: "Environmental" (environment streams)
     std::int16_t volume_3e = 0;          // 0x3E default 100, UNKNOWN channel
-    std::uint8_t flag_40 = 0;            // 0x40 default 1, UNKNOWN (gates a sound path)
-    std::int16_t speech_volume = 0;      // 0x41 0..100, default 100
-    std::uint8_t sound_3d = 0;           // 0x43 1 = OpenAL distance model AL_INVERSE_DISTANCE
+    std::uint8_t flag_40 = 0;            // 0x40 default 1, sound enabled
+    std::int16_t speech_volume = 0;      // 0x41 0..100, default 100: "Sound Volume" (3D effects + UI, not speech)
+    std::uint8_t sound_3d = 0;           // 0x43 1 = AL_INVERSE_DISTANCE_CLAMPED, 0 = AL_NONE (docs/AUDIO_AND_VIDEO.md)
     std::int32_t control_scheme = 0;     // 0x6B 0..3 key preset, default 3
     float mouse_sensitivity = 0;         // 0x6F -1..1
     std::uint8_t control_73 = 0;         // 0x73 combo index, UNKNOWN (camera related)

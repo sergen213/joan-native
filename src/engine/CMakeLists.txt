@@ -4,6 +4,9 @@ find_package(SDL3 REQUIRED CONFIG)
 find_package(glm REQUIRED CONFIG)
 find_package(ZLIB REQUIRED)
 find_package(Vulkan REQUIRED)  # headers only; the loader is reached through SDL at runtime
+# WMA music / WMV movies. Release packages must link an LGPL-only build (packaging/ffmpeg/, docs/AUDIO_AND_VIDEO.md).
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 find_program(JOA_GLSLC glslc REQUIRED)
 option(JOA_TRACY "Enable the Tracy profiler client (downloads Tracy via FetchContent)" OFF)
 
@@ -39,7 +42,7 @@ list(REMOVE_ITEM JOA_ENGINE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
 add_library(joa_engine STATIC ${JOA_ENGINE_SRC} ${CMAKE_CURRENT_BINARY_DIR}/gl_shaders.cpp ${JOA_VK_SPIRV})
 target_include_directories(joa_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vk_shaders")
 target_include_directories(joa_engine PUBLIC "${JOA_ROOT}/src")
-target_link_libraries(joa_engine PUBLIC joa_formats SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers)
+target_link_libraries(joa_engine PUBLIC joa_formats SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG)
 target_compile_options(joa_engine PRIVATE -Wall -Wextra)
 
 if(JOA_TRACY)
@@ -93,10 +96,10 @@ foreach(t ${JOA_ENGINE_TESTS})
   elseif(short MATCHES "^vk_")
     add_test(NAME engine.${short} COMMAND engine_${n})
     set_tests_properties(engine.${short} PROPERTIES
-                         ENVIRONMENT "${JOA_VK_TEST_ENV};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR};XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}"
+                         ENVIRONMENT "${JOA_VK_TEST_ENV};JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR};XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}"
                          SKIP_RETURN_CODE 77 TIMEOUT 120)
   else()
     add_test(NAME engine.${short} COMMAND engine_${n})
-    set_tests_properties(engine.${short} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77)
+    set_tests_properties(engine.${short} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR}" SKIP_RETURN_CODE 77)
   endif()
 endforeach()

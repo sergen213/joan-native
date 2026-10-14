@@ -48,7 +48,11 @@ const char* usage() {
            "  --scenario NAME|PATH     load an original map (e.g. S1L1 or map/scenario1/S1L1) with Joan\n"
            "  --free-camera            fly camera (move/look keys) instead of following Joan\n"
            "  --camera X,Y,Z[,H[,P]]   free camera pose: original units, heading/pitch in degrees\n"
-           "  --anim CLIP              force Joan's animation clip (e.g. f_run, f_idle)\n";
+           "  --anim CLIP              force Joan's animation clip (e.g. f_run, f_idle)\n"
+           "  --ui-screen NAME         show an original interface screen: main difficulty credits options video audio\n"
+           "                           input game remap load save ingame ingame-options hud msglog brief quickload\n"
+           "  --play-movie FILE        play a movie (e.g. movie/intro.wmv, relative to the game dir); Esc/click skips\n"
+           "  --movie-time SEC         start the movie at SEC (with --screenshot: capture the frame shown at SEC)\n";
 }
 
 bool parse_aspect(std::string_view t, float& out) {
@@ -178,6 +182,14 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
         } else if (a == "--anim") {
             if (!value(v)) return "--anim expects a clip name";
             o.anim = std::string(v);
+        } else if (a == "--ui-screen") {
+            if (!value(v) || v.empty()) return "--ui-screen expects a screen name (see --help)";
+            o.ui_screen = std::string(v);
+        } else if (a == "--play-movie") {
+            if (!value(v) || v.empty()) return "--play-movie expects a file";
+            o.movie = std::string(v);
+        } else if (a == "--movie-time") {
+            if (!value(v) || !number(v, o.movie_time) || o.movie_time < 0) return "--movie-time expects seconds >= 0";
         } else return "unknown option " + std::string(a);
     }
     if (o.frames == 0) o.frames = !o.screenshot.empty() ? 5 : o.headless ? 300 : 0;

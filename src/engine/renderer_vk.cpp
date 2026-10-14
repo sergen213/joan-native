@@ -2,6 +2,7 @@
 
 #include "engine/vk_api.hpp"
 #include "engine/vk_memory.hpp"
+#include "engine/shadow_volume.hpp"
 
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
@@ -41,6 +42,12 @@ const std::uint32_t kUiVert[] = {
 const std::uint32_t kUiFrag[] = {
 #include "ui.frag.inc"
 };
+const std::uint32_t kFillVert[] = {
+#include "shadow_fill.vert.inc"
+};
+const std::uint32_t kFillFrag[] = {
+#include "shadow_fill.frag.inc"
+};
 
 std::atomic<std::uint32_t> g_validation_errors{0};
 std::atomic<bool> g_validation_active{false};
@@ -57,7 +64,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
 constexpr std::uint32_t kFramesInFlight = 2;
 constexpr std::uint32_t kMaxTextures = 4096;  // descriptorIndexing guarantees >= 500k update-after-bind samplers
 constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
-constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
+constexpr VkFormat kUiColorFormat = VK_FORMAT_R8G8B8A8_UNORM;  // UNORM view of the colour image for the UI pass
 constexpr VkMemoryPropertyFlags kHost = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 // OpenGL clip space (y up, z in [-1,1]) -> Vulkan (y down, z in [0,1]); camera code stays GL-convention.
@@ -73,11 +80,17 @@ struct FrameUniforms {
 struct DrawGpu {  // std430 mirror of `Draw` in shaders/vk/common.glsl
     glm::mat4 model, normal_matrix;
     glm::vec4 tint;
+    glm::vec4 diffuse;  // w = vertex_diffuse
     float alpha_cutoff;
-    std::uint32_t unlit, texture, layer2, lightmap;
-    std::uint32_t pad[3];
+    std::uint32_t unlit, texture, layer2, lightmap, light_count;
+    std::uint32_t bump;  // bindless slot or kNoTexture
+    float bump_scale;
+    std::uint32_t lights[4];  // two 16-bit Lighting::point_lights indices each, low half first
 };
-static_assert(sizeof(DrawGpu) == 176);
+static_assert(sizeof(DrawGpu) == 208);
+struct LightGpu {  // std430 mirror of `Light`
+    glm::vec4 pos_range, color, att;
+};
 constexpr std::uint32_t kNoTexture = 0xffffffffu;
 struct UiVertex {
     glm::vec2 position, uv;
@@ -109,7 +122,7 @@ struct Slot {
     VkCommandBuffer scene = VK_NULL_HANDLE, present = VK_NULL_HANDLE;
     VkSemaphore acquired = VK_NULL_HANDLE;
     std::uint64_t retire_value = 0;  // timeline value reached once the GPU finished this slot's last frame
-    Buffer uniforms, draws, ui;
+    Buffer uniforms, draws, lights, ui;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkQueryPool queries = VK_NULL_HANDLE;
     bool timed = false, present_timed = false;
@@ -180,14 +193,16 @@ public:
                 vk_.vkDestroySemaphore(device_, s.acquired, nullptr);
                 destroy(s.uniforms);
                 destroy(s.draws);
+                destroy(s.lights);
                 destroy(s.ui);
                 if (s.queries) vk_.vkDestroyQueryPool(device_, s.queries, nullptr);
             }
             vk_.vkDestroySemaphore(device_, timeline_, nullptr);
             vk_.vkDestroyCommandPool(device_, upload_pool_, nullptr);
-            for (VkPipeline p : {opaque_, blend_, additive_, ui_}) vk_.vkDestroyPipeline(device_, p, nullptr);
+            for (VkPipeline p : {opaque_, blend_, additive_, volume_, fill_, ui_}) vk_.vkDestroyPipeline(device_, p, nullptr);
             vk_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
             vk_.vkDestroyPipelineLayout(device_, layout_, nullptr);
+            vk_.vkDestroyPipelineLayout(device_, fill_layout_, nullptr);
             vk_.vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
             vk_.vkDestroyDescriptorSetLayout(device_, textures_layout_, nullptr);
             vk_.vkDestroyDescriptorSetLayout(device_, frame_layout_, nullptr);
@@ -216,7 +231,16 @@ public:
         const auto it = meshes_.find(h.id);
         if (it == meshes_.end()) return false;
         retire([this, m = it->second]() mutable { destroy(m); });
-        it->second = upload(data);
+        // Per-frame data (CPU-skinned characters): host-visible buffers written directly, no
+        // staging copy and no queue wait; the old buffers retire once the GPU is done with them.
+        Mesh m;
+        const VkDeviceSize vbytes = data.vertices.size() * sizeof(Vertex), ibytes = data.indices.size() * sizeof(std::uint32_t);
+        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, kHost, 0);
+        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, kHost, 0);
+        if (vbytes) std::memcpy(m.vertices.memory.mapped, data.vertices.data(), vbytes);
+        if (ibytes) std::memcpy(m.indices.memory.mapped, data.indices.data(), ibytes);
+        m.index_count = std::uint32_t(data.indices.size());
+        it->second = m;
         return true;
     }
 
@@ -259,7 +283,10 @@ public:
     TextureHandle create_texture(const TextureData& t) override {
         if (t.width <= 0 || t.height <= 0 || t.pixels.size() < std::size_t(t.width) * t.height * 4) return {};
         if (free_slots_.empty() && next_slot_ >= kMaxTextures) throw std::runtime_error("Vulkan: bindless texture table full");
-        const std::uint32_t mips = t.mipmaps ? std::uint32_t(std::floor(std::log2(std::max(t.width, t.height)))) + 1 : 1;
+        const bool own_mips = t.mipmaps && !t.mip_pixels.empty();
+        const std::uint32_t mips = own_mips    ? std::uint32_t(t.mip_pixels.size()) + 1
+                                   : t.mipmaps ? std::uint32_t(std::floor(std::log2(std::max(t.width, t.height)))) + 1
+                                               : 1;
         const VkFormat format = t.format == PixelFormat::Rgba8Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
         Texture tex;
         Image2D img = create_image(format, {std::uint32_t(t.width), std::uint32_t(t.height)}, mips,
@@ -268,16 +295,33 @@ public:
         tex.image = img.image;
         tex.view = img.view;
         tex.memory = img.memory;
-        const VkDeviceSize bytes = VkDeviceSize(t.width) * t.height * 4;
+        // Staging holds level 0, then the file mip levels back to back.
+        std::vector<VkBufferImageCopy> copies;
+        VkDeviceSize bytes = 0;
+        for (std::uint32_t i = 0; i < (own_mips ? mips : 1); ++i) {
+            const std::uint32_t w = std::max(t.width >> i, 1), h = std::max(t.height >> i, 1);
+            copies.push_back({bytes, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1}, {0, 0, 0}, {w, h, 1}});
+            bytes += VkDeviceSize(w) * h * 4;
+        }
         Buffer staging = create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kHost, 0);
-        std::memcpy(staging.memory.mapped, t.pixels.data(), bytes);
+        for (std::uint32_t i = 0; i < copies.size(); ++i) {
+            const auto& src = i ? t.mip_pixels[i - 1] : t.pixels;
+            const VkDeviceSize n = VkDeviceSize(copies[i].imageExtent.width) * copies[i].imageExtent.height * 4;
+            std::memcpy(static_cast<std::uint8_t*>(staging.memory.mapped) + copies[i].bufferOffset, src.data(), std::min<VkDeviceSize>(n, src.size()));
+        }
         immediate([&](VkCommandBuffer cmd) {
             const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
             image_barrier(cmd, tex.image, range(color), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
             // Rows are uploaded top-first, so UV (0,0) addresses the top-left texel (Direct3D convention).
-            const VkBufferImageCopy copy{0, 0, 0, {color, 0, 0, 1}, {0, 0, 0}, {std::uint32_t(t.width), std::uint32_t(t.height), 1}};
-            vk_.vkCmdCopyBufferToImage(cmd, staging.buffer, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            vk_.vkCmdCopyBufferToImage(cmd, staging.buffer, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, std::uint32_t(copies.size()),
+                                       copies.data());
+            if (own_mips) {
+                image_barrier(cmd, tex.image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                return;
+            }
             // Box-filtered mip chain by successive blits (sRGB formats filter in linear space, like glGenerateMipmap).
             std::int32_t w = t.width, h = t.height;
             for (std::uint32_t i = 1; i < mips; ++i) {
@@ -361,8 +405,8 @@ public:
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0,
                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
         const VkPipelineStageFlags2 tests = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        image_barrier(cmd_, depth_.image, range(VK_IMAGE_ASPECT_DEPTH_BIT), VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, tests, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, tests,
+        image_barrier(cmd_, depth_.image, range(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT), VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, tests, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, tests,
                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         recording_ = true;
     }
@@ -674,14 +718,15 @@ private:
         check(vk_.vkCreateDescriptorSetLayout(device_, &li, nullptr, &textures_layout_), "vkCreateDescriptorSetLayout");
         // Set 1: per frame slot, frame uniforms + draw table.
         const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        const VkDescriptorSetLayoutBinding frame[2] = {{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stages, nullptr},
-                                                       {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stages, nullptr}};
-        li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 2, frame};
+        const VkDescriptorSetLayoutBinding frame[3] = {{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stages, nullptr},
+                                                       {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stages, nullptr},
+                                                       {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr}};
+        li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0, 3, frame};
         check(vk_.vkCreateDescriptorSetLayout(device_, &li, nullptr, &frame_layout_), "vkCreateDescriptorSetLayout");
 
         const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures},
                                                {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight},
-                                               {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight}};
+                                               {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * kFramesInFlight}};
         const VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
                                             VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT, 1 + kFramesInFlight, 3, sizes};
         check(vk_.vkCreateDescriptorPool(device_, &pi, nullptr, &descriptor_pool_), "vkCreateDescriptorPool");
@@ -692,6 +737,10 @@ private:
         const VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(std::uint32_t)};
         const VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 2, sets, 1, &push};
         check(vk_.vkCreatePipelineLayout(device_, &pl, nullptr, &layout_), "vkCreatePipelineLayout");
+        // Shadow fill: no descriptors, the gamma-converted shadow colour as a push constant.
+        const VkPushConstantRange fill_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec4)};
+        const VkPipelineLayoutCreateInfo fl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0, 0, nullptr, 1, &fill_push};
+        check(vk_.vkCreatePipelineLayout(device_, &fl, nullptr, &fill_layout_), "vkCreatePipelineLayout");
     }
 
     void load_pipeline_cache() {
@@ -732,7 +781,10 @@ private:
         std::filesystem::rename(tmp, path, ec);  // atomic replace: concurrent runs never see a torn file
     }
 
-    VkPipeline make_pipeline(std::span<const std::uint32_t> vs, std::span<const std::uint32_t> fs, bool mesh, BlendMode blend) {
+    // mesh: scene pass (colour + depth-stencil), else the UI pass. fill: the attribute-less shadow fill
+    // triangle of the scene pass (blend ignored).
+    VkPipeline make_pipeline(std::span<const std::uint32_t> vs, std::span<const std::uint32_t> fs, bool mesh, BlendMode blend,
+                             bool fill = false) {
         VkShaderModule modules[2];
         for (int i = 0; i < 2; ++i) {
             const auto code = i ? fs : vs;
@@ -753,8 +805,9 @@ private:
         const VkVertexInputAttributeDescription ui_attrs[3] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(UiVertex, position)},
                                                                {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(UiVertex, uv)},
                                                                {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(UiVertex, color)}};
-        const VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0, 1,
-                                                          mesh ? &mesh_binding : &ui_binding, mesh ? 5u : 3u, mesh ? mesh_attrs : ui_attrs};
+        const VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
+                                                          fill ? 0u : 1u, mesh ? &mesh_binding : &ui_binding,
+                                                          fill ? 0u : mesh ? 5u : 3u, mesh ? mesh_attrs : ui_attrs};
         const VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0,
                                                               VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
         const VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
@@ -766,25 +819,39 @@ private:
         const VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0,
                                                       VK_SAMPLE_COUNT_1_BIT};
         VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depth.depthTestEnable = mesh;
-        depth.depthWriteEnable = mesh && (blend == BlendMode::Opaque || blend == BlendMode::AlphaTest);
+        const bool solid = blend == BlendMode::Opaque || blend == BlendMode::AlphaTest;
+        const bool volume = blend == BlendMode::ShadowVolume;
+        depth.depthTestEnable = mesh && !fill;
+        depth.depthWriteEnable = mesh && !fill && solid;
         depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        // Stencil (reference dynamic): solid draws write 128 on shadow receivers else 0; volumes count
+        // front +1 / back -1 (clamped, the original's INCRSAT/DECRSAT); the fill passes where 128 < stencil.
+        VkStencilOpState keep{VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0xff, 0xff, 0};
+        depth.stencilTestEnable = mesh && (solid || volume || fill);
+        depth.front = depth.back = keep;
+        if (fill) depth.front.compareOp = depth.back.compareOp = VK_COMPARE_OP_LESS;
+        else if (volume) depth.front.passOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP, depth.back.passOp = VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        else depth.front.passOp = depth.back.passOp = VK_STENCIL_OP_REPLACE;
         VkPipelineColorBlendAttachmentState att{};
-        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        if (blend == BlendMode::AlphaBlend || blend == BlendMode::Additive) {  // glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA | ONE)
+        att.colorWriteMask = volume && !fill ? 0
+                                             : VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        if (fill || blend == BlendMode::AlphaBlend || blend == BlendMode::Additive) {  // glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA | ONE)
             att.blendEnable = VK_TRUE;
             att.srcColorBlendFactor = att.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
             att.dstColorBlendFactor = att.dstAlphaBlendFactor =
-                blend == BlendMode::Additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                blend == BlendMode::Additive && !fill ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
             att.colorBlendOp = att.alphaBlendOp = VK_BLEND_OP_ADD;
         }
         const VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, nullptr, 0, VK_FALSE,
                                                      VK_LOGIC_OP_COPY, 1, &att};
-        const VkDynamicState dyn[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE};
-        const VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, 3, dyn};
-        const VkFormat color_format = kColorFormat;
+        const VkDynamicState dyn[4] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+                                       VK_DYNAMIC_STATE_STENCIL_REFERENCE};
+        const VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, mesh ? 4u : 3u, dyn};
+        // The UI (mesh == false) renders in its own pass into a UNORM view of the colour image, without depth
+        // (gamma-space blending as in D3D8; see shaders/vk/ui.frag).
+        const VkFormat color_format = mesh ? kColorFormat : kUiColorFormat;
         const VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, nullptr, 0, 1, &color_format,
-                                                      kDepthFormat, VK_FORMAT_UNDEFINED};
+                                                      mesh ? depth_format_ : VK_FORMAT_UNDEFINED, mesh ? depth_format_ : VK_FORMAT_UNDEFINED};
         VkGraphicsPipelineCreateInfo info{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &rendering};
         info.stageCount = 2;
         info.pStages = stages;
@@ -796,7 +863,7 @@ private:
         info.pDepthStencilState = &depth;
         info.pColorBlendState = &cb;
         info.pDynamicState = &dynamic;
-        info.layout = layout_;
+        info.layout = fill ? fill_layout_ : layout_;
         VkPipeline p = VK_NULL_HANDLE;
         const VkResult r = vk_.vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &p);
         for (VkShaderModule m : modules) vk_.vkDestroyShaderModule(device_, m, nullptr);
@@ -805,10 +872,23 @@ private:
     }
 
     void create_pipelines() {
+        // Depth + 8-bit stencil for the shadow volumes (the original asks for D24S8, ORIGINAL_BEHAVIOR.md);
+        // Vulkan guarantees one of these two.
+        for (VkFormat f : {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}) {
+            VkFormatProperties p{};
+            vk_.vkGetPhysicalDeviceFormatProperties(physical_, f, &p);
+            if (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+                depth_format_ = f;
+                break;
+            }
+        }
+        if (depth_format_ == VK_FORMAT_UNDEFINED) throw std::runtime_error("vulkan: no depth-stencil attachment format");
         load_pipeline_cache();
         opaque_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::Opaque);  // alpha test = discard in the same pipeline
         blend_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::AlphaBlend);
         additive_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::Additive);
+        volume_ = make_pipeline(kMeshVert, kMeshFrag, true, BlendMode::ShadowVolume);
+        fill_ = make_pipeline(kFillVert, kFillFrag, true, BlendMode::AlphaBlend, true);
         ui_ = make_pipeline(kUiVert, kUiFrag, false, BlendMode::AlphaBlend);
         std::fprintf(stderr, "joan-native: vulkan pipeline cache %s (%s)\n", cache_loaded_ ? "loaded" : "cold",
                      pipeline_cache_path().c_str());
@@ -832,6 +912,7 @@ private:
             s.uniforms = create_buffer(sizeof(FrameUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             const VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, descriptor_pool_, 1, &frame_layout_};
             check(vk_.vkAllocateDescriptorSets(device_, &ai, &s.set), "vkAllocateDescriptorSets");
+            ensure(s, s.lights, 64 * sizeof(LightGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             ensure(s, s.draws, 256 * sizeof(DrawGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
             if (timing) {
                 const VkQueryPoolCreateInfo q{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, QCount};
@@ -861,9 +942,11 @@ private:
         b = {};
     }
 
-    Image2D create_image(VkFormat format, VkExtent2D extent, std::uint32_t mips, VkImageUsageFlags usage, VkImageAspectFlags aspect) {
+    Image2D create_image(VkFormat format, VkExtent2D extent, std::uint32_t mips, VkImageUsageFlags usage, VkImageAspectFlags aspect,
+                         VkImageCreateFlags flags = 0) {
         Image2D img;
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        info.flags = flags;
         info.imageType = VK_IMAGE_TYPE_2D;
         info.format = format;
         info.extent = {extent.width, extent.height, 1};
@@ -906,10 +989,11 @@ private:
         if (b.buffer && b.size >= bytes) return;
         destroy(b);
         b = create_buffer(std::max<VkDeviceSize>(bytes, 4096) * 3 / 2, usage, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (usage != VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) return;
-        const VkDescriptorBufferInfo infos[2] = {{s.uniforms.buffer, 0, VK_WHOLE_SIZE}, {s.draws.buffer, 0, VK_WHOLE_SIZE}};
-        VkWriteDescriptorSet w[2]{};
-        for (std::uint32_t i = 0; i < 2; ++i) {
+        if (usage != VK_BUFFER_USAGE_STORAGE_BUFFER_BIT || !s.draws.buffer || !s.lights.buffer) return;
+        const VkDescriptorBufferInfo infos[3] = {
+            {s.uniforms.buffer, 0, VK_WHOLE_SIZE}, {s.draws.buffer, 0, VK_WHOLE_SIZE}, {s.lights.buffer, 0, VK_WHOLE_SIZE}};
+        VkWriteDescriptorSet w[3]{};
+        for (std::uint32_t i = 0; i < 3; ++i) {
             w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[i].dstSet = s.set;
             w[i].dstBinding = i;
@@ -917,7 +1001,7 @@ private:
             w[i].descriptorType = i ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             w[i].pBufferInfo = &infos[i];
         }
-        vk_.vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
+        vk_.vkUpdateDescriptorSets(device_, 3, w, 0, nullptr);
     }
 
     void create_target(glm::ivec2 size) {
@@ -925,13 +1009,22 @@ private:
         destroy_target();
         const VkExtent2D e{std::uint32_t(size.x), std::uint32_t(size.y)};
         color_ = create_image(kColorFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                              VK_IMAGE_ASPECT_COLOR_BIT);
-        depth_ = create_image(kDepthFormat, e, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+                              VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = color_.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = kUiColorFormat;
+        vi.subresourceRange = range(VK_IMAGE_ASPECT_COLOR_BIT);
+        check(vk_.vkCreateImageView(device_, &vi, nullptr, &color_ui_view_), "vkCreateImageView");
+        depth_ = create_image(depth_format_, e, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                              VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         target_size_ = size;
         scene_rendered_ = false;
     }
 
     void destroy_target() {
+        if (color_ui_view_) vk_.vkDestroyImageView(device_, color_ui_view_, nullptr);
+        color_ui_view_ = VK_NULL_HANDLE;
         destroy(color_);
         destroy(depth_);
         target_size_ = {0, 0};
@@ -1025,7 +1118,7 @@ private:
         color.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
         VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         depth.imageView = depth_.view;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depth.clearValue.depthStencil = {1.0f, 0};
@@ -1035,14 +1128,30 @@ private:
         info.colorAttachmentCount = 1;
         info.pColorAttachments = &color;
         info.pDepthAttachment = &depth;
+        info.pStencilAttachment = &depth;  // same image and clear (stencil 0)
         vk_.vkCmdBeginRendering(cmd_, &info);
         if (f) {
             draw_scene(s, *f);
             if (s.timed) timestamp(QUiBegin);
-            draw_ui(s, f->ui);
         } else if (s.timed) {
             timestamp(QUiBegin);
         }
+        vk_.vkCmdEndRendering(cmd_);
+        if (!f || f->ui.empty()) return;
+        // UI pass: same image through the UNORM view, after the scene's colour writes.
+        image_barrier(cmd_, color_.image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo ui_color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        ui_color.imageView = color_ui_view_;
+        ui_color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        ui_color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        ui_color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        info.pColorAttachments = &ui_color;
+        info.pDepthAttachment = info.pStencilAttachment = nullptr;
+        vk_.vkCmdBeginRendering(cmd_, &info);
+        draw_ui(s, f->ui);
         vk_.vkCmdEndRendering(cmd_);
     }
 
@@ -1087,10 +1196,15 @@ private:
         u.framebuffer = glm::vec4(float(target_size_.x), float(target_size_.y), 0.0f, 0.0f);
         std::memcpy(s.uniforms.memory.mapped, &u, sizeof u);
 
-        // Opaque + alpha-tested first, then blended back to front without depth writes (same order as GL).
+        // Opaque + alpha-tested first (stencil 128 on shadow receivers, else 0), then the shadow volumes and
+        // the shadow fill, then blended back to front without depth writes (same order as GL).
         order_.clear();
         for (const DrawItem& d : f.draws)
-            if (d.material.blend != BlendMode::AlphaBlend && d.material.blend != BlendMode::Additive) order_.push_back(&d);
+            if (d.material.blend == BlendMode::Opaque || d.material.blend == BlendMode::AlphaTest) order_.push_back(&d);
+        const std::size_t first_volume = order_.size();
+        if (l.shadow_color.a > 0.0f)
+            for (const DrawItem& d : f.draws)
+                if (d.material.blend == BlendMode::ShadowVolume) order_.push_back(&d);
         const std::size_t first_blended = order_.size();
         for (const DrawItem& d : f.draws)
             if (d.material.blend == BlendMode::AlphaBlend || d.material.blend == BlendMode::Additive) order_.push_back(&d);
@@ -1099,6 +1213,12 @@ private:
             const glm::vec3 pa(a->model[3]), pb(b->model[3]);
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
+        ensure(s, s.lights, std::max<std::size_t>(l.point_lights.size(), 1) * sizeof(LightGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        auto* lights = reinterpret_cast<LightGpu*>(s.lights.memory.mapped);
+        for (std::size_t i = 0; i < l.point_lights.size(); ++i) {
+            const PointLight& p = l.point_lights[i];
+            lights[i] = {glm::vec4(p.position, p.range), glm::vec4(p.color, 0.0f), glm::vec4(p.attenuation, 0.0f)};
+        }
         ensure(s, s.draws, order_.size() * sizeof(DrawGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         auto* gpu = reinterpret_cast<DrawGpu*>(s.draws.memory.mapped);
         for (std::size_t i = 0; i < order_.size(); ++i) {
@@ -1106,9 +1226,15 @@ private:
             const Material& m = d.material;
             const std::uint32_t layer2 = m.layer2 ? texture_slot(m.layer2) : kNoTexture;
             const std::uint32_t lightmap = m.lightmap ? texture_slot(m.lightmap) : kNoTexture;
-            gpu[i] = {d.model, glm::mat4(glm::transpose(glm::inverse(glm::mat3(d.model)))), m.tint,
-                      m.blend == BlendMode::AlphaTest ? m.alpha_cutoff : -1.0f, m.unlit ? 1u : 0u, texture_slot(m.albedo), layer2,
-                      lightmap, {}};
+            DrawGpu g{d.model, glm::mat4(glm::transpose(glm::inverse(glm::mat3(d.model)))), m.tint,
+                      glm::vec4(m.diffuse, m.vertex_diffuse ? 1.0f : 0.0f),
+                      m.blend == BlendMode::AlphaTest || m.blend == BlendMode::ShadowVolume ? m.alpha_cutoff : -1.0f,
+                      (m.unlit ? 1u : 0u) | (m.fog ? 0u : 2u), texture_slot(m.albedo),
+                      layer2, lightmap, 0, m.bump && m.bump_scale != 0.0f ? texture_slot(m.bump) : kNoTexture, m.bump_scale, {}};
+            for (int k = 0; k < std::min<int>(d.light_count, kMaxDrawLights); ++k)
+                if (d.lights[k] < l.point_lights.size())
+                    g.lights[g.light_count / 2] |= std::uint32_t(d.lights[k]) << (16 * (g.light_count % 2)), ++g.light_count;
+            gpu[i] = g;  // one write: the mapped buffer may be write-combined
         }
 
         const VkDescriptorSet sets[2] = {textures_set_, s.set};
@@ -1119,7 +1245,20 @@ private:
         VkPipeline bound = VK_NULL_HANDLE;
         const Mesh* bound_mesh = nullptr;
         int cull = -1;
+        std::uint32_t stencil_ref = 0;
+        vk_.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_ref);
+        // Fill where 128 < stencil (D3D STENCILFUNC LESS, ref 128), Lighting::shadow_color.
+        const auto fill = [&] {
+            vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = fill_);
+            vk_.vkCmdSetCullMode(cmd_, VK_CULL_MODE_NONE);
+            cull = -1;
+            vk_.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_ref = 128);
+            const glm::vec4 color = shadow_fill_color(l.shadow_color);
+            vk_.vkCmdPushConstants(cmd_, fill_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof color, &color);
+            vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+        };
         for (std::size_t i = 0; i < order_.size(); ++i) {
+            if (i == first_blended && first_blended > first_volume) fill();
             const DrawItem& d = *order_[i];
             const auto it = meshes_.find(d.mesh.id);
             if (it == meshes_.end()) continue;
@@ -1127,8 +1266,14 @@ private:
             const std::uint32_t first = std::min(d.first_index, m.index_count);
             const std::uint32_t count = d.index_count ? std::min(d.index_count, m.index_count - first) : m.index_count - first;
             if (!count) continue;
-            const VkPipeline p = d.material.blend == BlendMode::AlphaBlend ? blend_ : d.material.blend == BlendMode::Additive ? additive_ : opaque_;
+            const BlendMode b = d.material.blend;
+            const VkPipeline p = b == BlendMode::AlphaBlend     ? blend_
+                                 : b == BlendMode::Additive     ? additive_
+                                 : b == BlendMode::ShadowVolume ? volume_
+                                                                : opaque_;
             if (p != bound) vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = p);
+            if (const std::uint32_t ref = i < first_volume && d.material.receive_shadow ? 128 : 0; i < first_volume && ref != stencil_ref)
+                vk_.vkCmdSetStencilReference(cmd_, VK_STENCIL_FACE_FRONT_AND_BACK, stencil_ref = ref);
             if (int(d.material.two_sided) != cull) {
                 cull = d.material.two_sided;
                 vk_.vkCmdSetCullMode(cmd_, d.material.two_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
@@ -1141,6 +1286,7 @@ private:
             }
             vk_.vkCmdDrawIndexed(cmd_, count, 1, first, 0, std::uint32_t(i));  // firstInstance = draw table index
         }
+        if (first_blended == order_.size() && first_blended > first_volume) fill();
     }
 
     void draw_ui(Slot& s, std::span<const UiQuad> quads) {
@@ -1289,10 +1435,12 @@ private:
     VkDescriptorSetLayout textures_layout_ = VK_NULL_HANDLE, frame_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet textures_set_ = VK_NULL_HANDLE;
-    VkPipelineLayout layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout layout_ = VK_NULL_HANDLE, fill_layout_ = VK_NULL_HANDLE;
     VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
     bool cache_loaded_ = false;
-    VkPipeline opaque_ = VK_NULL_HANDLE, blend_ = VK_NULL_HANDLE, additive_ = VK_NULL_HANDLE, ui_ = VK_NULL_HANDLE;
+    VkPipeline opaque_ = VK_NULL_HANDLE, blend_ = VK_NULL_HANDLE, additive_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE,
+               fill_ = VK_NULL_HANDLE, ui_ = VK_NULL_HANDLE;
+    VkFormat depth_format_ = VK_FORMAT_UNDEFINED;  // D32_SFLOAT_S8_UINT or D24_UNORM_S8_UINT
 
     Slot slots_[kFramesInFlight];
     std::uint32_t slot_ = kFramesInFlight - 1;
@@ -1300,6 +1448,7 @@ private:
     bool recording_ = false, scene_rendered_ = false;
 
     Image2D color_, depth_;
+    VkImageView color_ui_view_ = VK_NULL_HANDLE;  // kUiColorFormat view of color_ (MUTABLE_FORMAT image)
     glm::ivec2 target_size_{0, 0};
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;

@@ -16,6 +16,19 @@ std::string lower(std::string_view s) {
 
 namespace {
 
+// Parse-once cache keyed by lowercase game path; failures stay cached as nullptr.
+template <class T, class Parse>
+const T* cached(const formats::Vfs& vfs, std::unordered_map<std::string, std::unique_ptr<T>>& map, std::string_view path, Parse parse) {
+    auto [it, fresh] = map.try_emplace(lower(path));
+    if (!fresh) return it->second.get();
+    const auto bytes = vfs.read(path);
+    auto v = std::make_unique<T>();
+    std::string err;
+    if (bytes && parse(*bytes, *v, err)) it->second = std::move(v);
+    else std::fprintf(stderr, "joan-native: %.*s: %s\n", int(path.size()), path.data(), bytes ? err.c_str() : "missing");
+    return it->second.get();
+}
+
 // Base name without directory and extension, lowercase ("Joan.tga" -> "joan").
 std::string texture_key(std::string_view name) {
     if (const auto slash = name.find_last_of("/\\"); slash != std::string_view::npos) name.remove_prefix(slash + 1);
@@ -90,11 +103,15 @@ const TextureInfo* AssetCache::texture(std::string_view name, bool repeat) {
     const std::string key = texture_key(name) + (repeat ? "" : "#clamp");
     if (auto it = textures_.find(key); it != textures_.end()) return it->second.get();
     auto& slot = textures_[key];
-    formats::DdsImage img = texture_pixels(name);
-    if (img.rgba.empty()) {
+    const auto path = texture_path(name);
+    const auto bytes = path.empty() ? std::nullopt : formats::read_file(path);
+    formats::DdsTexture dds;
+    std::string err;
+    if (!bytes || !formats::parse_dds(*bytes, dds, err) || dds.images.empty() || dds.images[0].rgba.empty()) {
         missing_textures_.push_back(std::string(name));
         return nullptr;
     }
+    formats::DdsImage& img = dds.images[0];
     auto info = std::make_unique<TextureInfo>();
     for (std::size_t i = 3; i < img.rgba.size(); i += 4)
         if (img.rgba[i] != 255) {
@@ -106,10 +123,32 @@ const TextureInfo* AssetCache::texture(std::string_view name, bool repeat) {
     t.height = int(img.height);
     t.pixels = std::move(img.rgba);
     t.repeat = repeat;
-    // ponytail: GPU-generated mips instead of the file's chain (same box-filtered content in shipped DDS).
+    // The file's own mip chain (face 0), as the original D3D8 upload does; the GPU fills in only
+    // single-level files. Levels are accepted while they halve exactly.
+    for (std::size_t i = 1; i < std::min<std::size_t>(dds.images.size(), dds.mipCount) && dds.images[i].width == std::max(img.width >> i, 1u) &&
+                            dds.images[i].height == std::max(img.height >> i, 1u);
+         ++i)
+        t.mip_pixels.push_back(std::move(dds.images[i].rgba));
     info->handle = renderer_.create_texture(t);
     slot = std::move(info);
     return slot.get();
+}
+
+const formats::Mesh* AssetCache::skinned_mesh(std::string_view p) {
+    return cached(vfs_, meshes_, p, [](const auto& b, formats::Mesh& m, std::string& e) { return formats::parse_mesh(b, true, m, e); });
+}
+const formats::Mesh* AssetCache::static_mesh(std::string_view p) {
+    return cached(vfs_, static_meshes_, p, [](const auto& b, formats::Mesh& m, std::string& e) { return formats::parse_mesh(b, false, m, e); });
+}
+const formats::Animation* AssetCache::animation(std::string_view p) {
+    return cached(vfs_, anims_, p, [](const auto& b, formats::Animation& a, std::string& e) {
+        if (!formats::parse_animation(b, a, e)) return false;
+        if (a.clips.empty()) a.clips.push_back({"all", 0, a.start, a.end});
+        return true;
+    });
+}
+const formats::Skeleton* AssetCache::skeleton(std::string_view p) {
+    return cached(vfs_, skeletons_, p, [](const auto& b, formats::Skeleton& s, std::string& e) { return formats::parse_skeleton(b, s, e); });
 }
 
 std::vector<Material> AssetCache::materials(const formats::Mesh& mesh) {
@@ -119,9 +158,15 @@ std::vector<Material> AssetCache::materials(const formats::Mesh& mesh) {
         const TextureInfo* tex = nullptr;
         if (sub.texture >= 0 && std::size_t(sub.texture) < mesh.textures.size()) tex = texture(mesh.textures[sub.texture].name);
         if (tex) m.albedo = tex->handle;
-        // Alpha-carrying textures (foliage, hair, fences) are alpha tested; trailer tag 1 blend modes
-        // are UNKNOWN per value, so they are not mapped to blending (no sorting artefacts).
+        // colour1 -> material +0 = D3D diffuse (typically 150/255, MODELS_AND_ANIMATION.md); colour0
+        // (ambient) is replaced by the engine constant 0xF0F0F0 folded into Lighting::ambient.
+        m.diffuse = {sub.colors[1].r, sub.colors[1].g, sub.colors[1].b};
+        // Alpha-carrying textures (foliage, hair, fences) are alpha tested. Trailer tag 1 a != -1 (any
+        // value) sets material +0x38 = 1 (loader 0x5e0530), blend state 1 of FUN_005f82e0:
+        // SRCALPHA/INVSRCALPHA blending, lit, alpha test on, z-write on (CONFIRMED). The renderer's
+        // AlphaBlend sorts back to front without z-write instead.
         if (tex && tex->has_alpha) m.blend = BlendMode::AlphaTest;
+        if (sub.blendMode != -1) m.blend = BlendMode::AlphaBlend;
         // Trailer tag 2 flag -> material flags low nibble 2: HYPOTHESIS two-sided.
         m.two_sided = sub.tag2Flag != 0 || m.blend == BlendMode::AlphaTest;
         out.push_back(m);

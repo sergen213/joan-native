@@ -5,6 +5,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -122,6 +123,7 @@ WorldScene::WorldScene(AssetCache& assets, std::string_view scenario, float cloc
 
     load_lighting(*paths, clock_minutes);
     load_terrain(*paths, *stg);
+    load_lights(*stg);
     load_objects(*stg);
     load_start(*paths);
 }
@@ -129,7 +131,6 @@ WorldScene::WorldScene(AssetCache& assets, std::string_view scenario, float cloc
 WorldScene::~WorldScene() {
     IRenderer& r = assets_.renderer();
     r.destroy_mesh(terrain_mesh_);
-    r.destroy_mesh(water_mesh_);
     r.destroy_texture(lightmap_);
 }
 
@@ -145,6 +146,7 @@ void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
         float start = 0;
         for (const auto& kv : formats::parse_kv_text(*day)) {
             const std::string k = lower(kv.key);
+            if (k == "cloudtexture1" || k == "cloudtexture2") clouds_.push_back(kv.value);
             if (k == "stagename") name = kv.value, first = first.empty() ? name : first;
             else if (k == "starttime") start = float(to_number(kv.value));
             else if (k == "duration") {
@@ -154,6 +156,7 @@ void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
         }
         if (stats_.stage.empty()) stats_.stage = first;
         if (!stats_.stage.empty()) break;
+        clouds_.clear();
     }
     // Stage lights: the map's own .lgt first (S1L1.lgt is empty), then map/common.lgt, map/special.lgt.
     std::optional<LgtLight> sun, ambient;
@@ -167,17 +170,31 @@ void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
         }
         if (sun || ambient) break;
     }
-    // .sca scattering colour of the stage (fog HYPOTHESIS below).
-    glm::vec3 sca{0.336f, 0.494f, 0.49f};
+    // .sca record of the stage, read in file order like the engine's loader (lightsys.cpp,
+    // thunk_FUN_004a5bf0): Rayleigh, Mie, Inscattering, G, DistanceModifier, Red, Green, Blue (sun
+    // colour), DirectionX/Y/Z (original Z-up, normalised).
     if (const auto t = read_text(vfs, "map/common.sca")) {
         bool in = false;
+        glm::vec3 dir{0.0f, 0.0f, -1.0f};  // original space
+        Scattering& s = scattering_;
         for (const auto& kv : formats::parse_kv_text(*t)) {
             const std::string k = lower(kv.key);
+            const float v = float(to_number(kv.value));
             if (k == "stagename") in = lower(kv.value) == lower(stats_.stage);
-            else if (in && k == "red") sca.r = float(to_number(kv.value));
-            else if (in && k == "green") sca.g = float(to_number(kv.value));
-            else if (in && k == "blue") sca.b = float(to_number(kv.value));
+            else if (!in) continue;
+            else if (k == "rayleigh") s.rayleigh = v;
+            else if (k == "mie") s.mie = v;
+            else if (k == "inscattering") s.inscattering = v;
+            else if (k == "g") s.g = v;
+            else if (k == "distancemodifier") s.distance_modifier = v;
+            else if (k == "red") s.sun_rgb.r = v;
+            else if (k == "green") s.sun_rgb.g = v;
+            else if (k == "blue") s.sun_rgb.b = v;
+            else if (k == "directionx") dir.x = v;
+            else if (k == "directiony") dir.y = v;
+            else if (k == "directionz") dir.z = v;
         }
+        if (glm::dot(dir, dir) > 0.0f) s.direction = glm::normalize(to_engine(dir.x, dir.y, dir.z));
     }
 
     Lighting& l = lighting_;
@@ -186,20 +203,119 @@ void WorldScene::load_lighting(const ScenarioPaths& p, float clock) {
     // HYPOTHESIS: VDir = elevation, HDir = azimuth CCW from +X (degrees), light shines downward.
     const float v = glm::radians(sun ? sun->vdir : 60.0f), h = glm::radians(sun ? sun->hdir : 0.0f);
     l.sun_direction = -to_engine(std::cos(v) * std::cos(h), std::cos(v) * std::sin(h), std::sin(v));
-    // Fixed-function lighting in gamma space: tex * (ambient + diffuseMaterial * sun * NdotL), where
-    // nearly every material diffuse is 150/255 (MODELS_AND_ANIMATION.md); material ambient UNKNOWN (1).
-    l.sun_color = srgb_to_linear(sun_rgb * (150.0f / 255.0f));
-    l.ambient = srgb_to_linear(amb_rgb);
-    // HYPOTHESIS: the engine's Rayleigh/Mie scattering is approximated by linear fog towards the stage
-    // scattering colour; range matched by eye to the original S1L1 capture (s04_04_mission1_hud.png).
-    l.fog_color = srgb_to_linear(sca);
-    l.fog_start = 300.0f;
-    l.fog_end = 6000.0f;
-    l.clear_color = glm::vec4(l.fog_color, 1.0f);
+    // D3D8 material lighting: the material diffuse multiplies the sun and point lights (models: colour1,
+    // 150/255, AssetCache::materials); every material ambient is overwritten with DAT_00a69cd0 =
+    // 0xFFF0F0F0 after load (FUN_0060baf0 copies DAT_00a18a6c), so the ambient light is scaled by
+    // 240/255. CONFIRMED values; gamma-space sum.
+    l.sun_color = sun_rgb;
+    l.ambient = amb_rgb * (240.0f / 255.0f);
+    // Linear vertex fog (fog.nvo calculate_linear_normal_fog_factor, D3DFOG_LINEAR) from 900 to the view
+    // distance; FUN_005634e0 steers the view distance towards min(far - 200, 4096 [* 0.7 at night or in
+    // rain/snow]) and stops within 100 units: 3996 at day. Far plane 4096. HIGH.
+    l.fog_start = 900.0f;
+    l.fog_end = kWorldFar - 100.0f;
+    // Fog/clear colour: scattering towards a level view (WorldView refreshes it from the camera).
+    l.fog_color = fog_color(glm::vec3(1.0f, 0.0f, 0.0f));
+    l.clear_color = glm::vec4(srgb_to_linear(l.fog_color), 1.0f);
 
-    // Sky: the .day SkyMesh (model/sky01.smo) carries sunset textures (sky01..04); the engine tints it
-    // through its scattering model (UNKNOWN). The original noon capture shows plain blue-grey haze,
-    // so the clear colour (= fog colour) stands in for the sky; clouds (CloudTexture1/2) are a gap.
+    // Sky: the .day SkyMesh (model/sky01.smo) carries sunset textures (sky01..04); the engine draws it
+    // with the scatter.nvo vertex shader (not reproduced). sky_dome.hpp draws a gradient dome + clouds.
+}
+
+glm::vec3 scattering_fog_color(const Scattering& s, glm::vec3 view_dir) {
+    // Per-stage constants set by thunk_FUN_00617ee0 (wavelength-dependent betas, ATI/NVIDIA demo values).
+    constexpr glm::vec3 kBetaR{6.95e-6f, 1.18e-5f, 2.44e-5f}, kBetaM{2.0e-5f, 3.0e-5f, 4.0e-5f}, kBetaM2{3.7e-5f, 4.4e-5f, 6.5e-5f};
+    constexpr float kSunIntensity = 100.0f, kDistance = 2000.0f;  // record +0x48; int at 0xa19174
+    const float c = glm::dot(glm::normalize(view_dir), s.direction);
+    const glm::vec3 total = (kBetaR * (s.rayleigh * 100.0f) + (kBetaM + kBetaM2) * (s.mie * 100.0f)) * s.distance_modifier;
+    const glm::vec3 rayleigh = kBetaR * (s.rayleigh * 5.9683104f);  // 100 * 3/(16 pi)
+    const glm::vec3 mie = kBetaM * (s.mie * 7.957747f);             // 100 / (4 pi)
+    // Henyey-Greenstein term exactly as decompiled: (1 - g^2) / (2 g cos + g + 1)^1.5.
+    const float hg = (1.0f - s.g * s.g) / std::pow(std::max(s.g * 2.0f * c + s.g + 1.0f, 1e-6f), 1.5f);
+    const glm::vec3 in = rayleigh * (c * c + 1.0f) + mie * hg;
+    const glm::vec3 lin = (1.0f - glm::exp(-total * kDistance)) / total * s.sun_rgb * in * (s.inscattering * kSunIntensity);
+    return glm::floor(glm::clamp(lin * 255.0f, 0.0f, 255.0f)) / 255.0f;  // __ftol into a D3DCOLOR
+}
+
+Lighting WorldScene::lighting() const {
+    Lighting l = lighting_;
+    l.point_lights = lights_;
+    return l;
+}
+
+int WorldScene::sector_at(glm::vec3 p) const {
+    const glm::vec2 o(p.x, -p.z);  // original X/Y
+    for (std::size_t i = 0; i < sectors_.size(); ++i)
+        if (o.x >= sectors_[i].min.x && o.x < sectors_[i].max.x && o.y >= sectors_[i].min.y && o.y < sectors_[i].max.y) return int(i);
+    return -1;
+}
+
+void WorldScene::sector_lights(glm::vec3 p, int max, DrawItem& d) const {
+    const int s = sector_at(p);
+    if (s < 0) return;
+    for (const std::uint16_t i : sectors_[std::size_t(s)].lights) {
+        if (d.light_count >= std::min(max, kMaxDrawLights)) break;
+        d.lights[d.light_count++] = i;
+    }
+}
+
+void WorldScene::add_light(PointLight light, int sector) {
+    if (sector < 0 || lights_.size() >= 0xffff) return;
+    sectors_[std::size_t(sector)].lights.push_back(std::uint16_t(lights_.size()));
+    lights_.push_back(light);
+    ++stats_.lights;
+}
+
+void WorldScene::load_lights(const formats::BlockText& stg) {
+    // Scene sectors (CreateSceneSector X1..X2 x Y1..Y2) carry the light lists: the engine enables a
+    // primitive group's light set when it changes (FUN_005e67b0 -> LightEnable via FUN_005c6110) and
+    // CreateLight registers each block with its scene_name sector (FUN_0049b970); lights reaching
+    // several sectors are repeated per sector and share a Group. CONFIRMED.
+    std::map<std::string, int> by_name;
+    for (const auto& b : stg.blocks) {
+        if (b.type != "CreateSceneSector") continue;
+        if (const std::string* id = b.get("scene_id")) by_name[lower(*id)] = int(sectors_.size());
+        sectors_.push_back({{float(b.number("X1")), float(b.number("Y1"))}, {float(b.number("X2")), float(b.number("Y2"))}, {}});
+    }
+    std::map<int, std::size_t> groups;
+    for (const auto& b : stg.blocks) {
+        if (b.type != "CreateLight") continue;
+        // light_type 3 -> D3DLIGHT_POINT (FUN_005c5c30); 0 ambient, 1 directional, 2 spot (unused in maps).
+        if (int(b.number("light_type", -1)) != 3) continue;
+        const std::string* scene = b.get("scene_name");
+        const auto it = scene ? by_name.find(lower(*scene)) : by_name.end();
+        if (it == by_name.end()) continue;
+        PointLight p;
+        p.position = to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z")));
+        p.range = float(b.number("Radius"));
+        p.color = glm::vec3(float(b.number("Red")), float(b.number("Green")), float(b.number("Blue"))) / 255.0f;
+        p.attenuation = {float(b.number("ATT0")), float(b.number("ATT1")), float(b.number("ATT2"))};
+        const auto index = std::uint16_t(lights_.size());
+        add_light(p, it->second);
+        // ModifyEffect RANDOM_ATTENUATION: ATT1 flickers in [ATT1 (1 - ModifyRange), ATT1 (1 + ModifyRange)]
+        // per light Group (FUN_004afd60).
+        const std::string* effect = b.get("ModifyEffect");
+        const float range = float(b.number("ModifyRange"));
+        if (!effect || lower(*effect) != "random_attenuation" || range <= 0.0f) continue;
+        const int group = int(b.number("Group", -1));
+        auto g = groups.find(group);
+        if (group < 0 || g == groups.end()) {
+            g = groups.emplace(group < 0 ? -1 - int(index) : group, flicker_.size()).first;
+            flicker_.push_back({{}, p.attenuation.y * (1.0f - range), p.attenuation.y * (1.0f + range)});
+        }
+        flicker_[g->second].lights.push_back(index);
+    }
+}
+
+void WorldScene::tick_lights() {
+    // FUN_004afd60: ATT1 = clamp(min + (rand - 0.5) * envelope, min, max) with an envelope ramping as
+    // t^4 over a random period up to (max - min); approximated by a uniform draw in the reachable
+    // [min, (min + max) / 2] every tick. HYPOTHESIS for the timing.
+    for (const Flicker& f : flicker_) {
+        flicker_rng_ = flicker_rng_ * 1664525u + 1013904223u;
+        const float att1 = f.min + float(flicker_rng_ >> 8) / float(1u << 24) * 0.5f * (f.max - f.min);
+        for (const std::uint16_t i : f.lights) lights_[i].attenuation.y = att1;
+    }
 }
 
 void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& stg) {
@@ -283,7 +399,8 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
             v.normal = glm::normalize(to_engine(nz.x, nz.y, nz.z));
             v.uv = {float(g.cells_y - y) / repeat, float(g.cells_x - x) / repeat};
             v.uv2 = {float(x) / float(g.cells_x), 1.0f - float(y) / float(g.cells_y)};
-            v.color = glm::vec4(srgb_to_linear(glm::vec3(n[1], n[2], n[3]) / 255.0f), two ? float(255 - n[4]) / 255.0f : 1.0f);
+            // Gamma-space D3D vertex colour: the terrain's diffuse material (Material::vertex_diffuse).
+            v.color = glm::vec4(glm::vec3(n[1], n[2], n[3]) / 255.0f, two ? float(255 - n[4]) / 255.0f : 1.0f);
             r = std::int32_t(mesh.vertices.size());
             mesh.vertices.push_back(v);
             return std::uint32_t(r);
@@ -301,39 +418,17 @@ void WorldScene::load_terrain(const ScenarioPaths& p, const formats::BlockText& 
         if (two)
             if (const TextureInfo* t = assets_.texture(names.second)) m.layer2 = t->handle;
         m.lightmap = lightmap_;
-        m.unlit = true;  // lighting is baked into the lightmap and vertex colours
+        // Stage set 0x13 ends in `* DIFFUSE`: the lit vertex colour (D3D default DIFFUSEMATERIALSOURCE =
+        // COLOR1). At noon ambient 0.72 + sun * 0.78 clamps to 1, matching the capture's ground
+        // brightness (unlit vertex colours were 0.78x too dark). HYPOTHESIS (lighting render state of the
+        // terrain group not traced).
+        m.vertex_diffuse = true;
         terrain_draws_.push_back({{}, m, glm::mat4(1.0f), first, std::uint32_t(mesh.indices.size()) - first});
     }
     stats_.terrain_triangles = int(mesh.indices.size() / 3);
     stats_.terrain_groups = int(terrain_draws_.size());
     terrain_mesh_ = assets_.renderer().create_mesh(mesh);
     for (auto& d : terrain_draws_) d.mesh = terrain_mesh_;
-
-    // CreateWater: rectangles WIDTH (x) x LENGTH (y) at Z. HYPOTHESIS: X,Y is the centre; the
-    // bump/env-mapped surface (Reflection, TextureWidth) is approximated by a translucent tint.
-    MeshData water;
-    for (const auto& b : stg.blocks) {
-        if (b.type != "CreateWater") continue;
-        const float x = float(b.number("X")), y = float(b.number("Y")), z = float(b.number("Z"));
-        const float hw = float(b.number("WIDTH")) * 0.5f, hl = float(b.number("LENGTH")) * 0.5f;
-        const auto base = std::uint32_t(water.vertices.size());
-        for (const glm::vec2 c : {glm::vec2(-hw, -hl), glm::vec2(hw, -hl), glm::vec2(hw, hl), glm::vec2(-hw, hl)}) {
-            Vertex v;
-            v.position = to_engine(x + c.x, y + c.y, z);
-            water.vertices.push_back(v);
-        }
-        water.indices.insert(water.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
-        ++stats_.water;
-    }
-    if (!water.indices.empty()) {
-        water_mesh_ = assets_.renderer().create_mesh(water);
-        Material m;
-        m.tint = glm::vec4(lighting_.fog_color * 0.7f, 0.6f);
-        m.blend = BlendMode::AlphaBlend;
-        m.unlit = true;
-        m.two_sided = true;
-        water_draws_.push_back({water_mesh_, m, glm::mat4(1.0f)});
-    }
 }
 
 void WorldScene::load_objects(const formats::BlockText& stg) {
@@ -347,9 +442,34 @@ void WorldScene::load_objects(const formats::BlockText& stg) {
         // Path is relative to ITEM\ ("Object\Models_Items\...\"). The item .pro names the model file.
         const std::string base = "item/" + *dir;
         std::string model_file = *file + ".SMO";
+        std::optional<PointLight> item_light;  // .pro HasLight block (torches), object space
         if (const auto pro = read_text(vfs, base + *file + ".pro")) {
-            for (const auto& kv : formats::parse_kv_text(*pro))
-                if (lower(kv.key) == "model" && !kv.value.empty()) model_file = kv.value;
+            bool has_light = false;
+            glm::vec3 rgb{0.0f}, pos{0.0f};
+            PointLight l;
+            for (const auto& kv : formats::parse_kv_text(*pro)) {
+                const std::string k = lower(kv.key);
+                const float v = float(to_number(kv.value));
+                if (k == "model" && !kv.value.empty()) model_file = kv.value;
+                else if (k == "haslight") has_light = v != 0;
+                else if (!has_light) continue;
+                else if (k == "light_type") has_light = int(v) == 3;
+                else if (k == "red") rgb.r = v;
+                else if (k == "green") rgb.g = v;
+                else if (k == "blue") rgb.b = v;
+                else if (k == "x") pos.x = v;
+                else if (k == "y") pos.y = v;
+                else if (k == "z") pos.z = v;
+                else if (k == "att0") l.attenuation.x = v;
+                else if (k == "att1") l.attenuation.y = v;
+                else if (k == "att2") l.attenuation.z = v;
+                else if (k == "radius") l.range = v;
+            }
+            if (has_light) {
+                l.position = to_engine(pos.x, pos.y, pos.z);
+                l.color = rgb / 255.0f;
+                item_light = l;
+            }
         } else if (!vfs.exists(base + model_file) && vfs.exists(base + *file + ".AM1")) {
             model_file = *file + ".AM1";
         }
@@ -370,8 +490,20 @@ void WorldScene::load_objects(const formats::BlockText& stg) {
         glm::mat4 t = glm::translate(glm::mat4(1.0f), to_engine(float(b.number("X")), float(b.number("Y")), float(b.number("Z"))));
         t = glm::rotate(t, glm::radians(float(b.number("HD"))), glm::vec3(0, 1, 0));
         t = glm::scale(t, glm::vec3(scale));
+        // HYPOTHESIS: an item light joins the scene sector of its object like a CreateLight.
+        if (item_light) {
+            item_light->position = glm::vec3(t * glm::vec4(item_light->position, 1.0f));
+            add_light(*item_light, sector_at(item_light->position));
+        }
         objects_.push_back({m, t, glm::vec3(t * glm::vec4(m->center, 1.0f)), m->radius * scale});
         ++stats_.placed;
+    }
+    // Light set of each object = its sector's lights (sector of the bounding-sphere centre).
+    for (PlacedObject& o : objects_) {
+        DrawItem lit;
+        sector_lights(o.center, kMaxDrawLights, lit);
+        o.light_count = lit.light_count;
+        o.lights = lit.lights;
     }
 }
 
@@ -431,17 +563,33 @@ void WorldScene::load_start(const ScenarioPaths& p) {
                 }
     start_ = to_engine(x, y, grid_.height_at(x, y));
     start_yaw_ = glm::radians(dir);
+
+    // Map armies: <map>.uni CreateUnit blocks (UnitFile = unit.res record in lower case, X/Y/Z,
+    // HD heading in the script convention). Units stand on the terrain like scripted ones.
+    if (const auto uni = read_blocks(vfs, p.dir + "/" + p.name + ".uni"))
+        for (const auto& b : uni->blocks) {
+            const std::string* file = b.get("UnitFile");
+            if (b.type != "CreateUnit" || !file) continue;
+            std::string code = *file;
+            for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
+            const float ux = float(b.number("X")), uy = float(b.number("Y"));
+            units_.push_back({code, to_engine(ux, uy, grid_.height_at(ux, uy)), glm::radians(float(b.number("HD")))});
+            ++stats_.map_units;
+        }
 }
 
 void WorldScene::build(const glm::mat4& view_proj, glm::vec3 camera_pos, std::vector<DrawItem>& draws) const {
     draws.insert(draws.end(), terrain_draws_.begin(), terrain_draws_.end());
-    draws.insert(draws.end(), water_draws_.begin(), water_draws_.end());
     const auto planes = frustum_planes(view_proj);
-    const float far2 = kDefaultFar * kDefaultFar;
+    const float far2 = kWorldFar * kWorldFar;
     for (const PlacedObject& o : objects_) {
         const glm::vec3 d = o.center - camera_pos;
         if (glm::dot(d, d) > far2 + o.radius * o.radius * 4.0f || !sphere_visible(planes, o.center, o.radius)) continue;
-        for (const ModelPart& part : o.model->parts) draws.push_back({o.model->mesh, part.material, o.transform, part.first_index, part.index_count});
+        for (const ModelPart& part : o.model->parts) {
+            DrawItem& di = draws.emplace_back(DrawItem{o.model->mesh, part.material, o.transform, part.first_index, part.index_count});
+            di.light_count = o.light_count;
+            di.lights = o.lights;
+        }
     }
 }
 

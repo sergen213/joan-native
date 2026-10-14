@@ -2,6 +2,7 @@
 
 #include "engine/gl_loader.hpp"
 #include "engine/gl_shaders.hpp"
+#include "engine/shadow_volume.hpp"
 
 #include <SDL3/SDL_video.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -89,6 +90,7 @@ public:
         mesh_.tint = u("u_tint");
         mesh_.alpha_cutoff = u("u_alpha_cutoff");
         mesh_.unlit = u("u_unlit");
+        mesh_.no_fog = u("u_no_fog");
         mesh_.sun_dir = u("u_sun_dir");
         mesh_.sun_color = u("u_sun_color");
         mesh_.ambient = u("u_ambient");
@@ -97,15 +99,26 @@ public:
         mesh_.camera_pos = u("u_camera_pos");
         mesh_.has_layer2 = u("u_has_layer2");
         mesh_.has_lightmap = u("u_has_lightmap");
+        mesh_.bump_scale = u("u_bump_scale");
+        mesh_.diffuse = u("u_diffuse");
+        mesh_.vertex_diffuse = u("u_vertex_diffuse");
+        mesh_.light_count = u("u_light_count");
+        mesh_.light_pos_range = u("u_light_pos_range");
+        mesh_.light_color = u("u_light_color");
+        mesh_.light_att = u("u_light_att");
         glUseProgram(mesh_.program);
         glUniform1i(u("u_albedo"), 0);
         glUniform1i(u("u_layer2"), 1);
         glUniform1i(u("u_lightmap"), 2);
+        glUniform1i(u("u_bump"), 3);
 
         ui_.program = link(gl_shaders::ui_vert, gl_shaders::ui_frag);
         ui_.framebuffer = glGetUniformLocation(ui_.program, "u_framebuffer");
         glUseProgram(ui_.program);
         glUniform1i(glGetUniformLocation(ui_.program, "u_texture"), 0);
+        fill_program_ = link(gl_shaders::shadow_fill_vert, gl_shaders::shadow_fill_frag);
+        fill_color_ = glGetUniformLocation(fill_program_, "u_color");
+        glGenVertexArrays(1, &fill_vao_);  // attribute-less full-screen triangle
 
         glGenVertexArrays(1, &ui_vao_);
         glGenBuffers(1, &ui_vbo_);
@@ -119,7 +132,7 @@ public:
         glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void*>(offsetof(UiVertex, color)));
         glBindVertexArray(0);
 
-        white_ = upload({1, 1, PixelFormat::Rgba8Unorm, {255, 255, 255, 255}, false, true});
+        white_ = upload({1, 1, PixelFormat::Rgba8Unorm, {255, 255, 255, 255}, false, true, {}});
     }
 
     ~GlRenderer() override {
@@ -129,6 +142,8 @@ public:
         destroy_target();
         glDeleteBuffers(1, &ui_vbo_);
         glDeleteVertexArrays(1, &ui_vao_);
+        glDeleteVertexArrays(1, &fill_vao_);
+        glDeleteProgram(fill_program_);
         glDeleteProgram(mesh_.program);
         glDeleteProgram(ui_.program);
         SDL_GL_DestroyContext(context_);
@@ -256,8 +271,8 @@ private:
     };
     struct MeshProgram {
         GLuint program = 0;
-        GLint model, view_proj, normal_matrix, tint, alpha_cutoff, unlit, sun_dir, sun_color, ambient, fog_color, fog_range, camera_pos,
-            has_layer2, has_lightmap;
+        GLint model, view_proj, normal_matrix, tint, alpha_cutoff, unlit, no_fog, sun_dir, sun_color, ambient, fog_color, fog_range, camera_pos,
+            has_layer2, has_lightmap, light_count, light_pos_range, light_color, light_att, bump_scale, diffuse, vertex_diffuse;
     };
     struct UiProgram {
         GLuint program = 0;
@@ -290,8 +305,13 @@ private:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, t.mipmaps ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
+        for (std::size_t i = 0; t.mipmaps && i < t.mip_pixels.size(); ++i)
+            glTexImage2D(GL_TEXTURE_2D, GLint(i + 1), t.format == PixelFormat::Rgba8Srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8,
+                         std::max(t.width >> (i + 1), 1), std::max(t.height >> (i + 1), 1), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                         t.mip_pixels[i].data());
+        if (!t.mip_pixels.empty()) glTexParameteri(GL_TEXTURE_2D, 0x813D /* GL_TEXTURE_MAX_LEVEL */, GLint(t.mip_pixels.size()));
         if (t.mipmaps) {
-            glGenerateMipmap(GL_TEXTURE_2D);
+            if (t.mip_pixels.empty()) glGenerateMipmap(GL_TEXTURE_2D);
             glTexParameteri(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY; ignored (GL error) if unsupported */, 8);
         }
         return tex;
@@ -335,7 +355,9 @@ private:
         const glm::vec4& cc = f.lighting.clear_color;
         glClearColor(cc.r, cc.g, cc.b, cc.a);
         glDepthMask(GL_TRUE);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glStencilMask(0xff);
+        glClearStencil(0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
         const Lighting& l = f.lighting;
         glUseProgram(mesh_.program);
@@ -346,24 +368,59 @@ private:
         glUniform3fv(mesh_.fog_color, 1, glm::value_ptr(l.fog_color));
         glUniform2f(mesh_.fog_range, l.fog_start, l.fog_end);
         glUniform3fv(mesh_.camera_pos, 1, glm::value_ptr(f.view.camera_position));
+        point_lights_ = l.point_lights;
         glActiveTexture(GL_TEXTURE0);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
 
-        // Opaque + alpha-tested first, then blended back to front without depth writes.
+        // Opaque + alpha-tested first (stencil = 128 on shadow receivers, else 0), then the shadow
+        // volumes and the shadow fill, then blended back to front without depth writes.
         blended_.clear();
+        volumes_.clear();
+        glEnable(GL_STENCIL_TEST);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        int receive = -1;
         for (const DrawItem& d : f.draws) {
-            if (d.material.blend == BlendMode::AlphaBlend || d.material.blend == BlendMode::Additive)
-                blended_.push_back(&d);
-            else
+            const BlendMode b = d.material.blend;
+            if (b == BlendMode::ShadowVolume) volumes_.push_back(&d);
+            else if (b == BlendMode::AlphaBlend || b == BlendMode::Additive) blended_.push_back(&d);
+            else {
+                if (int(d.material.receive_shadow) != receive)
+                    receive = d.material.receive_shadow, glStencilFunc(GL_ALWAYS, receive ? 128 : 0, 0xff);
                 draw_item(d);
+            }
         }
+        if (!volumes_.empty() && l.shadow_color.a > 0.0f) {
+            // z-pass volumes: front faces +1, back faces -1 (clamped), no colour or depth writes.
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glDepthMask(GL_FALSE);
+            glStencilFunc(GL_ALWAYS, 0, 0xff);
+            glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR);
+            glStencilOpSeparate(GL_BACK, GL_KEEP, GL_KEEP, GL_DECR);
+            for (const DrawItem* d : volumes_) draw_item(*d);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDepthMask(GL_TRUE);
+            // Fill where 128 < stencil (D3D STENCILFUNC LESS, ref 128).
+            glStencilFunc(GL_LESS, 128, 0xff);
+            glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glUseProgram(fill_program_);
+            glUniform4fv(fill_color_, 1, glm::value_ptr(shadow_fill_color(l.shadow_color)));
+            glBindVertexArray(fill_vao_);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glUseProgram(mesh_.program);
+            glEnable(GL_DEPTH_TEST);
+        }
+        glDisable(GL_STENCIL_TEST);
+        glEnable(GL_BLEND);
         const glm::vec3 cam = f.view.camera_position;
         std::sort(blended_.begin(), blended_.end(), [&](const DrawItem* a, const DrawItem* b) {
             const glm::vec3 pa(a->model[3]), pb(b->model[3]);
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
-        glEnable(GL_BLEND);
         glDepthMask(GL_FALSE);
         for (const DrawItem* d : blended_) {
             glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
@@ -389,10 +446,37 @@ private:
         const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(d.model)));
         glUniformMatrix3fv(mesh_.normal_matrix, 1, GL_FALSE, glm::value_ptr(nm));
         glUniform4fv(mesh_.tint, 1, glm::value_ptr(mat.tint));
-        glUniform1f(mesh_.alpha_cutoff, mat.blend == BlendMode::AlphaTest ? mat.alpha_cutoff : -1.0f);
+        glUniform1f(mesh_.alpha_cutoff, mat.blend == BlendMode::AlphaTest || mat.blend == BlendMode::ShadowVolume ? mat.alpha_cutoff : -1.0f);
         glUniform1i(mesh_.unlit, mat.unlit ? 1 : 0);
+        glUniform1i(mesh_.no_fog, mat.fog ? 0 : 1);
         glUniform1i(mesh_.has_layer2, mat.layer2 ? 1 : 0);
         glUniform1i(mesh_.has_lightmap, mat.lightmap ? 1 : 0);
+        int lights = 0;
+        if (!mat.unlit) {
+            glm::vec4 pos_range[kMaxDrawLights];
+            glm::vec3 color[kMaxDrawLights], att[kMaxDrawLights];
+            for (int i = 0; i < std::min<int>(d.light_count, kMaxDrawLights); ++i) {
+                if (d.lights[i] >= point_lights_.size()) continue;
+                const PointLight& p = point_lights_[d.lights[i]];
+                pos_range[lights] = glm::vec4(p.position, p.range);
+                color[lights] = p.color;
+                att[lights++] = p.attenuation;
+            }
+            if (lights) {
+                glUniform4fv(mesh_.light_pos_range, lights, glm::value_ptr(pos_range[0]));
+                glUniform3fv(mesh_.light_color, lights, glm::value_ptr(color[0]));
+                glUniform3fv(mesh_.light_att, lights, glm::value_ptr(att[0]));
+            }
+        }
+        glUniform1i(mesh_.light_count, lights);
+        glUniform3fv(mesh_.diffuse, 1, glm::value_ptr(mat.diffuse));
+        glUniform1i(mesh_.vertex_diffuse, mat.vertex_diffuse ? 1 : 0);
+        const bool bump = mat.bump && mat.bump_scale != 0.0f;
+        glUniform1f(mesh_.bump_scale, bump ? mat.bump_scale : 0.0f);
+        if (bump) {
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, texture(mat.bump));
+        }
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, texture(mat.lightmap));
         glActiveTexture(GL_TEXTURE1);
@@ -425,6 +509,9 @@ private:
         glBindBuffer(GL_ARRAY_BUFFER, ui_vbo_);
         glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(ui_vertices_.size() * sizeof(UiVertex)), ui_vertices_.data(), GL_STREAM_DRAW);
         glActiveTexture(GL_TEXTURE0);
+        // D3D8 blended the 2D interface in gamma space: ui.frag outputs sRGB-encoded colour and the target's
+        // sRGB conversion is off, so blending operates on the stored (encoded) bytes.
+        glDisable(GL_FRAMEBUFFER_SRGB);
         // Batch runs of quads sharing a texture.
         std::size_t start = 0;
         for (std::size_t i = 1; i <= quads.size(); ++i) {
@@ -434,6 +521,7 @@ private:
             start = i;
         }
         glDisable(GL_BLEND);
+        glEnable(GL_FRAMEBUFFER_SRGB);
         glBindVertexArray(0);
     }
 
@@ -448,7 +536,10 @@ private:
     GLuint fbo_ = 0, color_rb_ = 0, depth_rb_ = 0;
     glm::ivec2 target_size_{0, 0};
     GLuint ui_vao_ = 0, ui_vbo_ = 0;
-    std::vector<const DrawItem*> blended_;
+    std::vector<const DrawItem*> blended_, volumes_;
+    GLuint fill_program_ = 0, fill_vao_ = 0;
+    GLint fill_color_ = -1;
+    std::span<const PointLight> point_lights_;  // of the frame being drawn
     std::vector<UiVertex> ui_vertices_;
 };
 

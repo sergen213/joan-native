@@ -14,8 +14,15 @@
     X(PFNGLCLEARPROC, glClear)                                                      \
     X(PFNGLDEPTHMASKPROC, glDepthMask)                                              \
     X(PFNGLDEPTHFUNCPROC, glDepthFunc)                                              \
+    X(PFNGLPOLYGONOFFSETPROC, glPolygonOffset)                                      \
     X(PFNGLCULLFACEPROC, glCullFace)                                                \
     X(PFNGLBLENDFUNCPROC, glBlendFunc)                                              \
+    X(PFNGLCOLORMASKPROC, glColorMask)                                              \
+    X(PFNGLSTENCILFUNCPROC, glStencilFunc)                                          \
+    X(PFNGLSTENCILOPPROC, glStencilOp)                                              \
+    X(PFNGLSTENCILOPSEPARATEPROC, glStencilOpSeparate)                              \
+    X(PFNGLSTENCILMASKPROC, glStencilMask)                                          \
+    X(PFNGLCLEARSTENCILPROC, glClearStencil)                                        \
     X(PFNGLPIXELSTOREIPROC, glPixelStorei)                                          \
     X(PFNGLREADPIXELSPROC, glReadPixels)                                            \
     X(PFNGLGENTEXTURESPROC, glGenTextures)                                          \

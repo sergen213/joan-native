@@ -14,6 +14,7 @@ Everything in sections 1–7 is CONFIRMED unless marked.
 | What | Where |
 |---|---|
 | Load scenario step | `FUN_0041cc80`: reads `SCRIPT\SCENARIO\<ScriptFileName>.SCE`, compiles it into a new script object (`FUN_0063f190`, 0x70 bytes) stored at step+0x186, loads `<ScriptFileName>EX.res` (`FUN_0063f580`). Then compiles `<DescriptionFileName>.SCE`, loads its EX table, **executes it once** (`exec(0)`) and deletes it — `_des` scripts only declare objectives. |
+| Load pass | `Battle::load_world FUN_0041c810` (new game and `change_scenario_step`), after world and units are loaded: `vtbl[0x24]()` (`0x6424d0`, returns the script itself), `FUN_0063ed40` → `0x4b9d40` "reset cursor" applied to the script node, which writes `min(+0xc, 1)` = 1 into its type field (+0xc is 0x22 from the base ctor) — a no-op — then **one `exec` of the root** at the load clock. So `init` and the first pass run before tick 1 (`Vm::load_pass()`). |
 | Per tick | `Sys_main_loop` (30 Hz frame timer) → `Game_process_tick 0x4e5fc0` (only when game speed ≠ 0, not suspended, in game, screen mode `DAT_00a500c2` ≠ 5) → after the unit/item/AI processes → scenario tick `FUN_00471620` → **one `exec(0)` of the step script root per tick** unless the game is lost (`DAT_00a59298 == 2`). Non-campaign maps run the script at scenario+0x1b1 instead. |
 | Game clock | `DAT_00a500ba` (Sys+0x32) += `ftol(frame_ms × game_speed)` every frame; `DAT_00a500be` is that per-frame delta. The fixed-step debug mode uses 0x21 = 33 ms. The VM advances 33 ms per tick (`Vm::kTickMs`). |
 | Order inside `FUN_00471620` | challenge timers count down (training mode: challenge duration, else the 4×5 restart durations; unsigned `x > dt ? x-dt : 0`) → script exec → `FUN_004cd5d0`: count times += dt and time limit −= dt (lost at < 1) unless finished / cut scene / clock stopped → end-condition rewards. |
@@ -153,11 +154,17 @@ or `ident = …` — a bare expression is a compile error.
 ```cpp
 joa::game::Vm vm(loader, host, seed);   // loader: game path -> source (vfs_source_loader)
 vm.load_scenario(step);                  // main + _des once, like FUN_0041cc80
+vm.load_pass();                          // FUN_0041c810 exec after units load, no clock/timers
 vm.tick();                               // one 30 Hz logic tick (FUN_00471620 order)
 vm.state();                              // ScenarioState: bit flags, stage, mode, timers, game_finish
+vm.save(bytes); vm.load(bytes);          // full runtime state (cursors, flags, values, variables, clock,
+vm.hash();                               // RNG, state) in compile order; load needs a Vm compiled from the
+                                         // same sources (structure hash) and is all-or-nothing
 class IScriptHost {                      // world binding
   Value call(const BuiltinCall&);        // every non-VM builtin; BuiltinCall: fn (id/name/sig/ret),
-                                         // kw, args (raw i()/f()/s()), localized(n), script, line, site, tick
+                                         // kw, args (raw i()/f()/s()), localized(n), script, line, tick,
+                                         // site_id (compile-order ordinal, stable across recompiles: key
+                                         // per-call host state and save it with the Vm)
   bool  poll(const BuiltinCall&);        // WAIT predicate of the blocking builtins above
   void  trace(const BuiltinCall&, const Value&, bool vm_builtin);  // observer
 };

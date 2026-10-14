@@ -104,7 +104,9 @@ struct BuiltinCall {
     std::span<const Value> args;  // script arguments after the function name, in order
     std::string_view script;      // game path of the calling script file
     int line = 0;
-    const void* site = nullptr;   // stable identity of the call node (for per-call host state)
+    const void* site = nullptr;   // identity of the call node (valid while the Vm lives)
+    std::uint32_t site_id = 0;    // compile-order ordinal of the call node: stable across a
+                                  // recompile of the same sources (save games)
     std::uint64_t tick = 0;       // Vm::ticks() of the executing tick (0 during load)
     const ScriptText* text = nullptr;
 
@@ -155,6 +157,12 @@ public:
     // then count times / time limit advance (FUN_004cd5d0).
     // Returns the root's exec code (1, 0 or -1); 1 when nothing ran.
     int tick();
+    // Extra exec of the main script root that Battle::load_world (FUN_0041c810, also used on a
+    // scenario-step change) does after the world and units are loaded, before the first tick:
+    // `vtbl[0x24]` returns the script itself and FUN_0063ed40 "resets the cursor" of that node,
+    // which only rewrites its type field with 1 (no-op), then `exec`. No clock, timer or
+    // game-finish handling. Returns the exec code; 1 when no script is loaded.
+    int load_pass();
 
     std::uint32_t game_ms() const { return game_ms_; }
     std::uint64_t ticks() const { return ticks_; }
@@ -163,6 +171,15 @@ public:
     // Compile and runtime diagnostics ("file:line: message"). Runtime errors are conditions
     // that are undefined or a crash in the original (they never occur in shipped scripts).
     const std::vector<std::string>& errors() const { return errors_; }
+
+    // Complete runtime state (node cursors, init/WAIT flags, every node value and variable of
+    // the main script and the SCRIPT cache, pause wake time, clock, ScenarioState, RNG,
+    // errors), little-endian, walked in compile order. load() only accepts data saved by a Vm
+    // that compiled the same sources the same way (structure hash), else returns false and
+    // leaves the Vm unchanged.
+    void save(std::vector<std::uint8_t>& out) const;
+    bool load(std::span<const std::uint8_t> in);
+    std::uint64_t hash() const;  // FNV-1a of save()
 
     struct Impl;
 

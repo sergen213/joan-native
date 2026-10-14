@@ -166,6 +166,20 @@ int main() {
                     1);
         CHECK(has(r, "= \"a x b 1,234,567% 1234567\"") && has(r, "set_fog_distance(1, 1)"), "%s", dump(r).c_str());
     }
+    {  // load_pass (FUN_0041c810): one exec at the load clock; init done there, not again in tick 1.
+        RecordingHost host;
+        Vm vm([](std::string_view) { return std::optional<std::string>(); }, host);
+        CHECK(vm.load_main_text("m.sce", "\"m.sce\"\n{\ninit { FUNC(\"set_fog_distance\", 7) }\n"
+                                         "FUNC(\"set_fog_distance\", FUNC(\"get_scenario_count_time\"))\n}\n"),
+              "compile");
+        vm.load_pass();
+        CHECK(vm.game_ms() == 0 && vm.ticks() == 0, "load_pass must not advance the clock");
+        vm.tick();
+        const std::string& l = host.log();
+        CHECK(l.find("t=0 m.sce:3 FUNC set_fog_distance(7)") != std::string::npos && l.find("(7)") == l.rfind("(7)") &&
+                  l.find("t=1 m.sce:4 FUNC get_scenario_count_time() = 0") != std::string::npos,
+              "%s", l.c_str());
+    }
     // Compile errors of the original: unknown function, undeclared variable, non-call statement,
     // DIALOG/ACTION inside a math expression (FUN_00647c90 accepts only FUNC).
     for (auto* bad : {"FUNC(\"no_such_function\")\n", "x = 1\n", "5\n", "if ( DIALOG(\"get_choice\", 1) == 1 ) { }\n"}) {

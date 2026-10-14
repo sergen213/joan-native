@@ -140,5 +140,5 @@
 004735c0	GameFile_read_world	save	HIGH	gamefil2.cpp bulk object read
 00477770	GameFile_make_name	save	HIGH	"SAVE\%s%%04d.%s", "_AUTO%03d.SAV"
 004770a0	GameFile_enum_saves	save	HIGH	"*.SAV" directory scan
-0042e1a0	Game_quick_save	save	HYPOTHESIS	"-QuickSave", "Mission", "SAVE\"
+0042e1a0	PlayerCtrl_process	player	CONFIRMED	per-frame key/controller dispatcher (F5/F6 quick save/load are 2 of its hotkeys); see GAMEPLAY_CHARACTER_COMBAT.md
 004c8220	Profile_save	save	HYPOTHESIS	profile.cpp writes SAVE\ (Player.dat)

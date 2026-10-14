@@ -29,7 +29,7 @@ struct PsValue {
 struct PsProperty {
     enum class Stage { Base, Initial, Fade };
     Stage stage = Stage::Base;
-    float fade_at = 0;  // Fade: normalized particle age 0..1 ("Fade So At t")
+    float fade_at = 0;  // Fade: event time in seconds of particle age ("Fade So At t"; joan.exe FUN_00681b10), may exceed LifeTime
     std::string name;   // as written, e.g. "LifeTime", "Velocity"
     PsValue value;
 };

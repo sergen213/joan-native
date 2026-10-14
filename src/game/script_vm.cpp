@@ -109,6 +109,7 @@ struct Expr {
     std::vector<std::unique_ptr<Expr>> args;
     std::vector<Value> argv;  // argument values of the last execution (read again by WAIT polls)
     Unit* unit = nullptr;     // Call: calling script; Script: the sub-script
+    std::uint32_t site_id = 0;  // Call: compile-order ordinal
 };
 
 struct Stmt {
@@ -136,6 +137,83 @@ bool str_iequal(std::string_view a, std::string_view b) { return formats::iequal
 
 }  // namespace
 
+namespace {
+
+// One walker for three passes: Shape (structure hash), Write, Read (commit = false validates
+// only, so a bad blob never half-overwrites a Vm). Little-endian u32 fields.
+struct Archive {
+    enum class Mode : std::uint8_t { Shape, Write, Read } mode;
+    explicit Archive(Mode m) : mode(m) {}
+    std::vector<std::uint8_t>* out = nullptr;
+    std::span<const std::uint8_t> in;
+    size_t pos = 0;
+    bool commit = false;
+    bool ok = true;
+    std::uint64_t h = 1469598103934665603ull;
+
+    void shape(std::uint64_t v) {
+        if (mode == Mode::Shape)
+            for (int i = 0; i < 8; ++i) h = (h ^ ((v >> (8 * i)) & 0xffu)) * 1099511628211ull;
+    }
+    void shape(std::string_view s) {
+        shape(s.size());
+        for (unsigned char c : s) shape(c);
+    }
+    bool take(size_t n) {
+        if (!ok || in.size() - pos < n) return ok = false;
+        return true;
+    }
+    void u32(std::uint32_t& v) {
+        if (mode == Mode::Write) {
+            for (int i = 0; i < 4; ++i) out->push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        } else if (mode == Mode::Read && take(4)) {
+            std::uint32_t r = 0;
+            for (int i = 0; i < 4; ++i) r |= static_cast<std::uint32_t>(in[pos + static_cast<size_t>(i)]) << (8 * i);
+            pos += 4;
+            if (commit) v = r;
+        }
+    }
+    template <class T>
+    void num(T& v) {  // any integral / bool field through a u32 (u64 as two)
+        if constexpr (sizeof(T) == 8) {
+            std::uint32_t lo = static_cast<std::uint32_t>(v), hi = static_cast<std::uint32_t>(static_cast<std::uint64_t>(v) >> 32);
+            u32(lo);
+            u32(hi);
+            if (mode == Mode::Read && commit) v = static_cast<T>((static_cast<std::uint64_t>(hi) << 32) | lo);
+        } else {
+            std::uint32_t u = static_cast<std::uint32_t>(v);
+            u32(u);
+            if (mode == Mode::Read && commit) v = static_cast<T>(u);
+        }
+    }
+    // A local (length, tag, count): always takes the stored value, even when not committing.
+    void local(std::uint32_t& v) {
+        const bool c = commit;
+        commit = true;
+        u32(v);
+        commit = c;
+    }
+    void str(std::string& s) {
+        std::uint32_t n = static_cast<std::uint32_t>(s.size());
+        local(n);
+        if (mode == Mode::Write) out->insert(out->end(), s.begin(), s.end());
+        else if (mode == Mode::Read && take(n)) {
+            if (commit) s.assign(reinterpret_cast<const char*>(in.data() + pos), n);
+            pos += n;
+        }
+    }
+    void value(Value& v) {
+        std::uint32_t t = static_cast<std::uint32_t>(v.type);
+        local(t);
+        if (mode == Mode::Read && (t < 1 || t > 3)) ok = false;
+        if (mode == Mode::Read && commit) v.type = static_cast<ScriptType>(t);
+        u32(v.bits);
+        str(v.str);
+    }
+};
+
+}  // namespace
+
 struct Vm::Impl {
     Vm& vm;
     SourceLoader load;
@@ -143,6 +221,7 @@ struct Vm::Impl {
     std::unique_ptr<Unit> main;
     std::vector<std::unique_ptr<Unit>> cache;  // SCRIPT() sub-scripts (FUN_00648c50, _stricmp)
     std::uint32_t pause_wake = 0;              // DAT_00a6a254
+    std::uint32_t next_site = 0;               // site_id counter, reset by load_main
 
     // ---------------------------------------------------------------- compile
     struct Scope {
@@ -329,6 +408,7 @@ struct Vm::Impl {
         e->unit = c.unit;
         for (size_t i = 1; i < x.args.size(); ++i) e->args.push_back(compile_expr(c, x.args[i]));
         e->argv.resize(e->args.size());
+        e->site_id = next_site++;
         return e;
     }
 
@@ -342,6 +422,78 @@ struct Vm::Impl {
     // ---------------------------------------------------------------- execute
     void error(const Expr& e, const std::string& m) {
         vm.errors_.push_back((e.unit ? e.unit->path : std::string("?")) + ":" + std::to_string(e.line) + ": " + m);
+    }
+
+    // ---------------------------------------------------------------- save / load
+    void walk(Archive& a, Expr& e) {
+        a.shape(static_cast<std::uint64_t>(e.k) | e.args.size() << 8 | static_cast<std::uint64_t>(e.site_id) << 32);
+        a.value(e.val);
+        for (Value& v : e.argv) a.value(v);
+        if (e.l) walk(a, *e.l);
+        if (e.r) walk(a, *e.r);
+        for (auto& x : e.args) walk(a, *x);
+    }
+    void walk(Archive& a, Stmt& s) {
+        a.shape(static_cast<std::uint64_t>(s.k) | s.kids.size() << 8 | (s.e ? 1ull << 40 : 0));
+        a.num(s.cur);
+        a.num(s.flag);
+        if (s.e) walk(a, *s.e);
+        for (auto& k : s.kids) walk(a, *k);
+    }
+    void walk(Archive& a, Unit& u) {
+        a.shape(u.path);
+        a.shape(u.vars.size());
+        for (Var& v : u.vars) a.value(v.v);
+        walk(a, u.root);
+    }
+    void serialize(Archive& a) {
+        a.shape(main ? 1 + cache.size() : 0);
+        if (main) walk(a, *main);
+        for (auto& u : cache) walk(a, *u);
+        a.num(pause_wake);
+        a.num(vm.game_ms_);
+        a.num(vm.ticks_);
+        a.num(vm.rng_.seed);
+        ScenarioState& st = vm.state_;
+        for (auto& x : st.bits) a.num(x);
+        for (auto& x : st.backup) a.num(x);
+        a.num(st.stage);
+        a.num(st.mode);
+        a.num(st.game_finish);
+        a.num(st.time_limit);
+        a.num(st.time_remaining);
+        a.num(st.objective_count_time);
+        for (auto& x : st.count_time) a.num(x);
+        for (auto& row : st.challenge_restart)
+            for (auto& x : row) a.num(x);
+        for (auto& row : st.challenge_flag)
+            for (auto& x : row) a.num(x);
+        a.num(st.challenge_duration);
+        a.num(st.start_ms);
+        a.num(st.counting_paused);
+        std::uint32_t n = static_cast<std::uint32_t>(vm.errors_.size());
+        a.local(n);
+        if (a.mode == Archive::Mode::Read) {
+            std::string s;
+            for (std::uint32_t i = 0; i < n && a.ok; ++i) {
+                const bool c = a.commit;
+                a.commit = true;  // read into the scratch string
+                a.str(s);
+                a.commit = c;
+                if (c) {
+                    if (i == 0) vm.errors_.clear();
+                    vm.errors_.push_back(s);
+                }
+            }
+            if (a.commit && n == 0) vm.errors_.clear();
+        } else {
+            for (auto& s : vm.errors_) a.str(s);
+        }
+    }
+    std::uint64_t shape_hash() {
+        Archive a{Archive::Mode::Shape};
+        serialize(a);
+        return a.h;
     }
 
     int run_unit(Unit& u) { return run_block(u.root); }
@@ -574,6 +726,7 @@ struct Vm::Impl {
         c.script = e.unit->path;
         c.line = e.line;
         c.site = &e;
+        c.site_id = e.site_id;
         c.tick = vm.ticks_;
         c.text = &e.unit->text;
         return c;
@@ -737,6 +890,7 @@ Vm::~Vm() = default;
 bool Vm::load_main_text(std::string_view name, std::string_view text) {
     impl_->main.reset();
     impl_->cache.clear();
+    impl_->next_site = 0;
     try {
         impl_->main = impl_->compile_main(std::string(name), text);
         return true;
@@ -779,6 +933,8 @@ bool Vm::load_scenario(const formats::ScenarioStep& step) {
     return true;
 }
 
+int Vm::load_pass() { return impl_->main ? impl_->run_unit(*impl_->main) : 1; }
+
 int Vm::tick() {
     game_ms_ += kTickMs;
     ++ticks_;
@@ -800,6 +956,52 @@ int Vm::tick() {
         }
     }
     return r;
+}
+
+namespace {
+constexpr std::uint32_t kSaveMagic = 0x4d56534au;  // "JSVM"
+constexpr std::uint32_t kSaveVersion = 1;
+}  // namespace
+
+void Vm::save(std::vector<std::uint8_t>& out) const {
+    Impl& im = *impl_;
+    Archive a{Archive::Mode::Write};
+    a.out = &out;
+    std::uint32_t magic = kSaveMagic, version = kSaveVersion;
+    std::uint64_t shape = im.shape_hash();
+    a.u32(magic);
+    a.u32(version);
+    a.num(shape);
+    im.serialize(a);
+}
+
+bool Vm::load(std::span<const std::uint8_t> in) {
+    Impl& im = *impl_;
+    const std::uint64_t want = im.shape_hash();
+    for (bool commit : {false, true}) {
+        Archive a{Archive::Mode::Read};
+        a.in = in;
+        a.commit = commit;
+        std::uint32_t magic = 0, version = 0;
+        std::uint64_t shape = 0;
+        a.commit = true;  // header fields are locals
+        a.u32(magic);
+        a.u32(version);
+        a.num(shape);
+        a.commit = commit;
+        if (!a.ok || magic != kSaveMagic || version != kSaveVersion || shape != want) return false;
+        im.serialize(a);
+        if (!a.ok || a.pos != in.size()) return false;  // only possible on the validating pass
+    }
+    return true;
+}
+
+std::uint64_t Vm::hash() const {
+    std::vector<std::uint8_t> b;
+    save(b);
+    std::uint64_t h = 1469598103934665603ull;
+    for (std::uint8_t c : b) h = (h ^ c) * 1099511628211ull;
+    return h;
 }
 
 }  // namespace joa::game

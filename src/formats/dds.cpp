@@ -100,6 +100,9 @@ bool parse_dds(std::span<const uint8_t> data, DdsTexture& t, std::string& err, u
   uint32_t height = hdr[2], width = hdr[3], mips = hdr[6];
   uint32_t pfFlags = hdr[19], fourcc = hdr[20], bits = hdr[21];
   uint32_t rm = hdr[22], gm = hdr[23], bm = hdr[24], am = hdr[25], caps2 = hdr[27];
+  // 48 shipped A4R4G4B4 files (int8x6 grid-font atlases etc.) declare R mask 0xF000 = the alpha mask; D3DX loads them as
+  // A4R4G4B4, i.e. red is 0x0F00 (otherwise anti-aliased glyph edges get red = alpha: cyan fringes).
+  if (bits == 16 && rm == 0xF000 && am == 0xF000 && gm == 0xF0 && bm == 0xF) rm = 0x0F00;
   if (hdr[0] != 124 || width == 0 || height == 0 || width > 16384 || height > 16384) return fail(err, "bad header");
   t.width = width;
   t.height = height;

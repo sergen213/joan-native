@@ -56,6 +56,10 @@ int main() {
     d = header(1, 1, 0x41, nullptr, 16, 0xF00, 0xF0, 0xF, 0xF000);
     d.insert(d.end(), {0x21, 0xF3});  // A=F R=3 G=2 B=1
     CHECK(parse_dds(d, t, err) && (t.images[0].rgba == std::vector<uint8_t>{0x33, 0x22, 0x11, 0xFF}), "A4R4G4B4");
+    // Shipped int8x6 A4R4G4B4 headers declare R mask 0xF000 (= alpha); D3DX reads red from 0x0F00.
+    auto bad = header(1, 1, 0x41, nullptr, 16, 0xF000, 0xF0, 0xF, 0xF000);
+    bad.insert(bad.end(), {0x21, 0x83});  // A=8 R=3 G=2 B=1
+    CHECK(parse_dds(bad, t, err) && (t.images[0].rgba == std::vector<uint8_t>{0x33, 0x22, 0x11, 0x88}), "A4R4G4B4 bad R mask");
     d.pop_back();
     CHECK(!parse_dds(d, t, err), "truncated accepted");
   }

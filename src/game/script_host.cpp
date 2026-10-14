@@ -21,7 +21,7 @@ Value RecordingHost::call(const BuiltinCall& c) {
 }
 
 bool RecordingHost::poll(const BuiltinCall& c) {
-    int& n = polls_[c.site];
+    int& n = polls_[c.site_id];
     if (n < poll_delay_) {
         ++n;
         return false;

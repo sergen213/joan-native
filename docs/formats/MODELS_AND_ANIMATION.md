@@ -126,7 +126,7 @@ tag 0. CONFIRMED.
 
 | Tag | Payload | Engine effect (confidence) |
 |-----|---------|----------------------------|
-| 1 | per submesh: i32 a, i32 b | a ≠ -1 → blended render state (CONFIRMED sets fields +0x34/+0x38/+0x40); values seen 0,1,2,3,5,6 (meaning per value UNKNOWN). b ≠ -1 → texture index used as stage-0 texture with the submesh texture on later stages (detail/env map, HIGH CONFIDENCE); set in 1 file |
+| 1 | per submesh: i32 a, i32 b | a ≠ -1 → blended render state: +0x38 = 1, +0x34 = 0x20000, +0x40 = 1 or 2 (CONFIRMED, loader ~decompile line 512576); the value itself is ignored (seen 0,1,2,3,5,6). State 1 of `FUN_005f82e0` = SRCALPHA/INVSRCALPHA blend + alpha test + lighting + z-write (CONFIRMED). b ≠ -1 → texture index used as stage-0 texture with the submesh texture on later stages (detail/env map, HIGH CONFIDENCE); set in 1 file |
 | 2 | per submesh: i32 c, i32 d, u8 e | c == -1 → specular colour set to DAT_00a69cd4 / power 0, else power 50.0 (CONFIRMED); d unused (CONFIRMED); e ≠ 0 → material flags low nibble = 2 (HYPOTHESIS: two-sided / alpha test) |
 | 3 | u32 v | v ≠ 0 → every vertex normal replaced by constant DAT_00a18a60 (vegetation lighting, HYPOTHESIS for purpose) |
 | other | — | ends the list (CONFIRMED) |
@@ -211,6 +211,5 @@ resolution rule above.
 ## Gaps
 
 - SMO/AM1 versions 0/50/100 (loaders exist in joan.exe; no shipped file uses them) — UNKNOWN layout.
-- Tag-1 blend mode values → exact D3D render states not yet mapped (fields +0x34/+0x38/+0x40).
 - Engine key representation after FUN_005b8770 and its interpolation — UNKNOWN.
 - `.AMT`, `.MDA`, `.NOD`, `.MA`, `.pro` (item/unit side files) are not covered here.

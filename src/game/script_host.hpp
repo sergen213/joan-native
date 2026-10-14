@@ -35,7 +35,7 @@ private:
     int poll_delay_;
     bool keep_log_;
     std::int32_t next_handle_ = 1;
-    std::map<const void*, int> polls_;
+    std::map<std::uint32_t, int> polls_;  // by BuiltinCall::site_id (copyable with a saved Vm)
     std::string log_;
     std::uint64_t calls_ = 0;
     std::uint64_t hash_ = 1469598103934665603ull;

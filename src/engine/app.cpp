@@ -1,5 +1,6 @@
 #include "engine/app.hpp"
 
+#include "engine/audio_system.hpp"
 #include "engine/camera.hpp"
 #include "engine/demo_scene.hpp"
 #include "engine/input.hpp"
@@ -9,7 +10,11 @@
 #include "engine/renderer_gl.hpp"
 #include "engine/renderer_vk.hpp"
 #include "engine/sim.hpp"
+#include "engine/ui_runner.hpp"
+#include "engine/video_player.hpp"
 #include "engine/world_view.hpp"
+
+#include <SDL3/SDL_mouse.h>
 
 #include <SDL3/SDL_timer.h>
 
@@ -79,6 +84,14 @@ int run_client(const Options& o) {
     DemoScene scene(*renderer);
     std::unique_ptr<WorldView> world;
     if (!o.scenario.empty()) world = std::make_unique<WorldView>(*renderer, o);
+    // Original 2D interface (--ui-screen); the system pointer is replaced by CURSOR.RES.
+    const formats::Vfs ui_vfs(o.game_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(o.game_dir));
+    std::unique_ptr<UiRunner> ui;
+    UiInputTracker ui_input;
+    if (!o.ui_screen.empty()) {
+        ui = std::make_unique<UiRunner>(ui_vfs, *renderer, o.ui_screen);
+        SDL_HideCursor();
+    }
     double frame_ms_sum = 0;
     std::size_t draw_sum = 0;
 
@@ -102,7 +115,7 @@ int run_client(const Options& o) {
 
         input.evaluate(raw, actions, float(frame_dt));
         raw.end_frame();
-        if (actions.pressed(Action::Pause)) break;  // no menus yet: Escape quits
+        if (!ui && actions.pressed(Action::Pause)) break;  // without the UI, Escape quits
         if (actions.pressed(Action::ToggleFullscreen)) platform.toggle_fullscreen();
         platform.set_mouse_look(actions.down(Action::MouseLook));
 
@@ -137,6 +150,13 @@ int run_client(const Options& o) {
             f.view.camera_position = camera.eye;
             f.lighting = scene.lighting();
         }
+        if (ui) {
+            if (!world) {
+                quads.clear();
+                if (!ui->show_hud) draws.clear(), f.lighting = Lighting{};  // menus: black behind the 4:3 canvas
+            }
+            if (!ui->frame(vp, ui_input.update(platform.window(), raw), float(frame_dt), quads)) break;
+        }
         f.draws = draws;
         f.ui = quads;
         renderer->begin_frame(size);
@@ -163,6 +183,22 @@ int run_client(const Options& o) {
     return 0;
 }
 
+// --play-movie: one movie, then exit. Audio uses the default device unless capturing a screenshot.
+int run_movie(const Options& o) {
+    const formats::Vfs vfs(o.game_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(o.game_dir));
+    const auto path = std::filesystem::exists(o.movie) ? std::optional(std::filesystem::path(o.movie)) : vfs.resolve(o.movie);
+    if (!path) {
+        std::fprintf(stderr, "joan-native: movie %s not found\n", o.movie.c_str());
+        return 1;
+    }
+    const bool capture = !o.screenshot.empty();
+    Platform platform(o, capture);
+    std::unique_ptr<IRenderer> renderer =
+        o.renderer == RendererKind::Vulkan ? create_vk_renderer(platform.window(), o) : create_gl_renderer(platform.window());
+    std::unique_ptr<AudioSystem> audio = capture ? nullptr : std::make_unique<AudioSystem>(vfs);
+    return play_movie(platform, *renderer, audio ? &audio->mixer() : nullptr, *path, {o.movie_time, o.screenshot}) ? 0 : 1;
+}
+
 }  // namespace
 
 int run(const Options& o) {
@@ -176,7 +212,7 @@ int run(const Options& o) {
     }
     if (o.headless) return run_headless(o);
     try {
-        return run_client(o);
+        return o.movie.empty() ? run_client(o) : run_movie(o);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "joan-native: %s\n", e.what());
         return 1;

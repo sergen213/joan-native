@@ -5,4 +5,6 @@ extern const char* const mesh_vert;
 extern const char* const mesh_frag;
 extern const char* const ui_vert;
 extern const char* const ui_frag;
+extern const char* const shadow_fill_vert;
+extern const char* const shadow_fill_frag;
 }  // namespace joa::engine::gl_shaders

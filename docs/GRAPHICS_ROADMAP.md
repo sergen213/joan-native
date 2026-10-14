@@ -42,7 +42,7 @@ class IRenderer {
 - Asset seam: format loaders (from `joa_formats`) produce `MeshData` / `TextureData`; the app calls `create_mesh` / `create_texture` and references the handles from `DrawItem { mesh, Material{albedo, tint, blend, alpha_cutoff, two_sided, unlit}, model, first_index, index_count }`. Submeshes with different materials are separate `DrawItem`s over index ranges of one mesh.
 - Matrices use the OpenGL clip convention (RH, z ∈ [-1,1]). The Vulkan backend premultiplies a fixed y-flip / z-remap matrix; camera code stays shared.
 - Blend modes: Opaque, AlphaTest (discard below cutoff), AlphaBlend (sorted back-to-front, no depth write), Additive.
-- Colour: textures marked sRGB are decoded on sampling; lighting/fog/blending are linear; the scene renders into an `GL_SRGB8_ALPHA8` offscreen target, so `read_back()` returns correctly encoded sRGB bytes and the window receives a raw blit. Note: the D3D8 original blended in gamma space; translucent effects may need a gamma-space path for faithful look (check against reference screenshots).
+- Colour: textures marked sRGB are decoded on sampling; lighting/fog/blending are linear; the scene renders into an `GL_SRGB8_ALPHA8` offscreen target, so `read_back()` returns correctly encoded sRGB bytes and the window receives a raw blit. Note: the D3D8 original blended in gamma space; translucent effects may need a gamma-space path for faithful look (check against reference screenshots). The 2D UI pass already blends in gamma space (GL: sRGB conversion off + encoding `ui_frag.glsl`; Vulkan: second pass into a UNORM view) — docs/reverse-engineering/UI_SYSTEM.md §3.
 
 ## Camera and widescreen (implemented)
 
@@ -105,8 +105,10 @@ class IRenderer {
 ## First original scene
 
 `joan-native --game-dir <dir> --scenario S1L1 [--screenshot work/scene/s1l1.png --frames 10] [--free-camera | --camera X,Y,Z,H,P] [--anim f_run]`
-loads an original map through `src/engine/{assets_cache,world_scene,character_actor,world_view}.*`.
-Tests: `engine.world_load` (headless counts), `engine.gl_world_render` (captured image). Format index: `docs/ASSET_FORMATS.md`.
+loads an original map through `src/engine/{assets_cache,world_scene,character_actor,world_view,attach_items,sky_dome,grass_field}.*`.
+Tests: `engine.world_load` (headless counts: 72 start units placed, 73 items attached, 0 missing; unit/item look-ups;
+sword on the hand bone; shadow vertices on the ground), `engine.gl_world_render` / `engine.vk_world_render` (captured
+image: colour variety, terrain, sky pixels; Vulkan with validation). Format index: `docs/ASSET_FORMATS.md`.
 Reference used: `work/reference/shots/s04_04_mission1_hud.png` (original S1L1 start); our match: `work/scene/s1l1.png`.
 
 | Topic | Implementation | Confidence |
@@ -114,22 +116,41 @@ Reference used: `work/reference/shots/s04_04_mission1_hud.png` (original S1L1 st
 | Axes | original Z-up → engine `(x, z, -y)`, no mirror | HIGH: the in-game minimap `texture/s1.dds` places the S1L1 lake (stg water at 2827,12401) and the moat/walls (y≈1250) only under an unmirrored mapping |
 | Scenario lookup | `map/scenarioN/<name>.{gri,stg}`; day cycle from `<name>w.day`, else `<name>.day` | HIGH (scenario_01.scr WorldFileName = S1L1w) |
 | Terrain mesh | GRI vertices 64 units apart, int16 height, quad diagonal alternates with (x+y) parity | CONFIRMED (world_s.cpp builder, decompile ~line 443900) |
-| Terrain texturing | `mix(tex1, tex2, (255-byte4)/255) * lightmap * rgb(bytes 1,2,3)`, ground UV repeats every header_c (4) cells (u from y, v from x), unlit; sector lightmaps packed in one atlas, sector (ix,iy) at row rows-1-iy | CONFIRMED stage setup (texture-stage switch cases 0x11/0x12/0x13, decompile ~line 523200); atlas orientation HIGH (lightmap v = 1-(y-y0)/size) |
+| Terrain texturing | `mix(tex1, tex2, (255-byte4)/255) * lightmap * DIFFUSE`, ground UV repeats every header_c (4) cells (u from y, v from x); DIFFUSE = the lit vertex colour (bytes 1,2,3 as D3D diffuse material, `Material::vertex_diffuse`): at noon ambient 0.72 + sun·0.78 clamps to 1; sector lightmaps packed in one atlas, sector (ix,iy) at row rows-1-iy | CONFIRMED stage setup (case 0x13 ~line 523175: tex, BLENDDIFFUSEALPHA, MODULATE lightmap, MODULATE DIFFUSE); lit vertex colour HYPOTHESIS (unlit was 0.78× darker than the capture; lit matches within 5%) |
 | Objects | `item/<Path><ObjectFile>.pro` → `Model:`; else `.SMO`/`.AM1`; AM1 props posed at their first AM2 clip; transform `T(X,Y,Z)·Rz(HD)·S(Scale)`; VD, WIDTH/LENGTH/HEIGHT, Kingdom, Treasure, InitState/FinalState unused | HIGH (S1L1: 762/762 placed; 686 within 40 units of the terrain; walls/gate/drawbridge join up) |
-| Materials | textures with any alpha < 255 → alpha test 0.5, two-sided; trailer tag-2 flag → two-sided; tag-1 blend values not mapped; tag 3 normals → up | HYPOTHESIS |
-| Lighting | stage running at a clock (default 12:00) from `<name>w.day`; lights from the map `.lgt`, `map/common.lgt`, `map/special.lgt` (Type 1 directional with VDir elevation / HDir azimuth, Type 0 ambient); sun × 150/255 material diffuse | HYPOTHESIS; noon matches the original capture (white light, silver armour) |
-| Fog / sky | linear fog 300..6000 units towards the `.sca` stage colour, same colour as clear/sky. The `.day` sky dome (`model/sky01.smo`) has sunset textures that the engine recolours by scattering (UNKNOWN), so it is not drawn | HYPOTHESIS, tuned by eye to the capture |
-| Water | `CreateWater` = translucent flat rectangle, X,Y as centre | HYPOTHESIS (fits the moat and lake beds) |
-| Units | `script/scenario/<map>.sce` `load_unit/add_unit` + first `set_unit_pos/set_unit_dir` (degrees CCW from +X); `unit/<code>.AM1` + `anim/<code>.am2`; AM1 faces +X | HIGH: Joan (115°) and Jean (295°) face each other, as in the capture |
+| Materials | textures with any alpha < 255 → alpha test 0.5, two-sided; trailer tag-2 flag → two-sided; tag 3 normals → up | HYPOTHESIS |
+| Tag-1 blend | any value ≠ -1 → material +0x38 = 1 (+0x34 = 0x20000, +0x40 = 1/2) in the SMO loader 0x5e0530 (decompile ~512576); render-state set 1 of `FUN_005f82e0`: SRCALPHA/INVSRCALPHA, alpha test, lighting, z-write → `BlendMode::AlphaBlend` (sorted, no z-write) | CONFIRMED mapping; z-write difference deliberate |
+| Mip maps | the DDS file chain (face 0) is uploaded as-is (`TextureData::mip_pixels`, GL `glTexImage2D` per level + `GL_TEXTURE_MAX_LEVEL`, Vulkan one staging copy per level); single-level files get GPU mips | — |
+| Lighting | stage at a clock (default 12:00) from `<name>w.day`; `.lgt` Type 1 directional (VDir elevation / HDir azimuth, HYPOTHESIS), Type 0 ambient. D3D8 fixed function emulated per vertex in gamma space: `min(ambient·240/255 + diffuse·(sun·N.L + Σ point), 1)`, texture × light, diffuse = SMO/AM1 colour1 (0.588); material ambient is the engine constant 0xF0F0F0 (DAT_00a69cd0 ← DAT_00a18a6c, FUN_0060baf0) | CONFIRMED constants/formula (lighting.nvo, D3D semantics); gamma-space sum HIGH |
+| Fog | linear vertex fog on the eye distance (fog.nvo `calculate_linear_normal_fog_factor`, D3DFOG_LINEAR), 900 → view distance 3996 (FUN_005634e0: min(far−200, 4096 [×0.7 night/rain]) reached within 100), mixed in gamma space; colour = clear colour = Hoffman-Preetham inscattering 2000 units along the view direction from the `.sca` stage (View3D_render 0x614760; betas from 0x617ee0; Normal_12 level view = 106,146,193), recomputed per frame | CONFIRMED (HG denominator taken literally as `2g·cos + g + 1`) |
+| Depth range | in-game near 4 / far 4096 (FUN_005634e0 → 0x613ca0); objects culled at 4096; sky dome radius 4000 | HIGH |
+| Point lights | `.stg CreateLight` light_type 3 = D3DLIGHT_POINT (FUN_005c5c30): RGB/255, ATT0..2, Radius = Range, registered per `scene_name` sector (lights reaching several sectors are repeated, shared Group); item `.pro HasLight` lights join their object's sector (HYPOTHESIS); a draw's light set = its sector's lights (FUN_005e67b0 switches light sets per primitive group), ≤ 7 + sun; skinned units 1 point + 1 directional (Shader_build_vertex_shader); RANDOM_ATTENUATION + ModifyRange flickers ATT1 per Group (FUN_004afd60, timing approximated) | CONFIRMED parse/selection; S1L1: 144 lights |
+| Sky | `sky_dome`: camera-centred hemisphere (radius 4000), unfogged, not a shadow receiver: fog colour at the horizon → (150,186,220) band → (118,160,206) zenith; `.day` CloudTexture1/2 as two alpha-blended layers. The original draws `model/sky01.smo` through `scatter.nvo` (oD0 = extinction·terrain reflectance·sun, oD1 = inscattering) — not reproduced | HYPOTHESIS, colours sampled from s04_04/s04_06 |
+| Shadows | stencil shadow volumes (`shadow_volume.cpp`, port of FUN_005e3040): welded `<am1>#S.AM1` (+ item `#s.SMO`), light-facing faces = near cap, silhouette edges extruded height+300 along the sun, no far cap; opaque pass writes stencil 128 on receivers (terrain/objects; units, sky 0); volumes front INCR / back DECR clamped (z-pass, 0x5f1cc0), then a full-screen black alpha-128 fill where 128 < stencil (0x5ee1d0) before the translucent pass; CONFIG.DAT 0x9C modes (volume within 1000 units, `ShadowModel` quad within 2000) | CONFIRMED order, ops, colour, cap/edge rules; HYPOTHESIS: extrusion length, units not receivers |
+| Dynamic grass | `grass_field`: 3×3-cell (192-unit) patches, ground texture covering ≥ half the cells → `DynGrass.res` `<tex>_M<scenario>` then `<tex>`: `model : count : percent : yaw : tilt`, `rand(100) < percent` → `max(1, count·density/100)` tufts, random yaw + tilt−(6..10)°, slope skip/sink, radius 2000 (CONFIG.DAT), one new patch per frame, alpha 255−128·(d−100)/(R−100) beyond 100 (FUN_00464740/00465a20/00466560) | CONFIRMED; `_M1` lookup HIGH; wind not done |
+| Water | `water.cpp`: `CreateWater` (FUN_004f5210) 800-unit grid around X,Y, vertex colour 65,51,80 a 0x80; texteff `BumpEnvWaterRiver`: BUMPENVMAP over `Lake1..65.bmp` (bump matrix 0.5, 30 ms/frame) then `spheremap` at uv = world reflection.xy + 0.5 (`Material::bump`) | CONFIRMED default (Reflection = Modulate, Bump = Yes); Reflection = High (planar RTT) not done |
+| Particles | `particles.cpp`: `.stg CreateParticle` + item `.pro` HasEmitter slots 0/1 → pscript event sequences (fade steps in seconds of age, random gravity, EmitRate carry, NumParticles cap, Loop≠0 burst), camera-facing quads, SRCALPHA + ONE/DESTALPHA → Additive, INVSRCALPHA → AlphaBlend (pemires.cpp 0x67f380/0x67faf0) | CONFIRMED sim; S1L1 11 emitters (9 torches, 2 waterfall); weather not active at mission start, not done |
+| Units | `script/scenario/<map>.sce` `load_unit/add_unit` + first `set_unit_pos/set_unit_dir` (degrees CCW from +X), then `<map>.uni` `CreateUnit` (UnitFile upper-cased = `unit/unit.res` record, X/Y on the terrain, HD same convention); AM1 faces +X | HIGH: Joan (115°) and Jean (295°) face each other, as in the capture; S1L1: 71 .uni units, all placed |
+| Unit look | `attach_items` `UnitDb`: unit.res `Model` (`unit/` + name), `Animation` → STD.SET `ANIMATE` {CODE, DBFNAME} → per-unit table, first row POSITION=STAND, MOVEMENT=IDLE, COMBO empty → `anim/<UPPERFILE>.am2` clip `UPPERNAME` (archers share `english_archer_share.am2`); bone names from `unit/<model>.AM3` | CONFIRMED tables; idle-row rule HIGH |
+| Armour mesh | `Model` is the mesh worn with the start armour (`*_ARMOR_LV1`); the `ModelLevel`/`ModelName` list holds the other levels (Joan: joan_armorC = Model; Joan_of_Arc, joan_armorB listed) | HIGH: only joan_armorC has the gold-trimmed skirt of s04_04 |
+| Equipment | `PWeaponId`, `SWeaponId` (else `PRangeWeaponId`: archers hold the bow) → item.res record: first `ModelName` (carried mesh; `Model` is the pickup mesh, e.g. itm_Warbrand.am1) on `AttachBoneName` (`bip01 R Hand`, bows `bip01 L Hand`); item vertices are in bone space: `T_unit · C · key[bone] · Cᵀ` (C = Z-up → Y-up); AM1 items (bows) posed at the first key of `item/anim/<name>.am2` | HIGH: sword angle/hand matches s04_04 |
 | Animation | CPU skinning (`skin_vertices`) per rendered frame through `IRenderer::update_mesh`; clip time advances per 30 Hz tick and is interpolated by `FixedStep::alpha()`; idle/walk/run chosen by sim speed | — |
 | Camera | follow camera 190 units behind, target 55 units up, pitch 8° (framing of the capture); sim metres × 45 units/m (Joan 78.7 units = 1.75 m, HYPOTHESIS) | HYPOTHESIS |
 
-Renderer additions for this (mirrored by the Vulkan backend): `Vertex::uv2/color`, `Material::layer2/lightmap`,
-`IRenderer::update_mesh`; GL sets 8x anisotropy on mipmapped textures. Mips are GPU-generated, not the DDS chain.
+Renderer additions for this (mirrored by the Vulkan backend): `Vertex::uv2/color`, `Material::layer2/lightmap/fog/diffuse/
+vertex_diffuse/bump/bump_scale/receive_shadow`, `BlendMode::ShadowVolume`, `Lighting::point_lights/shadow_color`,
+`DrawItem::lights` (Vulkan: light SSBO at set 1 binding 2), `TextureData::mip_pixels`, `IRenderer::update_mesh`; depth-
+stencil targets (GL DEPTH24_STENCIL8, Vulkan D32S8/D24S8). Lighting and fog run per vertex like D3D8; `Lighting`
+colours are gamma-space D3D values.
+Parse caches in `AssetCache` (`skinned_mesh`, `static_mesh`, `animation`, `skeleton`) share AM1/AM2/AM3 between units.
 
-Perf (S1L1 start view, 1920x1080, RX 7900 XTX radeonsi): 1.3 ms mean CPU frame, ~84 draws; under Xvfb/llvmpipe
-13–46 ms, 60–360 draws (frustum-culled objects; terrain = 34 draws, 130 050 triangles).
+Perf (S1L1 start view, 1920x1080, RX 7900 XTX, 300 frames, mean CPU frame build+submit+present): before this pass
+GL 3.59 ms / Vulkan 4.70 ms (389 draws, Vulkan GPU scene 0.68 ms); after (point lights, volumes, grass patches, water,
+particles, objects culled at the 4096 far plane) GL 2.92 ms / Vulkan 2.33 ms (555 draws, Vulkan GPU scene 0.72 ms).
 
-Gaps: dynamic grass (`dyngrass`, visible in the capture), weapons attached to bones (Joan's sword), blob/stencil
-shadows, scattering sky + clouds, water bump/env/reflection, particles (torches, waterfall), point lights (135 `CreateLight`
-in S1L1), LOD (`#2/#3`) files, unit `.uni` armies, original mip chains, tag-1 blend modes.
+Tests: `engine.world_load` (fog range/colour, 144 point lights, sector light sets, water, 11 emitters, shadow volume),
+`engine.gl_world_render` / `engine.vk_world_render` (start view incl. blue haze band, torch view `--camera
+12037,13600,250,90,-8` fire pixels, moat view `--camera 11000,3200,1350,240,-20` water pixels).
+
+Gaps: scatter.nvo sky, point lights on terrain/grass draws and point-light shadow volumes (FUN_005f0f80), grass wind,
+water Reflection = High, weather, combat particle features (orbits, SMO particles), LOD (`#2/#3`), unit distance culling.

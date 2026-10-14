@@ -211,11 +211,11 @@ After load `FUN_0045b240` downgrades unsupported graphics options. VSetting.exe 
 | 0x33-0x38 | | 1,5,3,2,0 | same | UNKNOWN (0x37 tested ==0/==2 in input timing code) | — |
 | 0x39 | u8 | 1 | 1 | UNKNOWN (saved/restored with audio fields) | — |
 | 0x3A | i16 | 77 | 9 | music volume (`FUN_0059b150` → music stream gain *0.01) | HIGH |
-| 0x3C | i16 | 39 | 15 | sound-effect volume (`FUN_00586620`, 3 SFX buffers) | HIGH |
+| 0x3C | i16 | 39 | 15 | "Environmental" volume (`FUN_00586620` → the 3 environment streams; audio page `FUN_007413e0`) | HIGH |
 | 0x3E | i16 | 100 | 100 | UNKNOWN volume | — |
-| 0x40 | u8 | 1 | 1 | UNKNOWN sound flag (`FUN_0059e400`) | — |
-| 0x41 | i16 | 100 | 16 | speech/voice volume (`FUN_0045f6b0`, 12 channels) | HYPOTHESIS |
-| 0x43 | u8 | 1 | 1 | 3D sound: 1 → `alDistanceModel(AL_INVERSE_DISTANCE)` (`FUN_00454000`) | HIGH |
+| 0x40 | u8 | 1 | 1 | sound enabled (gates `ilib\se.cpp` playback `FUN_0059e400`, `FUN_0059ebd0`) | HIGH |
+| 0x41 | i16 | 100 | 16 | "Sound Volume": 3D effects + UI (`FUN_0045f6b0` → 12 OpenAL sources, `FUN_004ceef0`) | HIGH |
+| 0x43 | u8 | 1 | 1 | "3D Sound On": `FUN_00454000(on ? 2 : 0)` → `alDistanceModel(AL_INVERSE_DISTANCE_CLAMPED 0xD002)` / `AL_NONE` (docs/AUDIO_AND_VIDEO.md) | CONFIRMED |
 | 0x44-0x4E | u8 | 1.. | | UNKNOWN flags (`FUN_0045a8b0/0045a950`) | — |
 | 0x4F-0x67 | i32 x7 | 20,0,100,100,90,100,70 | same | UNKNOWN | — |
 | 0x6B | i32 | 3 | 3 | control/key preset 0..3 (`FUN_004cb5b0(preset,key)`) | HIGH |

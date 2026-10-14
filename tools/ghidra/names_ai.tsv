@@ -1,0 +1,692 @@
+# joan.exe analyst names: gameplay AI, troops, tasks/orders, pathfinding, physics, triggers, mission flow (AITroopRE).
+# Same format as names.tsv. Evidence/details: docs/reverse-engineering/GAMEPLAY_AI_TROOPS.md. Addresses already in names.tsv are not repeated.
+# addr	name	subsystem	confidence	evidence
+00416a50	Item_ctor_base	item	CONFIRMED	vtable 0x9d3d78, size 0xc2
+004178e0	Item_init	item	CONFIRMED	vtbl+8, copies class/type/Damage/Defense/Duration
+00418310	Rts_store_group	rts	CONFIRMED	Ctrl+n, RTS_NARRATOR_001
+0041c5e0	ModItem_footprint_contains	item	HIGH	rotated rect test vs pos+radius
+0041c780	Battle_deinit	battle	HIGH	world+Game deinit, progress=0
+0041c7e0	Battle_is_loaded	battle	CONFIRMED	Battle+0 > 9
+0041c810	Battle_load_world	battle	HIGH	loads step world, progress=10
+0041cc80	Battle_start_scenario	battle	CONFIRMED	(no, step, keep) compile scripts
+0041e850	Item_setup_collision	item	CONFIRMED	vtbl+0x7c, actor+0xb8 shape
+0041fcc0	Unit_deactivate	unit	HIGH	+0x2ed=0 remove from scene
+00420110	Projectile_ctor	projectile	CONFIRMED	memset 0x6c
+004216d0	Unit_get_leader	team	CONFIRMED	self if team else +0x37
+004227c0	Item_activate	item	CONFIRMED	vtbl+0x1c, sector add, NeedCollision physics body
+00422f10	Unit_clear_path	path	HIGH	+0x3e6/+0x3ea/+0x3f2=0
+00425ce0	ItemRes_get	item	HIGH	ecx 0xa58f50, 461 callers, returns 0x2bf record
+00425d20	ItemArray_get	item	CONFIRMED	DynArrayB_get_ptr on 0xa460a0
+00425d50	ItemArray_is_deleted	item	CONFIRMED	get_ptr==0
+00428b70	UnitArray_is_deleted	unit	CONFIRMED	get_ptr==0
+00429090	World_query_levels	world	CONFIRMED	box -> Level** via tree +0x7e
+0042b270	Level_new_sector	world	CONFIRMED	grows +0x68 by 0x100, Scene_create_sector
+0042ba40	Player_release_shot	projectile	HIGH	state 0x36 -> dir from camera to target+60, state 0x33
+0042c140	Level_add_place	world	HIGH	level list +0x9c/+0xa0, place +0x3a/+0x3e/+0x42
+0042c6b0	Level_parse_map_header	world	HIGH	+0x4c/+0x4e then CreateSceneSector loop
+0042d0e0	Unit_is_dead	Unit	CONFIRMED	hp+0x135<1 && +0x120==0
+0042d690	Unit_get_busy_state	unit	HIGH	+0x1fd
+0042d980	ViewCtrl_after_load	player-control	HYPOTHESIS	restores mode, mode 4 → Rts_resume
+0042dd70	Unit_disband_team	team	CONFIRMED	members leave, +0x39=1, delete Team
+0042de70	ViewCtrl_reset	player-control	HIGH	mission start: mode from config+0x6b, +0xed=700
+0042df50	ViewCtrl_exit_mode	player-control	HIGH	switch(+0x10) per-mode exit; 4→Rts_deinit
+0042e040	ViewCtrl_set_mode	player-control	CONFIRMED	sets +0x10/+0x14/+0x81, stop player task when leaving 4
+0042f210	Item_create_actor	item	CONFIRMED	vtbl+0x10, actor type 1 or 10
+0042f620	ViewCtrl_draw	player-control	HIGH	switch(+0x10) draw; 4→Rts_draw
+0042f700	ViewCtrl_process	player-control	CONFIRMED	waits exit-done, calls enter/update per mode
+0042fcb0	Unit_leave_team	team	CONFIRMED	Team remove_member, clears +0x37/+0x31/+0x2f
+0042ff90	Unit_is_playable_hero	unit	CONFIRMED	type name in 4-name table 0x9f861c
+004300e0	ViewCtrl_is_switching	player-control	CONFIRMED	returns +0x81
+00430190	Unit_get_mount	unit	CONFIRMED	+0x1e2
+004301c0	Game_is_cutscene	game	HIGH	returns Game+0x744 (ECX 0xa58f90 at all 30 sites); set only by 0x4725f0 from cut_scene_interface 0x6ca660 etc.
+004311d0	Item_update_location	item	CONFIRMED	World_locate + sector/level relink
+00431480	ProjectileMgr_launch_for_shooter	projectile	CONFIRMED	launches records with +0x2a==shooter,+0x14==0
+00432300	ViewCtrl_switch_character	player-control	CONFIRMED	JOAN/JEAN/LAHIRE/ALENCON cycle or index
+00432b90	Unit_is_task_locked	task	CONFIRMED	returns byte +0x2e1
+00433670	ItemAnim_on_trigger	item	HIGH	PLAY_ANIMATION receiver
+00433a90	OrderCanInt_turn	order	CONFIRMED	expired
+00434210	OrderEnd_rush	order	CONFIRMED	stand
+00435280	OrderEnd_shoot	order	CONFIRMED	stand, action=0
+00437770	Level_add_unit	world	CONFIRMED	level list +0x8c/+0x90, unit +0x339/+0x33d/+0x341
+004378a0	OrderEnd_approach_enemy	order	CONFIRMED	clear path, stand, action=0
+00438f80	Unit_join_team	team	CONFIRMED	sets +0x37/+0x31, Team add_member, cap 20, raise level
+0043a530	Trigger_is_expired	trigger	CONFIRMED	+0x2e/+0x2a test
+0043b190	Level_add_item	world	CONFIRMED	level list +0x94/+0x98, item +0xaa/+0xae/+0xb2
+0043bbc0	OrderCanInt_rush	order	CONFIRMED	anim != RUSH
+0043be40	ViewCtrl_interact_hire	player-control	HIGH	mercenary ≤200 → Unit_hire_mercenary
+0043c210	Player_recruit_nearby_unit	team	HIGH	48dfb0(100) then join
+0043da10	OrderEnd_approach_place	order	CONFIRMED	stop
+0043f7c0	ViewCtrl_load_rts_camera	rts	HIGH	loads RESOURCE\rts.cm into +0x18
+0043f940	Rts_resume	rts	HIGH	init without camera track, state=1
+0043fbe0	OrderEnd_shift	order	CONFIRMED	stand
+0043fc90	Rts_init	rts	CONFIRMED	"rts_init" string; camera track, selection = player team
+004404c0	Rts_deinit	rts	CONFIRMED	"rts_aim" track, stash player task, switch to +0x1237 hero
+00440b30	Rts_process_input	rts	CONFIRMED	groups, commander keys, clicks, drag, right-click commands, camera
+00442820	Unit_activate	unit	HIGH	+0x2ed=1
+00442ef0	Rts_process	rts	CONFIRMED	+0xf5 state machine, cursor animation, camera-distance fix
+004450f0	Rts_draw	rts	HIGH	hover cursor selection, drag box, cursor sprite
+00447600	Unit_create_team	team	CONFIRMED	new Team(0x58), leader/anchor init, nation lists
+00447740	Rts_camera_rotate	rts	CONFIRMED	0.15 deg/ms, pitch pi/4
+00447860	Rts_is_exit_done	rts	CONFIRMED	state==4 then flush
+00447900	Rts_get_state	rts	CONFIRMED	returns +0xf5
+00447960	Rts_camera_zoom	rts	CONFIRMED	2*ms per frame, 187.5..2500
+00448080	Unit_max_troop_size	team	CONFIRMED	min(20,max(count,9+(lead*(100+TROOP_SIZE)/100-20)/5))
+00448870	Unit_formation_pos	unit	CONFIRMED	team anchor + +0x412
+004489c0	Rts_box_select	rts	HIGH	drag-rect frustum selection
+00449b30	Rts_click_select	rts	CONFIRMED	single click unit (+team) select
+0044a260	World_build_level_tree	world	HIGH	2n-1 nodes x 0x38
+0044a430	Rts_operate_item	rts	HYPOTHESIS	double-click gate → event 0x20/0x200
+0044a660	Unit_is_leader	team	CONFIRMED	+0x33 != 0
+0044a690	Rts_dismiss_siege_crew	rts	CONFIRMED	double-click weapon releases slots, RTS_SIEGE_007
+0044a950	Team_formation_center	formation	CONFIRMED	anchor + dir*(-100-W/2)
+0044aad0	Rts_recall_group	rts	CONFIRMED	Alt+n
+0044ac60	Rts_pick_target	rts	CONFIRMED	hover pick → type 0..11 + target
+0044cdd0	ProjectileMgr_remove_by_item_owner	projectile	HYPOTHESIS	removes when item+0xaa==arg or in region
+0044cfb0	Troop_cmd_formation_move	RTS	HIGH	sets task 12 or 19 (DAT_00a51800&0xc) per member, expire +180000
+0044e5f0	WorldS_parse_objects	world_s	HIGH	CreateLight/Object/Water/Trigger/... dispatcher
+0044eb80	Rts_cmd_attack_unit	rts	CONFIRMED	task 13 p1=target prio+1
+0044f1f0	Rts_cmd_attack_item	rts	CONFIRMED	task 17 p1=item prio+1
+0044f750	Rts_cmd_assign	rts	CONFIRMED	siege crew task 15 / join team / follow task 10
+00450ea0	WorldS_parse_create_trigger	world_s	CONFIRMED	.stg CreateTrigger block
+00451430	Rts_clear_highlight	rts	CONFIRMED	unhighlight 10 groups, +0x1237=+0x1238=0
+00451530	Rts_select_commander	rts	CONFIRMED	hero idx 1..8 select/center/switch
+00451dc0	Team_prev_formation_center	formation	CONFIRMED	same from prev anchor
+004524c0	Rts_count_selected_leaders	rts	CONFIRMED	group0 leader count
+00452570	Rts_first_selected_leader	rts	CONFIRMED	group0 first leader recno
+00452610	Rts_pick_building	rts	HYPOTHESIS	building (kind 3/0x10) under pick point
+00452720	Rts_cmd_ride	rts	HYPOTHESIS	event 0x200 to mount, +0x7d=0xb
+004533e0	Unit_rider_stop	unit	HIGH	STOP_CC stop anims
+00453620	Rts_is_selectable	rts	CONFIRMED	+0x2f, task!=15, +0x384, siege crew check
+00453930	Rts_camera_view_valid	rts	CONFIRMED	4 corner rays hit map
+00454c80	Console_exec	debug	HIGH	developer console commands
+004551f0	Projectile_release_resources	projectile	HIGH	frees trail, actor, item, particle
+00455c00	Console_objective_finish	debug	HIGH	console "objective_finish"
+00456960	Cheat_add_command_point	cheat	CONFIRMED	cp = MAX_COM
+0045bdf0	Trigger_cmp_priority	trigger	HIGH	qsort cmp on byte +0x12 (buggy use)
+0045c430	OrderEnd_move	order	CONFIRMED	stand
+0045de50	Team_pick_formation_member	formation	CONFIRMED	nearest member per slot with hysteresis
+0045e620	Place_find_slot	place	CONFIRMED	own or nearest free slot
+00461f10	Unit_deinit	unit	HIGH	leave/disband team on delete
+004655a0	Unit_auto_join_team	ai	HIGH	phase 2: leader recruits leaderless same-nation units within 300
+00467260	EndCon_free	end_con	CONFIRMED	Mem_del +1/+5 end_con.cpp
+00467300	EndCon_set_des	end_con	CONFIRMED	realloc+copy to +1
+00467390	EndCon_set_territory_link	end_con	CONFIRMED	realloc+copy to +5
+00467590	SpawnBarrack_process	facility	CONFIRMED	one unit per tick
+00467c30	Unit_find_incoming_missile	Combat	HIGH	scans 0xa48500, hostile shooter, radius
+00467dd0	SpawnBarrack_add_leader	facility	CONFIRMED	
+00467ea0	SpawnBarrack_add_member_group	facility	CONFIRMED	max 4 groups
+00467f90	SpawnBarrack_reset	facility	CONFIRMED	memset +0x79,0xc3
+00467fd0	SpawnBarrack_get_spawn_pos	facility	CONFIRMED	rect centre, terrain z
+00468410	RecruitFacility_init	facility	HIGH	
+00468600	RecruitFacility_process	facility	CONFIRMED	queue → barrack group, MOVE_TO rally 5s
+00468790	RecruitFacility_set_recruit_list	facility	CONFIRMED	
+00468a80	Trigger_follow_source	trigger	CONFIRMED	+0x23 re-centre
+00468c10	RecruitFacility_update_flag_model	facility	CONFIRMED	English/French flag
+00468cd0	RecruitFacility_queue_order	facility	CONFIRMED	{type,team,count} into +0x89
+00469520	RecruitRes_get	res	CONFIRMED	1-based
+0046a6f0	Workshop_set_product	facility	CONFIRMED	4 slots
+0046b730	Workshop_set_recruit_list	facility	CONFIRMED	
+0046d4a0	FacilityArray_process	facility	CONFIRMED	vtbl+0x10 each tick
+0046d670	Zone_get_centre	place	CONFIRMED	+0x29
+0046d820	FacilityKind_from_name	facility	CONFIRMED	BARRACK1 RECRUIT3 WORKSHOP16…
+0046da90	Facility_is_spawn_rect_clear	facility	CONFIRMED	
+00470d40	Game_init_arrays	game	CONFIRMED	"Loading *_array"/"Loading trigger_system" strings
+00470f80	SE_free_finished_channels	sound	HIGH	channels 1..12 state 4
+00471010	Game_deinit	game	HIGH	frees arrays/triggers/end-cons; keep path for scenario 5
+00471620	Game_process	game	HIGH	end-condition evaluation, scenario switch
+00471e20	Game_add_end_condition	end_con	CONFIRMED	add_end_condition handler 0x65a350
+00471ef0	Game_del_last_end_condition	end_con	CONFIRMED	del_end_condition handler
+00471f90	Game_drop_end_condition	end_con	HIGH	UI remove + free strings
+004725f0	Game_set_cutscene	game	HIGH	sets Game+0x744, called by cut-scene sys
+00472ee0	GameplayRes_load_game_consts	data	CONFIRMED	BATTLE_R, EASY_D..VDIFF_A
+00476bb0	GameClock_process	game	HIGH	minutes += dt*0.0004; day rollover at 1440
+004779e0	Game_autosave	gamefile	CONFIRMED	dead code, _AUTO%03d.SAV
+00479270	Lever_on_trigger	item	HIGH	INTERACT → spawns trigger of type +0x7e
+0047e200	Trigger_init	trigger	CONFIRMED	writes all record fields
+00482ea0	ProjectileMgr_save	projectile	HIGH	writes records (from 0x474ec0)
+00482f70	ProjectileMgr_load	projectile	HIGH	reads 0x6c records (from GameFile_read_world)
+00484540	UnitScriptRes_get_rec	UnitAI	CONFIRMED	recs+(i-1)*0x28, global 0xa48cf8
+00485e70	TriggerSys_save	trigger	HIGH	gamefil2 write, raw 0x43 records
+00485f20	TriggerSys_get	trigger	CONFIRMED	DynArrayB_get_ptr wrapper
+00485f50	TriggerSys_load	trigger	HIGH	gamefil2 read, raw 0x43 records
+0048caf0	Gate_on_trigger	i_gate	HIGH	GATE toggles open/close
+0048d2b0	Gate_set_open	i_gate	HYPOTHESIS	called with 1/0 from gate trigger
+0048d4b0	Gate_set_closed	gate	CONFIRMED	nav poly block + LOS quads
+0048dfb0	Unit_find_recruitable_unit	team	CONFIRMED	nearest eligible within radius, ±90°
+0048fa50	Keg_on_event	item	HIGH	0x2000/0x4000 -> stage, 0x4000 events R200
+004913c0	ProjectileMgr_tick	projectile	CONFIRMED	DL/TL/frozen removal, else 0x4fcc00
+004945c0	Ballistic_solve_by_kind	projectile	CONFIRMED	calls 0x496d40 with kind's M/MXD/MND/AV/GL, minDirZ 0/.25/.1
+00494dc0	Trigger_type_from_name	trigger	CONFIRMED	TRIGGER_* → bit
+004953d0	GameClock_new_day	clock	HIGH	day/month/year rollover
+00496d40	Ballistic_solve_launch_impulse	projectile	CONFIRMED	T=d/AV; vz=(GL*9.81*T^2/2+dz)/T; lob loop T+=0.2; out=v*M*1000
+00497e10	Unit_item_effect_sum	item	HIGH	aggregates item effect types over inventory
+00498e90	Projectile_load_kind_params	projectile	CONFIRMED	switch kind copies THROWI row to +0x32..+0x52
+0049cef0	OrderExec_turn	order	CONFIRMED	action 10 sets +0x1e
+0049d810	Unit_ai_think	ai	HIGH	phase 3; every unittype+0x121 ms (+rand(500) first) -> UnitScript_run 0x5467b0
+0049da30	Unit_auto_pickup	unit	HIGH	phase 0: generals pick up items/potions in reach
+0049e8d0	ItemArray_ctor	item	CONFIRMED	DynArrayB(4,0x14) on 0xa460a0
+0049ea90	ItemArray_create	item	CONFIRMED	new by ITEMCLAS, sizes 0xc2..0x107
+0049f830	ItemClass_load	item	CONFIRMED	STD.SET ITEMCLAS rec 0x2c
+0049f970	ItemType_load	item	CONFIRMED	STD.SET ITEMTYPE rec 0x25
+0049fbb0	ItemRes_load	item	CONFIRMED	ITEM\ITEM.RES, rec 0x2bf
+004a0160	ItemRes_parse	item	CONFIRMED	keyword table offsets
+004a2b20	MapTable_find	physics	HIGH	0x34-byte map records by id
+004a36c0	ItemRes_find_by_name	item	HIGH	ecx 0xa58f50
+004a4200	ItemRes_get_effect_value	item	HIGH	effect value at level
+004a4540	ItemRes_parse_collision_type	item	CONFIRMED	None0 Sphere1 Box3d2 Cylinder3
+004a45f0	ItemEffect_parse_type	item	CONFIRMED	effect name -> id (ARROW_DEFLECT_OFF 10, RANGE_DISTANCE 0x10, RATE_OF_FIRE 0x11)
+004a71f0	OrderExec_gate_open	order	HIGH	action 17 event 0x20
+004a9d40	MusicCue_by_id_dead	sound	CONFIRMED	0 callers, WinScenario strings
+004b5010	Nation_spend_gold	nation	HIGH	+0x1371 -= x, expense category
+004b5bf0	Nation_spend_recruit	nation	HIGH	2.0 res9, +0x14a5 -1, +0x1385 -1
+004b5cc0	Nation_remove_unit_lists	nation	HIGH	remove from both lists
+004b5e40	Nation_update_unit_lists	nation	CONFIRMED	leader list +0x152d, free list +0x1535
+004b62b0	Unit_in_team	team	CONFIRMED	+0x37||+0x33
+004b9a90	MsgLog_new_record	msglog	HIGH	cap 2000 records
+004ba170	MsgLog_add_reinforce	msglog	CONFIRMED	msg type 0x30, ECX=0xa50020
+004ba1f0	MsgLog_add_attack	msglog	CONFIRMED	msg type 0x31
+004ba270	MsgLog_add_flee	msglog	CONFIRMED	msg type 0x32
+004ba890	MsgFmt_troop_reinforce	msglog	CONFIRMED	table 0xa018b7[0x30]
+004ba930	MsgFmt_troop_attack	msglog	CONFIRMED	table 0xa018b7[0x31]
+004ba9d0	MsgFmt_troop_flee	msglog	CONFIRMED	table 0xa018b7[0x32]
+004bab50	OrderQueue_ctor	order	CONFIRMED	DynArray(0x21,10)+memset cur 0x21
+004baba0	OrderQueue_dtor	order	HIGH	clear 0x4bac30 + DynArray dtor
+004bac30	OrderQueue_clear	order	HIGH	FUN_00584580(1)
+004bac60	OrderQueue_add	order	CONFIRMED	same-action BLOCK/APPROACH_ENEMY update, dup reject, prio-sorted insert
+004bae70	OrderRec_cmp_prio	order	CONFIRMED	returns 0/-1/+1
+004baee0	OrderQueue_remove_at	order	CONFIRMED	DynArray remove 1-based
+004baf10	OrderQueue_pop_front	order	CONFIRMED	q[1] -> cur
+004baf80	OrderQueue_process	order	CONFIRMED	prune expired, LOCK freeze, preempt, dispatch 22 executors
+004bb3e0	OrderQueue_can_interrupt	order	CONFIRMED	per-action interruptibility switch
+004bb660	OrderQueue_finish_current	order	CONFIRMED	per-action cleanup, cur.action=0
+004bb8d0	OrderQueue_has_order	order	CONFIRMED	cur or queued action match
+004bb950	OrderRec_set	order	CONFIRMED	fills 0x21-byte record
+004bb9d0	OrderRec_same_action	order	CONFIRMED	*this==*other
+004bba00	OrderRec_para_char	order	CONFIRMED	(p_i>>(4-k)*8)&0xff
+004bbac0	Order_pack_string_paras	order	CONFIRMED	4 chars per int big-endian
+004bbbc0	Order_id_from_name	ai	CONFIRMED	COMBO_ATTACK..SPECIAL_MOVEMENT
+004bbf20	OrderExec_combo_attack	order	HIGH	action 1
+004bc8a0	OrderExec_down_attack	order	CONFIRMED	action 19
+004bca60	OrderExec_energy_attack	order	CONFIRMED	action 20, EGATK_MP/HP cost
+004bcdb0	OrderExec_rush_attack	order	CONFIRMED	action 21, anim mp cost +0x18
+004bd090	OrderExec_shoot	order	CONFIRMED	action 2, ±10° gate, SHTLOAD
+004bd420	OrderExec_approach_enemy	order	CONFIRMED	action 12 band p2..p2+p3, jitter ±135°
+004bdbc0	OrderExec_approach_item	order	CONFIRMED	action 13
+004bdf90	OrderExec_approach_place	order	HIGH	action 14 slots/zone
+004be770	OrderExec_follow_formation	order	CONFIRMED	action 15
+004bed40	OrderExec_follow_unit	order	CONFIRMED	action 16
+004bf240	OrderExec_block	order	CONFIRMED	action 4 GUARD1
+004bf510	OrderExec_jump	order	CONFIRMED	action 3 UP anim
+004bf5f0	OrderExec_move	order	CONFIRMED	action 5 WALK/RUN
+004bf780	OrderExec_shift	order	CONFIRMED	action 6 MOVE_L/R/B, JUMP_B
+004bfa10	OrderExec_move_to_target	order	CONFIRMED	actions 7/8
+004bfd70	OrderExec_move_on_track	order	HIGH	action 9
+004c0680	SE_play_trigger	sound	HIGH	kind-4 trigger playback ECX 0xa5cf98
+004c09a0	OrderExec_recruit_troop	order	CONFIRMED	action 18 instant spawn
+004c0c40	OrderCanInt_combo	order	CONFIRMED	anim not ATTACK/H_ATTACK
+004c0c90	OrderCanInt_energy	order	CONFIRMED	anim not ENGATK1-4
+004c0d40	OrderCanInt_down_attack	order	CONFIRMED	anim not ATTACK/H_ATTACK
+004c0d90	OrderCanInt_shoot	order	CONFIRMED	anim not shooting set
+004c0ee0	OrderCanInt_block	order	CONFIRMED	anim not GUARD1/GUARDR
+004c0f30	OrderCanInt_jump	order	CONFIRMED	grounded or anim finished
+004c0f90	OrderCanInt_move	order	CONFIRMED	anim not RUN/WALK/TIPTOE
+004c1090	OrderCanInt_idle	order	CONFIRMED	expired or anim done
+004c10f0	OrderCanInt_gate	order	CONFIRMED	expired or anim done
+004c1150	OrderCanInt_recruit	order	CONFIRMED	expired or anim done
+004c11f0	OrderEnd_combo	order	CONFIRMED	stand, action=0
+004c1230	OrderEnd_down_attack	order	CONFIRMED	stand
+004c1270	OrderEnd_energy_attack	order	CONFIRMED	stand
+004c1390	OrderEnd_approach_item	order	CONFIRMED	clear path, stand
+004c1480	OrderEnd_follow_formation	order	CONFIRMED	clear path, stand
+004c14e0	OrderEnd_follow_unit	order	CONFIRMED	stop
+004c15a0	OrderEnd_block	order	CONFIRMED	stand
+004c15e0	OrderEnd_jump	order	CONFIRMED	anim DOWN
+004c1670	OrderEnd_move_to_target	order	CONFIRMED	clear track/path, stand or rider stop
+004c17a0	OrderEnd_move_on_track	order	CONFIRMED	clear track/path
+004c1860	OrderEnd_turn	order	CONFIRMED	stand
+004c18f0	OrderEnd_special_movement	order	CONFIRMED	reset combo, stand
+004c21c0	Place_get_centre	place	CONFIRMED	+0x2a
+004c2470	Place_slot_pos	place	CONFIRMED	+0xc6+(i-1)*12
+004c24b0	Place_slot_facing	place	CONFIRMED	+0x15e+i*4
+004c2540	Place_assign_slot	place	CONFIRMED	occ[i]=recno, unit+4/+6
+004c25a0	OrderExec_idle	order	CONFIRMED	action 11
+004c2680	OrderExec_special_movement	order	CONFIRMED	action 22 EXTRAn
+004c58a0	Plasma_alloc	terrain	CONFIRMED	(maxX+1)*(maxY+1) shorts, plasma.cpp
+004c59d0	Plasma_get	terrain	HIGH	getter used by samplers
+004c5a20	Plasma_set	terrain	CONFIRMED	data[y*(maxX+1)+x]=v
+004c7100	Plasma_sample_bicubic	terrain	CONFIRMED	Hermite bicubic + dx/dy
+004c7b70	Plasma_sample_tri	terrain	CONFIRMED	triangulated bilinear with checkerboard diagonal
+004ca760	RecruitRes_load	res	CONFIRMED	UNIT\RECRUIT.RES
+004ca980	RecruitRes_parse_record	res	CONFIRMED	
+004cad00	RecruitRes_find_by_code	res	CONFIRMED	
+004cae10	RemapKey_ctor	remapkey	CONFIRMED	memset 0x14
+004cae40	RemapKey_dtor	remapkey	CONFIRMED	calls deinit
+004cae70	RemapKey_init	remapkey	CONFIRMED	DEFAULTK/KEYDESC DBF load
+004cb310	RemapKey_deinit	remapkey	CONFIRMED	Mem_del arrays
+004cb410	RemapKey_reset_scheme	remapkey	CONFIRMED	defaults for scheme 0/1/3
+004cb580	RemapKey_get_entry	remapkey	CONFIRMED	&cur[action-1]
+004cb5b0	RemapKey_key_name	remapkey	CONFIRMED	desc text for action/scheme
+004cb6d0	RemapKey_is_held	remapkey	CONFIRMED	held state per scheme
+004cb820	RemapKey_is_pressed	remapkey	CONFIRMED	edge per scheme
+004cb9b0	RemapKey_find_desc	remapkey	CONFIRMED	(device,code) → text
+004cba40	RemapKey_assign	remapkey	HIGH	set key with conflict swap; action 34 locked
+004cc220	RemapKey_load_config	remapkey	CONFIRMED	from CONFIG.DAT+0xb5 if flag +0xb4
+004cc380	RemapKey_save_config	remapkey	CONFIRMED	flag=1, memcpy to config
+004cc3d0	Key_is_down_dik	input	HIGH	DIK state incl. modifier aliases
+004cc570	Key_is_pressed_dik	input	HIGH	DIK edge incl. modifier rising edge
+004cc850	Scenario_deinit	scenario	HIGH	frees steps/scripts/lists
+004ccf40	Scenario_set	scenario	CONFIRMED	(re)load scenario_NN.SCR
+004ccfb0	Scenario_load_scr	scenario	CONFIRMED	"SCENARIO\\scenario_"
+004cd510	Scenario_get_mode	scenario	CONFIRMED	step +0x1ae / inline +0x1c2
+004cd570	Scenario_set_mode	scenario	CONFIRMED	set_scenario_mode
+004cd5d0	Scenario_process	scenario	CONFIRMED	time limit → lose, count timers
+004cd790	Scenario_mode_from_name	scenario	CONFIRMED	SCENARIO_*_MODE strings
+004cd840	Scenario_cur_step	scenario	CONFIRMED	returns step record ptr
+004cdbc0	Scenario_store_generals	scenario	HIGH	into profile
+004ceef0	SE_play_by_name	sound	HIGH	"OBJECTIVE_ADD/UPDATE/FINISH"
+004e4520	UnitTask_set	ai	CONFIRMED	writes 0x19-byte task struct (id,flag,para1..4,state=0)
+004e4610	Task_id_from_name	ai	CONFIRMED	ATTACK_PLACE..DEFEND_UNIT, SPECIALn=100+n
+004e4bb0	TerritoryArray_process	territory	HIGH	player territory + contested flag
+004e6fb0	Projectile_kill	projectile	CONFIRMED	0x4551f0 cleanup, +0x24=1
+004e6fe0	Music_process	audio	HIGH	adaptive music: battle when enemy within BATTLE_R of player
+004e8500	Unit_bribe	team	CONFIRMED	BRI_COMM/BRI_CAPT cost, joins briber
+004e8a50	ProjectileMgr_ctor	projectile	HIGH	DynArrayB elem 4 grow 0x14
+004e95f0	ProjectileMgr_dtor	projectile	HIGH	clear + array dtor
+004e9f10	ProjectileMgr_clear	projectile	HIGH	delete all
+004ea700	ProjectileMgr_spawn	projectile	CONFIRMED	new 0x6c, 0x507fc0, add to 0xa48500
+004ea9c0	ProjectileMgr_remove	projectile	CONFIRMED	delete record + slot
+004ead00	ProjectileMgr_kill_by_nation	projectile	HYPOTHESIS	kills by shooter nation
+004eed50	TriggerSys_ctor	trigger	HIGH	DynArray_init(4,0x14,0)
+004eedf0	TriggerSys_init	trigger	CONFIRMED	empty, "Loading trigger_system"
+004eee10	TriggerSys_deinit	trigger	CONFIRMED	deletes all triggers
+004eef00	TriggerSys_add	trigger	CONFIRMED	new(0x43)+init+DynArray add
+004ef020	TriggerSys_del	trigger	CONFIRMED	delete + DynArray_del
+004ef090	TriggerSys_process	trigger	CONFIRMED	tick, called 0x4e60b3 ECX 0xa5ccd0
+004eff60	Trigger_ctor	trigger	CONFIRMED	memset 0x43
+004f0290	TriggerSys_is_deleted	trigger	CONFIRMED	get_ptr==0
+004f2f80	Level_load	world	HIGH	MAP\ .res .PFD .trk .cm _STG .GRI .PLN
+004f3df0	Level_load_objects	world	HIGH	EnlargeSceneSector consumer
+004f6eb0	Level_load_terrain	world	HIGH	64-unit cells, Default scene sector
+004f7bf0	Unit_sidestep_blocked	unit	CONFIRMED	random perpendicular sidestep + replan
+004fa0f0	Team_update_formation	formation	CONFIRMED	grid slots, LD_FM_DT re-anchor
+004fbc90	Projectile_on_world_hit	projectile	CONFIRMED	item hit events; kill
+004fcc00	Projectile_update	projectile	CONFIRMED	orientation, trail, ground explosions (kind 2 0x2000 R150, kinds 3/4 0x40 R150)
+004fd630	Unit_player_control	unit	HYPOTHESIS	phase-3 path for the main character / +0x1e6 flag
+004fd980	Unit_is_in_danger	ai	HIGH	hp/maxhp < INDANGER; generals auto-use potions
+004fe510	Unit_set_hp	unit	CONFIRMED	clamp [0,max]; at 0 consumes a life (+0x120) and refills
+004fe5d0	Unit_set_energy	Unit	HIGH	+0x145 = clamp(v,0,max)
+004fe8c0	Unit_set_morale	unit	HIGH	+0x163 clamp, leader item limits
+004fee60	Unit_update_location	unit	CONFIRMED	World_locate + sector/level relink, activate/deactivate
+004ff850	Unit_get_heading	unit	CONFIRMED	+0x1a radians
+00500ba0	Unit_can_act	unit	HIGH	CLB_IDLE + lock anims
+00500d10	Unit_set_stance	unit	CONFIRMED	+0x213
+00500d40	Unit_has_anim	unit	HIGH	AnimSet lookup
+00501190	Unit_set_anim	unit	HIGH	(anim, variant char, force)
+005045f0	Unit_anim_time_remaining	unit	CONFIRMED	ms, 0 = finished
+005051e0	Unit_take_ranged_hit	combat	HIGH	BLOCKANG shield block, bearing bonus 0/20/40 -> 0x509e90
+00505960	Unit_rel_angle_to_unit	unit	CONFIRMED	deg (-180,180]
+00505a00	Unit_rel_angle_to_point	unit	CONFIRMED	heading - dir, wrapped
+00505ba0	Unit_elevation_angle_to	ai	HIGH	atan2(dz, horiz dist) deg, wrapped ±180
+00505dd0	Unit_path_to	path	HIGH	goal,budget,use_leader_path,leader
+00507fc0	Projectile_init	projectile	CONFIRMED	ammo type 0xd..0x14 -> kind, item, body type 2/3/4/5/0x12
+00508880	Unit_lod_tier	unit	CONFIRMED	xy dist² to player unit: <=4e6 ->1, <=1.6e7 ->2, <=6.4e7 ->3, else 4; player=1
+005089e0	Unit_set_rank	team	CONFIRMED	+0x104; rank>2 creates team
+00508ab0	Unit_anim_is_idle_class	unit	CONFIRMED	{1..6,8,0x43,0x59,0x5a}
+00508b90	Unit_stand	unit	HIGH	choose idle anim
+00509400	Unit_get_nation	unit	CONFIRMED	nation array by +2
+005094d0	Unit_is_enemy	unit	CONFIRMED	nation hostility FUN_004b6860: same nation 0, nation 0 involved 1, else relation byte; dead units (except player) 0
+0050abd0	Unit_set_desired_heading	unit	CONFIRMED	+0x1e degrees
+0050aca0	Unit_ai_compute_shot_dir	projectile	CONFIRMED	unit+0x365 = normalize(target-self)
+0050d550	Unit_push_slots_full	unit	CONFIRMED	1 iff all slots of mask occupied
+0050fd90	Unit_add_item	item	HIGH	used by give_item_to_unit(_troop)
+00510f80	Unit_anim_is_attacking	unit	CONFIRMED	attack/rush/H_RUN set
+00511e70	Unit_base_attack_chance	ai	CONFIRMED	30 archer/xbow, 50 other, 90 if type+0x149 in {4,5}
+00511f80	Unit_attack_chance	ai	CONFIRMED	+0x2df * EASY_A..VDIFF_A[difficulty 0xa57fc2]
+00512070	Unit_block_chance	Combat	CONFIRMED	DAT_00a3cc90*difficulty mul
+00512130	Unit_arrow_scatter_offset	projectile	CONFIRMED	+-Misc_random(ARR_ACCU); 0 for player/class 8
+005121c0	Unit_toggle_hold	unit	CONFIRMED	task {0,p1=1} hold vs restore pending
+005130a0	Unit_line_of_fire_blocked	ai	HIGH	terrain heightmap ray test me(z+50)->target
+005133e0	Projectile_launch	projectile	CONFIRMED	spawn point, aim, scatter, 0x6b11a0 force
+00514c40	Projectile_on_body_hit	projectile	CONFIRMED	height gate; posts 2/0x2000/0x40 events; kill
+00519800	Unit_set_prisoner	unit	CONFIRMED	+0x2e1/+0x2e2
+005199b0	Unit_free_prisoner	unit	CONFIRMED	
+0051c680	GameplayRes_load_unit_consts	data	CONFIRMED	GAMEPLAY.RES {UNIT}{CRITICAL}{DANGER}{MINIMAP}{EXP}{R_ATT}{C_BOUNS}{KILL} -> 0xa3cbc8..0xa3cd2c
+0051dbe0	UnitArray_ctor	unit	CONFIRMED	DynArrayB(4,0x14,0,0) on 0xa47c08
+0051df00	UnitArray_clear	unit	CONFIRMED	iterates size..1 deleting
+0051dfc0	UnitArray_add	unit	HIGH	new Unit 0x4b4, profile carry-over branch, returns recno
+0051e1f0	UnitArray_delete	unit	CONFIRMED	vdtor + DynArrayB_delete, clears +0x2e
+0051e280	UnitArray_process	unit	CONFIRMED	tick object 0xa47c08 'unit_array'; LOD-tiered round-robin, calls Unit_process(phase 0..3)
+0051fd50	UnitArray_find_by_type	unit	CONFIRMED	compares unit+0x3b
+0051fdd0	UnitArray_find_by_name	unit	CONFIRMED	strcmp unit+0x3d
+0051fe60	Unit_find_leader_by_team_id	team	CONFIRMED	scan unit array
+005229a0	Unit_add_exp	unit	CONFIRMED	MEM_EXP/LD_EXP team sharing
+00523190	Unit_raise_to_level	unit	HIGH	add exp to reach level
+00523700	Unit_max_energy	Unit	HIGH	+0x149 + bonus
+005238c0	Unit_defense	unit	CONFIRMED	+0x159 short + Unit_item_effect_sum(5)
+00523920	Unit_get_leadership	unit	CONFIRMED	+0x15b + item effect 6
+00527130	UnitRank_from_name	team	CONFIRMED	KING5 GENERAL4 CAPTAIN3 ARCHER1 INFANTRY0 CAVALRY2
+00527220	UnitClass_from_name	unit	CONFIRMED	CITIZEN0..SIEGE_WEAPON8
+00527dd0	UnitType_rank_weight	unit	CONFIRMED	1/2/3
+00527e60	UnitType_rank_weight_killer	unit	CONFIRMED	Joan=4
+00527f10	Unit_can_accept_task	task	CONFIRMED	+0x2e1 lock, prio<, expire
+00527fb0	Unit_set_task	task	CONFIRMED	prio/expiry gate 0x527f10, msg log, copies Task to +0x2a5
+00528300	Unit_clear_task	task	CONFIRMED	zeroes +0x2a5/+0x2be, releases push slot
+00528440	Unit_expire_task	task	CONFIRMED	clears task if +0x2b6 < now
+00528660	Team_ctor	team	CONFIRMED	memset 0x58
+005287d0	Team_add_member	team	CONFIRMED	append, rank count++, update_formation(1,1)
+005288f0	Team_remove_member	team	CONFIRMED	delete-shift, rank count--, update_formation(1,1)
+0052c490	Unit_process	unit	HIGH	switch(phase) 0: per-tick upkeep, 1: regen/timers, 2: order executor, 3: AI think
+0052daa0	Unit_update_movement	unit	HIGH	waypoint following, REACH_DT, wait counters
+0052f930	Sys_process_input	sys	HIGH	per-frame input/UI dispatch + mode tick
+00530eb0	AntiPortal_enable	los	CONFIRMED	+0x70=1
+00530ee0	AntiPortal_set_vertex	los	CONFIRMED	v[i]=p
+00530f20	AntiPortal_segment_hit	los	CONFIRMED	segment-plane + 4 edge tests
+00531f90	AI_light_infantry	ai	CONFIRMED	task switch, class 1
+005322c0	AI_light_general	ai	CONFIRMED	class 2
+00532520	AI_special_general	ai	CONFIRMED	class 3
+00532780	AI_heavy_infantry	ai	CONFIRMED	class 4
+00532a00	AI_heavy_general	ai	CONFIRMED	class 5
+00532c60	AI_archer	ai	CONFIRMED	class 6
+00532ef0	AI_archer_general	ai	CONFIRMED	class 7
+00533170	AI_cannon	ai	HIGH	class 8
+00533370	AI_autobow	ai	HIGH	class 9
+00533440	AI_batterram	ai	HIGH	class 10
+005335e0	AI_camp_horse	ai	HIGH	class 11
+005336e0	AI_cart	ai	HIGH	class 12
+00533810	AI_citizen	ai	HIGH	class 13
+00533920	AI_trebuchet	ai	HIGH	class 14
+00533b10	AI_pig	ai	HIGH	class 15
+00534090	AI_infantry_default	ai	HIGH	tasks 0/1/9/18/default for class 1
+00534880	AI_infantry_defend_place	ai	HIGH	task 6, "EP" search inside place
+00535020	AI_large_weapon_push_inf	UnitAI	CONFIRMED	task 15 class1
+00535640	AI_gate_special_unused	UnitAI	CONFIRMED	unreferenced hard-coded gate script
+00535870	AI_rts_attack_unit_inf	UnitAI	CONFIRMED	task 13 class1
+00535a20	AI_rts_attack_item_inf	UnitAI	CONFIRMED	task 17 class1
+00535c20	AI_infantry_melee_roll	ai	HIGH	rand vs aggression -> COMBO_ATTACK "A"/"AA" + SHIFT
+00535e30	AI_rts_attack_move_inf	UnitAI	CONFIRMED	task 19 class1
+00536390	AI_general_default	ai	HIGH	tasks 0/3/4 for class 2
+00536a40	AI_attack_place_gen	UnitAI	CONFIRMED	task 1 class2
+005370d0	AI_defend_place_gen	UnitAI	CONFIRMED	task 6 class2
+005377b0	AI_follow_unit_gen	UnitAI	CONFIRMED	task 10/18 class2, class1 no-leader
+00537f90	AI_rts_attack_unit_gen	UnitAI	CONFIRMED	task 13 class2
+00538140	AI_rts_attack_item_gen	UnitAI	CONFIRMED	task 17 class2
+00538340	AI_melee_attack_roll_gen	UnitAI	CONFIRMED	combos A/AA/AAA/AAB, down/energy attack
+00538730	AI_rts_attack_move_gen	UnitAI	CONFIRMED	task 19 class2
+005392d0	AI_follow_unit_special_gen	UnitAI	CONFIRMED	task 10/18 class3
+00539a40	AI_attack_place_special_gen	UnitAI	CONFIRMED	task 1 class3
+0053a060	AI_defend_place_special_gen	UnitAI	CONFIRMED	task 6 class3
+0053a6d0	AI_rts_attack_unit_special_gen	UnitAI	CONFIRMED	task 13 class3
+0053a9d0	AI_rts_attack_item_special_gen	UnitAI	CONFIRMED	task 17 class3
+0053abd0	AI_melee_attack_roll_special_gen	UnitAI	CONFIRMED	Martin Gough rush, player-hostile aggr boost
+0053b1b0	AI_rts_attack_move_special_gen	UnitAI	CONFIRMED	task 19 class3
+0053b610	AI_heavyinf_default	ai	CONFIRMED	tasks 0/1/9/18/8/default; 534090 + block, 100/150, FOV135
+0053beb0	AI_heavyinf_defend_place	ai	CONFIRMED	task 6; "EP" variant of 53b610
+0053c700	AI_heavyinf_rts_attack_unit	ai	CONFIRMED	task 13; approach 100/50, block, roll 53cb10
+0053c960	AI_heavyinf_rts_attack_item	ai	CONFIRMED	task 17; APPROACH_ITEM 100/50
+0053cb10	AI_heavyinf_melee_roll	ai	CONFIRMED	rand(5): A/AA/B combos + SHIFT
+0053cda0	AI_heavyinf_task19_attack_move	ai	HIGH	MOVE_TO_TARGET p1..p3, stop within 200, fight en route
+0053d3b0	AI_heavygen_default	ai	CONFIRMED	tasks 0/3/4
+0053db10	AI_heavygen_attack_place	ai	CONFIRMED	task 1; tail APPROACH_PLACE prio0 team
+0053e240	AI_heavygen_defend_place	ai	CONFIRMED	task 6; "EP", view angle reset, block prio5
+0053e9d0	AI_melee_follow_unit	ai	CONFIRMED	task 10/18; FOLLOW_UNIT leash fd+150, assist followed unit's target
+0053f260	AI_heavygen_rts_attack_unit	ai	CONFIRMED	53c700 with prio5 block and roll 53f670
+0053f4c0	AI_heavygen_rts_attack_item	ai	CONFIRMED	53c960 with roll 53f670
+0053f670	AI_heavygen_melee_roll	ai	CONFIRMED	DOWN_ATTACK 60%, rand(14) A/AA/AAA/B/ENERGY
+0053fa60	AI_heavygen_task19_attack_move	ai	HIGH	byte-for-byte trace = 53cda0 (uses infantry roll 53cb10)
+00540070	AI_archer_default	ai	HIGH	class 6 default; stand-off approach range2-400
+00540640	AI_archer_defend_place	ai	CONFIRMED	task 6; "EP" ranged, elev 65
+00540c10	AI_archer_tower_attack	ai	CONFIRMED	task 8; stationary NEAREST_ARCHER within para1
+00540e80	AI_archer_rts_attack_unit	ai	CONFIRMED	task 13; approach R2-400/400, LOF check
+005410b0	AI_archer_rts_attack_item	ai	CONFIRMED	task 17
+00541270	AI_ranged_shoot_roll	ai	HIGH	rand(10) < aggression -> SHOOT order
+00541300	AI_archer_task19_attack_move	ai	HIGH	task 19 ranged
+00541600	AI_archergen_default	ai	CONFIRMED	540070 without leader block, roll 5432a0
+00541b10	AI_archergen_defend_place	ai	CONFIRMED	540640 + APPROACH_PLACE tail
+005420a0	AI_archergen_attack_place	ai	CONFIRMED	task 1; APPROACH_PLACE prio0 team when idle
+005425d0	AI_archergen_tower_attack	ai	CONFIRMED	540c10 for ENGLISH_EX_ARCHER_CAPTAIN
+00542820	AI_ranged_follow_unit	ai	CONFIRMED	task 10 archers; FOLLOW_UNIT prio -1
+00542e60	AI_archergen_rts_attack_unit	ai	CONFIRMED	= 540e80 with 5432a0
+00543090	AI_archergen_rts_attack_item	ai	CONFIRMED	unconditional SHOOT prio3
+005432a0	AI_archergen_shoot_roll	ai	CONFIRMED	identical to 541270
+00543330	AI_archergen_task19_attack_move	ai	HIGH	= 541300 with 5432a0
+00543800	AI_cannon_default	ai	CONFIRMED	class 8 tasks 0/1/11: S/E search 1600|2500 elev65, EC item 3000; TURN+SHOOT; formation follow if leader >1000
+00543c10	AI_cannon_task19_move_fire	ai	CONFIRMED	class 8 task 19: fire block + MOVE_TO_TARGET para1..3, stop within 200
+00543fd0	AI_trebuchet_default	ai	CONFIRMED	class 14 tasks 0/11: S/E(±90) 1600, EC 3200; SHOOT 5000ms without TURN
+005442d0	AI_cannon_rts_attack_unit	ai	CONFIRMED	task 13: APPROACH_ENEMY if dist>=range2, else TURN prio4 + 40% SHOOT if terrain LOS
+00544500	AI_trebuchet_rts_attack_unit	ai	CONFIRMED	task 13: only if dist<3*range4; TURN prio4 + SHOOT 5000
+00544690	AI_cannon_rts_attack_item	ai	CONFIRMED	task 17: hp check, SHOOT when aligned (d<=1||d>=359) else TURN; APPROACH_ITEM range2+size/2
+00544aa0	AI_trebuchet_rts_attack_item	ai	CONFIRMED	task 17: box/gate/wall within 3*range4 -> TURN+SHOOT prio3
+00544c40	AI_cannon_shoot_roll	ai	CONFIRMED	rand(10)<4 -> SHOOT prio2 1500ms
+00544cb0	AI_autobow_default	ai	CONFIRMED	NEAREST_ARCHER, E 3000 ±10° -> SHOOT, else clear target
+00544e00	AI_autobow_shoot	ai	CONFIRMED	SHOOT prio2 1500ms
+00544e50	AI_batterram_move_attack	ai	CONFIRMED	task 101: MOVE_ON_TRACK until closed gate para3 within 300, then ram
+005450b0	AI_batterram_rts_attack_item	ai	CONFIRMED	task 17: reach 300 gate/400 kind4; APPROACH_ITEM 100/100
+00545380	AI_ram_attack_roll	ai	CONFIRMED	F crew && rand(10)<5 -> COMBO_ATTACK "A" prio2 1500
+00545430	AI_cart_follow_unit	ai	CONFIRMED	task 10: FOLLOW_UNIT prio5 if >400 else prio-1, 5000ms
+00545590	AI_citizen_none	ai	CONFIRMED	flee enemy within 600 (80% move away 2000ms / 20% SPECIAL_MOVEMENT), else 10% wander
+00545900	AI_citizen_follow_unit	ai	CONFIRMED	task 10: same as cart, 20000ms
+00545a60	AI_citizen_walk_in_area	ai	CONFIRMED	task 101: 10% MOVE_TO_TARGET random in square para1,para2 ±para3
+00545b80	AI_trebuchet_attack_place	ai	CONFIRMED	task 1: EP search 16384 in place para1; TURN+SHOOT
+00545d00	AI_trebuchet_shoot	ai	CONFIRMED	SHOOT prio2 5000ms
+00545d50	AI_task_retreat	ai	HIGH	APPROACH_PLACE prio 99; vanish when inside place or timer<1
+00545ea0	AI_task_rts_move_to	ai	HIGH	MOVE_TO_TARGET prio 99; stop within REACH_DT(x5)
+00546050	AI_task_approach_place	ai	HIGH	APPROACH_PLACE order
+005462b0	UnitScriptRes_load	ai	CONFIRMED	SCRIPT\UNIT\unitAI.res, 0x28-byte records (uscrres.cpp)
+005464a0	UnitScriptRes_find_by_name	UnitAI	HIGH	strcmp over recs, returns 1-based idx
+00546520	UnitAI_class_from_name	ai	CONFIRMED	human_light_infantry..pig -> 1..15
+005467b0	UnitAI_dispatch	ai	CONFIRMED	switch(uscrres rec+0x26) -> per-class AI fn
+00546970	AI_after_block_dispatch	ai	HIGH	per AI-script-id counter routine
+00547630	World_update_levels	world	CONFIRMED	level streaming state machine 0..3
+005479a0	World_levels_need_update	world	CONFIRMED	inner/outer box test of level+0x43
+00547bf0	World_add_levels	world	CONFIRMED	new Level 0xac
+0054a2c0	World_locate	world	CONFIRMED	(Level**,SceneSector**,pos) exact box test
+0054b480	Unit_search_for_unit	ai	CONFIRMED	types T/E/EP/P/S/F/L/O; behaviours NEAREST..; spatial query
+0054e1b0	Level_get_sector	world	CONFIRMED	+0x6c[recno-1]
+0054e220	Level_get_sector_name	world	CONFIRMED	+0x70 + (i-1)*0x21
+0054e6a0	Level_find_sector	world	CONFIRMED	by name
+0054e930	TerrainPatch_alloc	world	CONFIRMED	pool DAT_00a3ce38, x4 growth, 0x66 objects
+0054eb20	TerrainPatch_get	world	CONFIRMED	pool recno
+0054eec0	Level_first_unit	world	CONFIRMED	+0x90
+0054f110	Level_remove_item	world	CONFIRMED	unlink item
+0054f510	Level_first_item	world	CONFIRMED	+0x98
+0054f580	Level_remove_place	world	CONFIRMED	unlink place
+0054ffd0	Tower_on_trigger	item	HYPOTHESIS	towerfire.txt below 50% hp
+00551440	Level_parse_scene_sector	world	CONFIRMED	CreateSceneSector, render box +-128
+005525b0	GameplayRes_load_throwi	projectile	CONFIRMED	reads {THROWI} ARW/PROJ/EXPL/STM/STC/CAN _TL.._ZE; derives V0/T
+00558a60	Uni_load_create_unit	mapload	HIGH	CreateUnit keys UnitName..UnitLevel, Group->+0x31, Task/Range
+005593e0	Por_load	los	CONFIRMED	.POR Anti-Portal blocks
+00559470	Por_read_antiportal	los	CONFIRMED	4 verts, plane, edges
+005600c0	Level_get_pathspace	world	CONFIRMED	selects +0x54/+0x58
+00560c70	Level_alloc_antiportal	los	CONFIRMED	pool +0x74 grow 8, rec 0x74
+00560d30	Level_get_antiportal	los	CONFIRMED	+0x74 + i*0x74
+00560d80	Level_segment_blocked	los	CONFIRMED	LOS vs anti-portal quads, eyeZ offset
+005611b0	WorldArray_add	world	CONFIRMED	new World 0x92
+00561350	WorldArray_set_current	world	CONFIRMED	+0x32 recno, +0x36 World* (DAT_00a45f3e)
+00577340	Angle_set_radians	ilib	HIGH	turns = frac(rad/2π)
+005773b0	Angle_radians	math	CONFIRMED	turns*2pi
+005773e0	Angle_set_degrees	ilib	HIGH	turns = frac(deg/360)
+00577b10	Angle_sin	math	CONFIRMED	sin(turns*2pi)
+00577b50	Angle_cos	math	CONFIRMED	cos(turns*2pi)
+00577b90	Angle_set_from_vector	math	HIGH	atan2 → angle
+005843d0	DynArray_ctor	ilib/dynarr	CONFIRMED	(recSize,growBy,initCap) sets +0x10,+4,+0, Mem_add body +0x19
+00584580	DynArray_zap	ilib/dynarr	CONFIRMED	size=cur=0, optional realloc to growBy
+00584620	DynArray_add	ilib/dynarr	CONFIRMED	size++, grow by +4, copy recSize
+00584a10	DynArray_delete	ilib/dynarr	CONFIRMED	memmove down, shrink when size<cap-2*grow
+005856a0	DynArrayB_ctor	ilib/dynarrb	CONFIRMED	DynArray ctor + free stack +0x1d/+0x21/+0x25, +0x29 param3
+005857a0	DynArrayB_add	ilib/dynarrb	CONFIRMED	pops free recno (LIFO) else size++
+005858c0	DynArrayB_delete	ilib/dynarrb	CONFIRMED	push recno to free stack, memset record 0
+00585d20	DynArrayB_clean	ilib/dynarrb	CONFIRMED	zap + free count 0
+00590340	Misc_isqrt	util	CONFIRMED	integer floor sqrt
+005903d0	Misc_int_length	util	CONFIRMED	isqrt(dx*dx+dy*dy)
+00590410	Misc_int_distance	util	CONFIRMED	isqrt distance of two points
+005904e0	Misc_randomize	ilib	CONFIRMED	seed = time(0)
+00590510	Misc_set_seed	ilib	CONFIRMED	this+0x7a = seed
+00590540	Misc_random	ilib	CONFIRMED	LCG seed*0x15a4e35+1, (n*((s>>16)&0x7fff))>>15; obj 0xa45fa8 +0x7a
+00590740	Misc_round_mode	misc	CONFIRMED	floor/ceil/round by mode
+00590a20	Misc_round	ilib	CONFIRMED	round half away from zero
+005940f0	Mouse_single_click_in_rect	input	CONFIRMED	click count==1
+00594360	Mouse_double_click_in_rect	input	CONFIRMED	click count==2
+005945d0	Mouse_click_in_rect	input	CONFIRMED	returns click count for button
+00594700	Mouse_click_count	input	HIGH	button click count, no rect
+00599240	Key_match_char	input	HIGH	scancode→char with shift/ctrl/alt flags
+005aab20	Actor_ctor	en3d/actor	CONFIRMED	memset 0x10c, scale 1.0
+005ac310	Actor_set_pos	en3d/actor	CONFIRMED	switch actor+8 type 1/10,6-9,0xb
+005aed50	Actor_render_group	en3d/actor	CONFIRMED	2/0x27/0x10->3, 0xb->1, else 2
+005ea460	Scene_create_sector	en3d/scene	CONFIRMED	new SceneSector 0xe4, grow +8
+005eb030	Scene_invalidate_sector_tree	en3d/scene	HIGH	+0x30 tree reset
+005ef610	Scene_query_sectors	en3d/scene	HIGH	box -> SceneSector**
+005ef800	SceneSector_ctor	en3d/scene_s	CONFIRMED	memset 0xe4
+005ef880	SceneSector_set_box	en3d/scene_s	CONFIRMED	+0x08 6 floats
+005efc50	SceneSector_add_actor	en3d/scene_s	CONFIRMED	link newest at +0xce
+005efdb0	SceneSector_remove_actor	en3d/scene_s	CONFIRMED	unlink
+005effa0	SceneSector_first_actor	en3d/scene_s	CONFIRMED	+0xca, walk +0x20
+005efff0	SceneSector_last_actor	en3d/scene_s	CONFIRMED	+0xce, walk +0x24
+005f0780	Actor_cmp_depth	en3d/scene_s	CONFIRMED	sort by actor+0xa8 desc
+0060d430	Box3d_from_point	en3d	CONFIRMED	min=max=p
+0060d5f0	AABB_contains	math	CONFIRMED	min +0, max +0xc inclusive
+00637520	BlkArray_ctor	uti3d/blkarrb	CONFIRMED	(recSize,blockRecs) +8,+0xc
+00637920	BlkArray_rec_addr	uti3d/blkarrb	CONFIRMED	blocks[(i-1)/per]+((i-1)%per)*recSize
+00637aa0	BlkArrayB_ctor	uti3d/blkarrb	CONFIRMED	BlkArray + id table +0x24/+0x28/+0x2c
+00637be0	BlkArrayB_add	uti3d/blkarrb	CONFIRMED	alloc internal rec, append id
+00643d40	ScriptNode_compile_order_task_names	script	CONFIRMED	0x143 action name, 0x146/0x147 task name
+00649920	Script_exec_func	script	CONFIRMED	FUNC switch (ScriptsGameplay)
+0064f320	Unit_die	unit	HIGH	retreat flag 1 -> survive with IDLE task
+006511f0	Script_string_to_order_para	script	CONFIRMED	packed para i
+00651260	Script_get_curr_order	script	CONFIRMED	cur.action
+006512d0	Script_is_attacked	ai	CONFIRMED	action state in hit set
+00651430	Script_will_be_attacked	ai	CONFIRMED	attacker in attack anim and victim within ±90° of its facing
+006515d0	Script_set_unit_mode	ai	CONFIRMED	+0x167: ATTACK 1, ACTIVE 2, IDLE 3
+006520d0	Script_get_curr_task	script	CONFIRMED	FUNC 162
+00652190	Script_get_curr_task_para	script	CONFIRMED	FUNC 163
+00652280	Script_get_curr_task_state	script	CONFIRMED	FUNC 164
+006522f0	Script_set_curr_task_state	script	CONFIRMED	FUNC 165
+00652370	Script_stop_curr_task	script	CONFIRMED	FUNC 166
+006523c0	Script_stop_all_team_task	script	CONFIRMED	FUNC 167
+00652c10	Script_can_energy_attack	script	CONFIRMED	func id 60
+00654d70	Zone_set_order_template	script	HIGH	writes +0x101..+0x11e order fields
+00655420	Script_delete_unit	script	HIGH	clear task, delete mount, 51e1f0
+00656bb0	Script_is_all_attached	ai	CONFIRMED	crew slots by mask M=1 F=2 (type+0x1b9), unit+0x378 crew recnos, crew+0x384 back-ref
+00657fd0	Script_set_unit_team	script	CONFIRMED	FUNC 141
+00658160	Script_get_unit_team_size	script	CONFIRMED	
+006581f0	Script_get_unit_team_leader_by_team_id	script	CONFIRMED	
+00658810	Script_set_formation_pos	script	CONFIRMED	
+00658920	Script_set_team_member_pos	script	CONFIRMED	
+00658e10	Script_set_team_control_flag	script	CONFIRMED	unit+0x2f = (flag==0) for team
+006592c0	Script_get_follow_unit_distance	ai	CONFIRMED	200 + 100*k by team size if Team+0x37==1
+0065a2f0	Script_switch_controllable_unit	script	CONFIRMED	→ ViewCtrl_switch_character
+0065a320	Script_quit_rts_mode	script	CONFIRMED	set_mode(+0x14,0)
+0065b280	Script_get_unit_range	ai	CONFIRMED	per-class ranges kind 1/2/3/4
+0065bed0	Script_save_game	script	CONFIRMED	FUNC 315 save_game
+0065c8d0	Script_is_unit_dead	ScriptFunc	CONFIRMED	valid && Unit_is_dead
+0065ddb0	Unit_attach_point_dist	ScriptFunc	HIGH	dist to weapon attach point, -1 if none
+0065dfa0	Unit_get_attach_slot	ScriptFunc	CONFIRMED	returns U+0x388
+0065e0a0	Script_get_key_string	script	CONFIRMED	name → action → key text
+0065ebd0	Script_call_gameover_msg	script	HIGH	FUNC 4 handler
+0065ed70	Script_is_rts_mode	script	CONFIRMED	+0x10==4
+0065ef40	Script_share_team_member	script	CONFIRMED	id 0x183
+0065f0f0	Script_get_item_bearing	ai	HIGH	signed relative bearing unit->item (no FUNC id)
+0065f670	Script_set_charmove_detect_block_flag	script	CONFIRMED	writes DAT_00a5ba64 (never read)
+0065fb50	Script_set_unit_hide_in_command_interface	script	CONFIRMED	unit+0x30
+00661060	Script_exec_action_order_task	script	CONFIRMED	switch 0x143/0x144/0x146/0x147
+006612e0	ScriptNode_give_order_poll	script	HIGH	WAIT completion for give_order
+00661340	Unit_give_order	ai	CONFIRMED	ACTION give_order impl; queues order, propagates to team
+006618f0	Script_stop_all_order	script	CONFIRMED	ACTION 0x144
+006619d0	Script_give_task	script	CONFIRMED	ACTION 0x146
+00661b40	Script_give_team_task	script	CONFIRMED	ACTION 0x147
+00661ca0	Script_order_finished_or_cancel	script	HIGH	cancel in states 0/6/7/8, else !has_order
+00663cb0	Poly_set_vertices	pathsp	CONFIRMED	allocs verts/neighbors, sets +0x64 cost, recomputes bbox
+00664080	Poly_get_neighbor	pathsp	CONFIRMED	1-based edge neighbor or 0
+00664130	Poly_link_edge	pathsp	CONFIRMED	neighbor[edgeA-1]=polyB and back-link
+00664180	Poly_height	pathsp	CONFIRMED	grid triangle sample or walkway plane
+006645b0	Poly_normal	pathsp	CONFIRMED	bicubic gradients or plane normal
+00664920	Poly_astar_open	pathsp	CONFIRMED	stamp, centroid, reset links, set parent
+00664b00	Poly_key_le	pathsp	CONFIRMED	cmp(this,other)<1
+00664d70	Seg_point_dist_sq	pathsp	CONFIRMED	point-segment distance squared
+00664eb0	Poly_set_parent	pathsp	CONFIRMED	maintains parent children array
+00664fd0	PathSpace_ctor	pathsp	CONFIRMED	memset(this,0,0x38)
+00667190	NavMesh_triangulate_dead	pathsp	CONFIRMED	editor triangulator, unreferenced
+0066c020	PathSpace_find_poly	pathsp	CONFIRMED	BVH box ±1/±17, Poly_contains + |h-z|<=16
+0066c710	PathSpace_find_nearest_poly	pathsp	CONFIRMED	nearest poly, best init 0x7fffffff
+0066c900	PathSpace_find_nearest_poly_within	pathsp	HIGH	nearest poly with caller max distance
+0066cae0	PathSpace_poly_height	pathsp	CONFIRMED	Poly_height on poly id
+0066cb40	PathSpace_find_path	pathsp	CONFIRMED	start poly, stamp, A*, set dest, smooth; ret 0x34
+0066ce30	PathSpace_astar	pathsp	CONFIRMED	poly A*, f=g+h, maxExpand, partial path h+g/16
+0066dd30	Astar_step_cost	pathsp	CONFIRMED	isqrt distance
+0066dd70	Astar_heuristic	pathsp	CONFIRMED	isqrt distance
+0066ddb0	Astar_propagate_children	pathsp	CONFIRMED	recursive g/f update of descendants
+0066df30	Seg_intersect_int	pathsp	CONFIRMED	integer cross-product line intersection
+0066e4b0	Path_ctor	path	CONFIRMED	DynArray(0x24,0x10)
+0066e5b0	Path_copy	path	CONFIRMED	copies start + elements
+0066e640	Path_reset	path	CONFIRMED	clear, start at +0x1d, append dest
+0066e720	Path_set_dest	path	CONFIRMED	overwrite element 1
+0066e790	Path_append_portal	path	CONFIRMED	midpoint + edge endpoints
+0066e8a0	Path_count	path	CONFIRMED	DynArray_size
+0066e8d0	Path_get	path	CONFIRMED	0=start, i -> element n+1-i
+0066e940	Path_dest	path	CONFIRMED	element 1
+0066ece0	Path_smooth_funnel	path	HIGH	radius shrink, 8 portal lookahead, lateral offset
+0066f820	Portal_shrink	path	CONFIRMED	shrink portal by radius if wider than 2r
+0066fa00	Path_translate	path	CONFIRMED	adds offset to all points
+0066faa0	Path_scale	path	CONFIRMED	scale xy, z
+0066fc50	Frac_compare64	pathsp	CONFIRMED	compare a/b vs c/d via 64-bit products
+0066fca0	Astar_compare_keys	pathsp	CONFIRMED	max-cost then f
+00670980	PathSpace_load_pfd	pathsp	CONFIRMED	record-mode reader of .PFD; callers 004f2f80 (+0x54/+0x58), 00442d30 (world+0x6a)
+006718c0	Poly_contains	pathsp	CONFIRMED	point-in-convex-poly + radius clearance
+00671cb0	Poly_clearance_flood	pathsp	HIGH	recursive radius clearance into neighbours
+00671fb0	Poly_clip_circle_move	pathsp	HIGH	wall edges within radius -> 00672e40
+00672e40	Edge_block_line	pathsp	HIGH	edge or endpoint tangent blocking line
+006745e0	PathSpace_build_bvh	pathsp	CONFIRMED	lazy BVH of poly bboxes into +0x18
+006747a0	Bvh_build_node	pathsp	CONFIRMED	median split on longest centre axis
+006752c0	Bvh_query_box	pathsp	CONFIRMED	collect leaves overlapping box
+00675430	Bvh_query_nearest	pathsp	CONFIRMED	branch and bound nearest poly
+00675660	PathSpace_compute_components	pathsp	CONFIRMED	flood fill poly+0x70 component ids
+00681fe0	SpIndex_init	spindex	CONFIRMED	grid w,h,cellSize
+006821d0	SpIndex_insert	spindex	CONFIRMED	rect -> id
+006822d0	SpIndex_remove	spindex	HIGH	remove by id
+006824a0	SpIndex_update	spindex	HIGH	move rect
+00682800	SpIndex_query_rect	spindex	CONFIRMED	dedup by first cell
+00683110	SpIndex_rect_to_cells	spindex	CONFIRMED	clamped cell range
+0068de40	Phys_sweep_collide	physics	CONFIRMED	swept test vs units/items/objects in sectors
+00692c10	Phys_collide_scene_mesh	physics	HIGH	sector item meshes
+00693750	Projectile_world_sweep	projectile	HIGH	scene items: primitives + T-ms look-ahead mesh ray, cache +0x56..+0x62
+006a1bb0	Shape_sweep_pair	physics	CONFIRMED	dispatch on shape types 1/2/3
+006a45a0	Phys_update_character	physics	HIGH	force integrator, ground, collision response
+006a8060	Phys_update_projectile	physics	HIGH	body types 2,3,4,5,0x12
+006a9570	Phys_walk_step	physics	HYPOTHESIS	nav-mesh walk / camera step
+006aa9e0	Phys_friction_coef	physics	CONFIRMED	material 1/2 -> 1.0/0.9
+006accf0	Normal_slope_ratio	physics	CONFIRMED	N.z/|N.xy|
+006ad660	Phys_tick	physics	CONFIRMED	per-tick body update (ECX 0xa570a8)
+006adbf0	Phys_create_body	physics	CONFIRMED	shape extents from actor+0xb8
+006adfd0	Phys_ground_query	physics	CONFIRMED	poly find + height + flattened normal
+006ae2a0	Phys_ground_query_poly	physics	CONFIRMED	same with known poly
+006ae8e0	Phys_track_poly	physics	HIGH	keep/find current poly
+006af310	Phys_get_body	physics	CONFIRMED	DynArrayB get if not free
+006af710	Phys_set_poly_blocked_at	physics	CONFIRMED	poly+0x20=flag, recompute components
+006afb10	Phys_set_poly_blocked_obb	physics	HIGH	rotated-gate variant
+006b11a0	Body_set_knock_force	physics	CONFIRMED	+0x21c vec,start,duration
+006b12a0	Body_set_push_force	physics	CONFIRMED	+0x236 vec,start,duration
+006b7d50	GameOverBox_input	ui	HIGH	retry/load/quit
+006b8260	GameOverBox_set_text	ui	HIGH	strncpy 0xff
+006b8af0	GameOver_lose_freeze_units	game	HIGH	IDLE prio 0x7f to all
+006bd4b0	BarrUI_count_troop	ui	CONFIRMED	
+006bda00	BarrUI_open	ui	CONFIRMED	allowance pop-0.95*max
+006bdc00	BarrUI_confirm	ui	CONFIRMED	queue orders, pay
+006bf630	BarrUI_handle_input	ui	CONFIRMED	+/- per class, price type+0x161
+006e7880	WinMsg_input	ui	HIGH	click → GameEndMenu_open(2)
+006e7900	GameOver_win_freeze_units	game	HIGH	"Yow win!", IDLE prio 0x7f
+006e7b20	WinMsg_close	ui	HIGH	+0xd32=0
+006e7cf0	WinMsg_animate	ui	HIGH	50 ms steps
+006e8c80	VictoryScreen_open	ui	HYPOTHESIS	0xa46ad0 VICTORY images, set_victory_display_flag
+006fd670	CommanderPanel_hold_buttons	ui	HIGH	portrait toggle → Unit_toggle_hold(1)
+00717650	Minimap_is_mouse_over	ui	HIGH	minimap rect test (obj 0xa4f381)
+00717700	Minimap_screen_to_world	ui	HYPOTHESIS	minimap click → world pos
+00720ca0	GameEndMenu_input	ui	HIGH	retry/continue/pages; finish=3; mode 0xd
+007226a0	GameEndMenu_open	ui	HIGH	0xa53cb0, 1 lose/2 win
+00736120	StrategyHelp_process	ui	HYPOTHESIS	DES\strategic_N.txt pages
+0073a320	SiegeMenu_show_help	ui	CONFIRMED	loads des/<siege>.txt help text
+00755d80	ModeNextScenario_process	ui	CONFIRMED	start_scenario(no+1,1,1); mode 0xc
+00755e30	LoadingScreen_enter	ui	HIGH	SL_BG1/SL_COM backdrop by scenario
+0075d540	Unit_on_hit_message	combat	HIGH	cancels orders 12/15 on hit
+0075f180	LoadingScreen_process	ui	HIGH	stage machine → mode 9
+0075fa50	ModeDirectLoad_process	ui	HIGH	load_world; mode 9
+007c6240	Unit_on_killed	unit	HYPOTHESIS	XP, death voice RTS_OTHER, player death switch
+007c7ab0	Unit_update_action_anim	unit	HIGH	state 0x33/0x38 release at 650/1667/1300/0 ms remaining

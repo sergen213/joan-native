@@ -17,7 +17,8 @@ namespace joa::engine::vk {
     X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkEnumerateDeviceExtensionProperties) \
     X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)                                       \
     X(vkGetPhysicalDeviceSurfaceFormatsKHR) X(vkGetPhysicalDeviceSurfacePresentModesKHR) X(vkDestroySurfaceKHR)               \
-    X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkCreateDebugUtilsMessengerEXT) X(vkDestroyDebugUtilsMessengerEXT)
+    X(vkCreateDevice) X(vkGetDeviceProcAddr) X(vkCreateDebugUtilsMessengerEXT) X(vkDestroyDebugUtilsMessengerEXT)          \
+    X(vkGetPhysicalDeviceFormatProperties)
 #define JOA_VK_DEVICE(X)                                                                                                      \
     X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkDeviceWaitIdle) X(vkQueueWaitIdle) X(vkQueueSubmit2) X(vkQueuePresentKHR)       \
     X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR) X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR)                       \
@@ -34,7 +35,7 @@ namespace joa::engine::vk {
     X(vkCmdEndRendering) X(vkCmdClearAttachments) X(vkCmdClearColorImage) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets)      \
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdPushConstants) X(vkCmdSetViewport) X(vkCmdSetScissor)             \
     X(vkCmdSetCullMode) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdCopyBuffer) X(vkCmdCopyBufferToImage)                          \
-    X(vkCmdCopyImageToBuffer) X(vkCmdBlitImage)
+    X(vkCmdCopyImageToBuffer) X(vkCmdBlitImage) X(vkCmdSetStencilReference)
 
 struct Api {
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;

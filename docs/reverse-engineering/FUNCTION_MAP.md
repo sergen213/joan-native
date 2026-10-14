@@ -145,6 +145,26 @@ Totals: 18,802 functions in Ghidra (6,308 of them ILT thunks); 134 named here.
 | `0x582d20` | `DirectMusic_init` | CONFIRMED | CoCreateInstance CLSID_DirectMusicLoader/Performance, IID_*8 |
 | `0x5a0330` | `Sound3D_init` | HIGH | sound3d.cpp; OpenAL device, alGetError |
 | `0x7a9420` | `OpenAL_open_ds3d` | CONFIRMED | alcOpenDevice("DirectSound3D"), alcCreateContext, MakeCurrent |
+| `0x454000` | `Sound3D_set_distance_model` | CONFIRMED | 0 → AL_NONE, 1 → AL_INVERSE_DISTANCE, 2 → AL_INVERSE_DISTANCE_CLAMPED (docs/AUDIO_AND_VIDEO.md) |
+| `0x4d0de0` | `SoundRes_load` | CONFIRMED | STD.SET `SOUND` → 0x8F-byte records, sorted by code |
+| `0x4d0a60` | `SoundRec_load_buffer` | CONFIRMED | alGenBuffers + `RESOURCE\WAVE.RES` entry |
+| `0x4d0d80` | `SoundRes_find` | CONFIRMED | binary search by SOUND_CODE |
+| `0x494810` | `SoundMan_play_at` | CONFIRMED | 3D play: gain = vol*GAIN*0.01, MAX/REF distance, rolloff, position |
+| `0x492c40` | `SoundMan_play_at_listener` | CONFIRMED | same, position = listener |
+| `0x4ceef0` | `SoundMan_play_ui` | CONFIRMED | same, gain from CONFIG 0x41; 33 interface callers |
+| `0x4c0680` | `AmbientEmitter_play` | HIGH | radius cull, source stealing `0x493340` |
+| `0x45f450` | `SoundMan_free_source` | CONFIRMED | first idle of 12 sources |
+| `0x45f6b0` | `SoundMan_set_volume` | CONFIRMED | CONFIG 0x41 → 12 sources |
+| `0x4b3360` | `MusicRes_load` | CONFIRMED | STD.SET `MUSIC`, TYPE/E_TYPE letters → ints |
+| `0x4b3940` | `MusicRes_pick` | CONFIRMED | random track of type within STARTSCE..ENDSCE |
+| `0x4b3c70` | `MusicRes_pick_by_time` | CONFIRMED | STARTMIN..ENDMIN (wrapping) |
+| `0x4e6fe0` | `Music_process` | CONFIRMED | mood + switching rules, BATTLE_R, 8 s battle hold |
+| `0x59ae60` | `Music_play` | CONFIRMED | `MUSIC\` + file via Video_open_wmf |
+| `0x59b1c0` | `Music_update` | CONFIRMED | loop restart, 8000 ms linear fade |
+| `0x59b150` | `Music_set_volume` | CONFIRMED | CONFIG 0x3A |
+| `0x586210` | `EnvMusic_play` | CONFIRMED | 3 environment streams, 5000 ms fade |
+| `0x586620` | `EnvMusic_set_volume` | CONFIRMED | CONFIG 0x3C |
+| `0x7413e0` | `AudioOptions_handle` | CONFIRMED | Music/Environmental/Sound sliders, 3D toggle, defaults 77/39/100/on |
 
 ## video
 

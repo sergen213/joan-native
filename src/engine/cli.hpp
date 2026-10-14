@@ -30,6 +30,9 @@ struct Options {
     bool free_camera = false;        // fly camera instead of following Joan
     std::vector<float> camera_pose;  // free camera X,Y,Z[,heading[,pitch]] in original units/degrees
     std::string anim;                // force Joan's animation clip (e.g. f_run)
+    std::string ui_screen;           // --ui-screen: original 2D interface screen (ui_screens.hpp names)
+    std::string movie;               // --play-movie: original movie (e.g. movie/intro.wmv) instead of the game
+    double movie_time = 0;           // --movie-time: start offset in seconds (with --screenshot: frame shown then)
     bool help = false;
 };
 
