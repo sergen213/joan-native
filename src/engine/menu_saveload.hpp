@@ -38,7 +38,8 @@ void menu_heading_bars(Ui& ui, int lc, std::string_view heading, float top_x = 0
 // t = seconds since the slide-in started (FUN_006f24d0), e = seconds since the slide-out started
 // (FUN_006f26e0, < 0 = none). menu_ingame_backdrop(ui, m, heading) = back + heading bars + front.
 void ingame_backdrop_back(Ui& ui, float t = 1e9f, float e = -1.0f);
-void ingame_backdrop_front(Ui& ui, float t = 1e9f, float e = -1.0f);
+// label: title-bar text (FUN_006f2ac0); "" = "In-Game Menu" (IGAMEMNU 15); the brief pages pass OBJMENU 15.
+void ingame_backdrop_front(Ui& ui, float t = 1e9f, float e = -1.0f, std::string_view label = {});
 // Slide-in clock: model.time while MenuModel::ingame_backdrop_closed, else settled.
 float ingame_backdrop_time(const MenuModel& m);
 constexpr float kIngameBackdropIn = 0.3f, kIngameBackdropOut = 0.3f;  // durations of the two slides

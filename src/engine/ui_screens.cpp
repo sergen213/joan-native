@@ -1,5 +1,6 @@
 #include "engine/ui_screens.hpp"
 
+#include <algorithm>
 #include <array>
 
 namespace joa::engine {
@@ -24,10 +25,13 @@ void ui_menu(Ui& ui, MenuModel& m, std::vector<UiCommand>& out) {
 void ui_hud(Ui& ui, HudModel& model, std::vector<UiCommand>& out) { hud_game(ui, model, out); }
 
 namespace {
-constexpr std::array<std::string_view, 19> kNames{"main",  "difficulty", "credits", "options", "video",  "audio",
+constexpr std::array<std::string_view, 29> kNames{"main",  "difficulty", "credits", "options", "video",  "audio",
                                                   "input", "game",       "remap",   "load",    "save",   "ingame",
-                                                  "ingame-options", "hud", "msglog", "brief", "quickload", "objective",
-                                                  "attention"};
+                                                  "ingame-options", "hud", "msglog", "brief", "brief-background",
+                                                  "brief-objectives", "brief-townships", "brief-townships-2",
+                                                  "brief-commanders", "brief-commanders-2", "brief-battleground",
+                                                  "brief-battleground-2d", "brief-strategy", "brief-siege", "quickload",
+                                                  "objective", "attention"};
 
 void sample_hud(HudModel& h) {
     // State of work/reference/shots/s04_04_mission1_hud.png (mission 1 start, Normal). Player position and the
@@ -53,6 +57,12 @@ void sample_hud(HudModel& h) {
     h.objectives = {"Safely reach and enter Orl\xe9" "ans.", "Eliminate all enemies along the path."};
     h.objectives_main = 1;
     h.mission_time = h.total_time = 56;
+    h.mission = 1;
+    // Mission-brief runtime lists at mission 1 start (S1L1_des.sce enabled end conditions; commanders in unit-id
+    // order, Jean de Metz loaded after Joan; both teams empty).
+    h.brief_objectives = {{0, 0, "Safely reach and enter Orl\xe9" "ans.", "Orl\xe9" "ans", 500, 1000, false},
+                          {2, 0, "Eliminate all enemies along the path.", "", 500, 500, false}};
+    h.brief_commanders = {{"Jean de Metz", 0, false, {}}, {"Joan of Arc", 0, false, {}}};
     h.message_log = {
         {"_Jean de Metz:_ We must make haste and reach Orl\xe9" "ans safely - the Duke of Orl\xe9" "ans is expecting us. "
          "Perchance we will meet with our enemies, however if we are protective of each other we shall both survive "
@@ -100,14 +110,30 @@ bool ui_sample_state(std::string_view name, MenuModel& menu, HudModel& hud, bool
         menu.screen = MenuScreen::Options;
         menu.in_game = true;
         menu.previous = MenuScreen::InGame;
-    } else if (name == "hud" || name == "msglog" || name == "brief" || name == "quickload" || name == "objective" ||
-               name == "attention") {
+    } else if (std::find(kNames.begin() + 13, kNames.end(), name) != kNames.end()) {  // HUD samples
         menu.screen = MenuScreen::None;
         menu.in_game = true;
         show_hud = true;
         sample_hud(hud);
         hud.show_message_log = name == "msglog";
-        hud.show_mission_brief = name == "brief";
+        hud.show_mission_brief = name.starts_with("brief");
+        // brief-<topic>: work/reference/shots/ui_brief_<topic>.png (tools/reference/capture_ui.py brief); the -2
+        // states = second row hovered (townships: camera on Orleans) / clicked (commanders). Strategy and siege are
+        // disabled in mission 1 (chapter < 5): their samples enable them and pick topic 1 / the cannon.
+        constexpr std::array<std::string_view, 10> kBrief{"brief-background",   "brief-objectives",      "brief-townships",
+                                                          "brief-townships-2",  "brief-commanders",      "brief-commanders-2",
+                                                          "brief-battleground", "brief-battleground-2d", "brief-strategy",
+                                                          "brief-siege"};
+        constexpr std::array<int, 10> kBriefPage{1, 2, 3, 3, 4, 4, 5, 5, 8, 9};
+        for (std::size_t i = 0; i < kBrief.size(); ++i)
+            if (name == kBrief[i]) hud.brief_page = kBriefPage[i], hud.brief_time = 30.0f;
+        if (hud.brief_page == 1) hud.brief_scroll = -4;
+        if (name.ends_with("-2")) hud.brief_select = 1, hud.brief_focus = 1.0f;
+        hud.brief_2d = name == "brief-battleground-2d";
+        if (name == "brief-townships-2") hud.brief_pan = glm::vec2(8196.0f, 750.0f) / 16384.0f * 200.0f - hud.brief_map_centre;
+        if (name == "brief-strategy" || name == "brief-siege") hud.brief_strategy = hud.brief_siege = true;
+        if (name == "brief-strategy") hud.brief_select = 0;
+        if (name == "brief-siege") hud.brief_select = 3, hud.brief_weapons = {true, true, true, true, true, true};
         hud.show_quickload_prompt = name == "quickload";
         hud.show_objective = name == "objective";
         if (name == "attention") hud.messages = {hud.message_log.back()};  // s04_05_after_moves

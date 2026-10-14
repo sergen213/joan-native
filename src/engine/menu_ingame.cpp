@@ -50,13 +50,13 @@ void ingame_backdrop_back(Ui& ui, float t, float e) {
     ui.sprite("INGAME_B", "right", {1024 - side, 0});
 }
 
-void ingame_backdrop_front(Ui& ui, float t, float e) {
+void ingame_backdrop_front(Ui& ui, float t, float e, std::string_view label) {
     const bool out = e >= 0.0f;
     const glm::vec4 c{1, 1, 1, out ? 1.0f - ui_fade(e, 0, 10) : ui_fade(t, 0.2f, 10)};
     ui.sprite("INGAME_B", "titlebar", {0, 0}, c);
     ui.sprite("INGAME_B", "title", {312, 48}, c);
     const UiFont* f = ui.font("Goudy14(22) white");
-    const std::string_view label = ui.text("IGAMEMNU", 15);
+    if (label.empty()) label = ui.text("IGAMEMNU", 15);
     const int tw = f ? f->metrics.measure(label) : 0;
     ui_text_in_rect(ui, f, label, {312, 50, 708, 68}, c);
     ui.sprite("INGAME_B", "l_arrow", {float((396 - tw) / 2 - 68 + 310), 54}, c);

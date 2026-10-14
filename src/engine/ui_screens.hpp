@@ -31,8 +31,10 @@ void menu_frontend_backdrop(Ui& ui, const MenuModel& model);
 void menu_ingame_backdrop(Ui& ui, const MenuModel& model, std::string_view heading);
 
 // --ui-screen names: main, difficulty, credits, options (root list), video, audio, input, game, remap, load,
-// save, ingame, ingame-options, hud, msglog, brief, quickload, objective, attention. Fills sample models matching
-// the reference screenshots' state. Returns false for an unknown name.
+// save, ingame, ingame-options, hud, msglog, brief, brief-background, brief-objectives, brief-townships,
+// brief-townships-2, brief-commanders, brief-commanders-2, brief-battleground, brief-battleground-2d, brief-strategy,
+// brief-siege, quickload, objective, attention. Fills sample models matching the reference screenshots' state.
+// Returns false for an unknown name.
 bool ui_sample_state(std::string_view name, MenuModel& menu, HudModel& hud, bool& show_hud);
 std::vector<std::string_view> ui_screen_names();
 

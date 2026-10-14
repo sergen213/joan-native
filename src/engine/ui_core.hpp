@@ -16,6 +16,7 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -81,6 +82,10 @@ public:
     // Uncompressed 24/32-bit BMP at a game path (Save\<name>.BMP thumbnails), cached by lowercase path;
     // reload = re-read after the file was rewritten. Empty handle if missing/unsupported.
     TextureHandle bitmap(std::string_view game_path, bool reload = false);
+    // Caller-built texture cached by `key` for this Ui's lifetime: `make` runs on the first call only and returns
+    // a w x h RGBA8 (sRGB) image (empty = missing). For pixels no INTERFAC.SET record describes (e.g. the brief's
+    // lit/rotated 3D-map texture).
+    TextureHandle baked_texture(std::string_view key, const std::function<Image()>& make);
     const formats::Vfs& vfs() const { return vfs_; }
     IRenderer& renderer() { return renderer_; }
 

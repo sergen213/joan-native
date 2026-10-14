@@ -153,6 +153,43 @@ struct HudMessage {
     float age = 0.0f;             // seconds since posted (on-screen typewriter reveal)
 };
 
+struct BriefObjective {           // end-condition record (Game+0x30b + 0x1a n) that is enabled and has a description
+    int type = 0;                 // 0 main (win), 2 side goal, 3 imperative (1 = lose: never listed)
+    int finish = 0;               // 0 pending, 1 passed, 2 failed
+    std::string text;             // description incl. any "(Time left ...)" suffix, raw cp1252
+    std::string territory;        // territory link ("" = none): focus circle, picture and camera pan on hover
+    int gold = 0, exp = 0;        // rewards ("REWARDS:" panel on hover)
+    bool awarded = false;         // "(rewarded)" instead of the plain number
+};
+
+struct BriefTown {                // territory record (map/scenarioN/*.ter CreateTerritory)
+    std::string name;             // TerritoryName, raw cp1252
+    std::string picture;          // ScrName: OBJMENU 200x150 sprite ("s1_2"), "" = none
+    int type = 0;                 // camp 0, town 1, city 2, castle 3, church 4, forest 5
+    int side = 2;                 // owner: 0 French (player), 1 English / Mercenary, 2 other
+    glm::vec2 world{0.0f};        // CoordinateX/Y (original world units, 16384 = map width)
+};
+
+struct BriefSupport {             // supporting unit of a commander (team +0x33), one entry per unit, grouped by type
+    std::string type;             // unit.res code ("FRENCH_ARCHER") -> OBJMENU icon / type name
+    int level = 1;
+    float hp = 1.0f;              // 0..1
+};
+
+struct BriefCommander {           // commander list entry (scenario +0x235: units with class > 3), list order
+    std::string name;             // raw cp1252
+    int nation = 0;               // 0 French, 1 English, 2 Mercenary (other nations are never listed)
+    bool hostile = false;         // empty team reads "Unknown" instead of "None"
+    std::vector<BriefSupport> team;
+};
+
+struct BriefWeapon {              // siege weapon (unit.res record + des/<weapon>.txt), Siege Weapon page
+    std::string name;             // unit.res Name ("Cannon"), shown upper-cased
+    std::string text;             // des/<weapon>.txt, raw cp1252
+    int attack = 0, defense = 0, mobility = 0;  // rating pips 0..5
+    int crew = 0;                 // AttachPointCount (Light Infantry needed)
+};
+
 struct HudModel {
     HudUnit player;               // bottom-left panel
     std::vector<HudUnit> party;   // bottom-right portraits (up to 8, the player included)
@@ -172,7 +209,32 @@ struct HudModel {
     std::vector<std::string> objectives;   // objective panel lines, raw cp1252
     int objectives_main = 0;               // first n lines are main objectives (white separator line below them)
     int mission_time = 0, total_time = 0;  // seconds (mission brief corner boxes)
-    bool brief_strategy = false, brief_siege = false;  // "Strategic Command" / "Siege Weapon" topics enabled
+    bool brief_strategy = false, brief_siege = false;  // "Strategic Command" / "Siege Weapon" topics enabled (chapter >= 5)
+    // Mission-brief pages (hud_brief.cpp). brief_page = objmenu +0x80: 0 topic menu, 1 Background, 2 Objectives,
+    // 3 Townships, 4 Commanders, 5 Battleground, 8 Strategic Command, 9 Siege Weapon. File-backed fields are
+    // loaded by brief_content() when a page opens and brief_mission != mission.
+    int mission = 0;                       // campaign scenario number 1..8 (scenario/scenario_%02d.scr), 0 = none
+    int brief_mission = 0;                 // mission whose file-backed brief content is loaded
+    int brief_page = 0;
+    float brief_time = 0.0f;               // seconds since the page opened (fade-ins)
+    int brief_scroll = 0;                  // Background: first line (starts at -4 = 4 blank lines); lists: first row
+    int brief_select = -1;                 // selected/hovered list entry (-1 = none)
+    float brief_focus = 0.0f;              // detail panel fade 0..1 (SCR_FH / IMG_F, 6/s)
+    glm::vec2 brief_pan{0.0f};             // 3D-map camera target - map centre (map units; hover pans 15 per frame)
+    bool brief_2d = false;                 // Battleground: 2D minimap view instead of the 3D map (toggle)
+    bool brief_help = false;               // Siege Weapon: SIEGE WEAPONS HELP popup open
+    std::string brief_doc;                 // Strategic Command: des/strategic_<n>.txt of the selected topic
+    // Game-filled runtime lists (objmenu reads them from the live game state).
+    std::vector<BriefObjective> brief_objectives;
+    std::vector<BriefCommander> brief_commanders;
+    std::array<bool, 6> brief_weapons{};   // ram, crossbow, bombard, cannon, fauconneau, trebuchet present in the unit array
+    int brief_rotation = 0;                // set_minimap_rotation (DAT_00a4f3ac, 0..3): 3D-map yaw = 90 - 90 r degrees
+    // File-backed (brief_content).
+    std::string brief_text;                // Background text (<ObjectiveFileName>.obj), raw cp1252, '\n' paragraphs
+    std::string brief_map;                 // 3D-map scene (script/scenario/<ObjectiveMapFileName>.bm)
+    glm::vec2 brief_map_centre{100.0f};    // centre of the scene's CreateMapActor boxes (map units)
+    std::vector<BriefTown> brief_towns;    // territories of the mission map (owner may change at run time)
+    std::array<BriefWeapon, 6> brief_weapon_info{};
     bool rts_mode = false;                // party: hold/resume buttons also on the player's portrait
     bool show_quickload_prompt = false;   // QSAVE "Load the last Quick Save game now?"
 };

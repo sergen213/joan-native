@@ -109,6 +109,15 @@ TextureHandle Ui::bitmap(std::string_view game_path, bool reload) {
     return textures_.emplace(key, entry).first->second.first;
 }
 
+TextureHandle Ui::baked_texture(std::string_view key, const std::function<Image()>& make) {
+    const std::string k = "baked:" + lower(key);
+    if (auto it = textures_.find(k); it != textures_.end()) return it->second.first;
+    Image img = make();
+    std::pair<TextureHandle, glm::ivec2> entry{};
+    if (img.width > 0 && img.height > 0) entry = {upload(renderer_, img.width, img.height, std::move(img.rgba)), {img.width, img.height}};
+    return textures_.emplace(k, entry).first->second.first;
+}
+
 void Ui::load_sprites() {
     sprites_loaded_ = true;
     const auto path = vfs_.resolve("Resource/INTERFAC.SET");

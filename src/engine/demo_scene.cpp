@@ -40,9 +40,16 @@ MeshData make_box_mesh(glm::vec3 h) {
     return m;
 }
 
+// Tiled so per-vertex fog (D3D-style, renderer shaders) does not fog the whole plane from its corners.
 MeshData make_ground_mesh(float s, float uv_repeat) {
     MeshData m;
-    add_face(m, glm::vec3(0.0f), {0, 1, 0}, {s, 0, 0}, {0, 0, -s}, glm::vec2(uv_repeat));
+    const int n = std::max(1, int(s / 10.0f));
+    const float t = s / float(n);
+    for (int z = 0; z < n; ++z)
+        for (int x = 0; x < n; ++x) {
+            const glm::vec3 c{-s + t * float(2 * x + 1), 0.0f, -s + t * float(2 * z + 1)};
+            add_face(m, c, {0, 1, 0}, {t, 0, 0}, {0, 0, -t}, glm::vec2(uv_repeat / float(n)));
+        }
     return m;
 }
 

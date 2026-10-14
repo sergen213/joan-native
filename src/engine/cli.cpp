@@ -51,6 +51,9 @@ const char* usage() {
            "  --anim CLIP              force Joan's animation clip (e.g. f_run, f_idle)\n"
            "  --ui-screen NAME         show an original interface screen: main difficulty credits options video audio\n"
            "                           input game remap load save ingame ingame-options hud msglog brief quickload\n"
+           "                           objective attention brief-background brief-objectives brief-townships\n"
+           "                           brief-townships-2 brief-commanders brief-commanders-2 brief-battleground\n"
+           "                           brief-battleground-2d brief-strategy brief-siege\n"
            "  --play-movie FILE        play a movie (e.g. movie/intro.wmv, relative to the game dir); Esc/click skips\n"
            "  --movie-time SEC         start the movie at SEC (with --screenshot: capture the frame shown at SEC)\n";
 }

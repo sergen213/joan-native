@@ -4,6 +4,7 @@
 // FUN_004d8c10, unit name billboards FUN_00520270 / FUN_00520e80, message log FUN_006e1570 / FUN_006e22e0,
 // quick-load prompt = G_POPUP box FUN_006d3cb0. Positions are the exe's 1024x768 constants (H-n / W-n
 // expressions anchored to that edge); evidence and measurements: work/ui/notes_HudGame.md.
+#include "engine/hud_brief.hpp"
 #include "engine/menu_saveload.hpp"
 #include "engine/ui_screens.hpp"
 
@@ -350,12 +351,14 @@ void mission_brief(Ui& ui, HudModel& m) {
     }
     // Topics: COMMELE2 cs_* buttons at (256, 210 + 63 i) (measured), label in (x, y-5)-(x+511, y+27) (0x73ee40).
     static constexpr int kTopics[7] = {4, 5, 6, 7, 8, 44, 63};
+    static constexpr int kPages[7] = {1, 2, 3, 4, 5, 8, 9};  // objmenu +0x80 page per topic (FUN_00721a60)
     const UiFont* f = ui.font("Goudy14(22) white");  // matched visually against s04_06_mission_brief
     for (int i = 0; i < 7; ++i) {
         const int y = 210 + 63 * i;
         const bool enabled = i < 5 || (i == 5 ? m.brief_strategy : m.brief_siege);
         const glm::vec4 r{256, float(y), 512, 48};
         const bool hot = enabled && ui.hover(r);
+        if (hot && ui.clicked(r)) m.brief_page = kPages[i], m.brief_time = 0.0f, m.brief_scroll = i == 0 ? -4 : 0, m.brief_select = -1;
         ui.sprite("COMMELE2", !enabled ? "cs_ds" : hot && ui.input().mouse_down ? "cs_dw" : hot ? "cs_ov" : "cs_ot", {r.x, r.y});
         ui_text_in_rect(ui, f, ui.text("OBJMENU", kTopics[i]), {256, y - 5, 767, y + 27},
                         enabled ? kUiWhite : ui_rgba(255, 255, 255, 0x60));
@@ -368,7 +371,7 @@ void mission_brief(Ui& ui, HudModel& m) {
 
 void hud_game(Ui& ui, HudModel& m, std::vector<UiCommand>& out) {
     if (m.show_message_log) return message_log(ui, m);
-    if (m.show_mission_brief) return mission_brief(ui, m);
+    if (m.show_mission_brief) return m.brief_page ? hud_brief(ui, m) : mission_brief(ui, m);
     name_bars(ui, m);
     if (m.show_objective) objectives(ui, m);
     if (!m.messages.empty()) attention(ui, m.messages.front());
