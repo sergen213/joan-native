@@ -219,52 +219,7 @@ std::string ack(const game::World& w, const std::vector<int>& sel, const char* c
     return s;
 }
 
-// FUN_00717a90: within half the 200 px minimap view of the player (true without a minimap).
-bool in_minimap_view(const game::Unit& p, const game::Unit& u, glm::vec2 scale) {
-    const glm::vec2 d = glm::abs(glm::vec2(u.pos.x - p.pos.x, u.pos.y - p.pos.y)) * scale;
-    return d.x < 100.0f && d.y < 100.0f;
-}
-
 }  // namespace
-
-bool hero_switch(game::Mission& m, int which, glm::vec2 minimap_scale) {
-    static constexpr const char* kHeroes[4] = {"JOAN_OF_ARC", "JEAN_DE_METZ", "LAHIRE", "ALENCON"};  // 0x9f8b10
-    game::World& w = m.world();
-    game::AiSystem& ai = m.ai();
-    game::Unit* cur = w.unit(w.player_id());
-    if (!cur || cur->cls < 0) return false;
-    int at = -1;
-    for (int i = 0; i < 4; ++i)
-        if (formats::iequals(code_of(w, *cur), kHeroes[i])) at = i;
-    if (at < 0) return false;
-    const auto usable = [&](const game::Unit* u) { return alive(w, u) && u->m.control == 0 && u->retreat != -1; };
-    game::Unit* next = nullptr;
-    if (which == 0) {
-        for (int i = (at + 1) % 4; i != at && !next; i = (i + 1) % 4)
-            if (game::Unit* u = find_code(w, kHeroes[i]); usable(u) && !u->no_react && (w.dead(*cur) || in_minimap_view(*cur, *u, minimap_scale)))
-                next = u;
-    } else if (which >= 1 && which <= 4 && which - 1 != at) {
-        if (game::Unit* u = find_code(w, kHeroes[which - 1]); u != cur && usable(u)) next = u;
-    }
-    if (!next) return false;
-    game::PlayerController& pc = w.controller();
-    pc.range_mode = false;                // Ctrl_range_exit(1)
-    pc.ride_mode = next->mount ? 1 : 0;   // +0xc4 by Unit_get_mount
-    const bool rts = w.game_mode == 4;
-    w.set_player(next->id);               // FUN_0042f9c0; HUD (FUN_00703750), minimap and camera 0 read player_id
-    if (rts) cur->ai_controlled = next->ai_controlled = true;  // RTS: everyone stays with the AI (Rts_init)
-    if (rts && which != 0) return true;
-    ai.stop_all_order(*next);             // OrderQueue_finish_current + DynArray_zap
-    w.stop(*next);                        // Unit_stop(0, 1)
-    if (rts) return true;
-    game::AiUnit& s = ai.st(*next);       // the new hero's task parked (+0x2a5 -> +0x2be), its team's tasks dropped
-    if (s.task.id != 0 || s.task.p1 == 0) s.task2 = s.task, s.task = {};
-    for (int id : std::vector<int>(next->members))
-        if (game::Unit* mu = w.unit(id)) ai.stop_all_order(*mu), ai.st(*mu).task = {};
-    game::AiUnit& o = ai.st(*cur);        // the old hero resumes its parked task
-    if (o.task2.id != 0 || o.task2.p1 == 0) o.task = o.task2, o.task2 = {0, 0, 1};
-    return true;
-}
 
 void hold_voice(game::Mission& m, const game::Unit& u) {
     const game::World& w = m.world();
@@ -375,7 +330,7 @@ void GameCamera::rts_exit(game::Mission& m) {
 }
 
 void GameCamera::rts_deinit(game::Mission& m) {
-    if (last_commander_ >= 1 && last_commander_ <= 4) hero_switch(m, last_commander_, minimap_scale);
+    if (last_commander_ >= 1 && last_commander_ <= 4) m.switch_hero(last_commander_, minimap_scale.x, minimap_scale.y);
 }
 
 std::vector<std::uint8_t> GameCamera::save_view() const {
@@ -487,7 +442,7 @@ void GameCamera::select_commander(game::Mission& m, int idx, bool add, int recno
     if (recno < 0) return m.ai().toggle_hold(*hero, true), hold_voice(m, *hero);
     std::string voice = "RTS" + voice_prefix(w, *hero) + "002";
     if (!add && (last_commander_ == idx || dbl)) {
-        if (idx >= 1 && idx <= 4) voice.replace(voice.size() - 3, 3, "001"), hero_switch(m, idx, minimap_scale);
+        if (idx >= 1 && idx <= 4) voice.replace(voice.size() - 3, 3, "001"), m.switch_hero(idx, minimap_scale.x, minimap_scale.y);
         CamState c = rts_cam_;
         c.pivot = {hero->pos.x, hero->pos.y, hero->pos.z + kPivotHeight};
         c.pitch = kRtsPitch;

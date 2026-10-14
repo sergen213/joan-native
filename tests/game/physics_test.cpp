@@ -66,9 +66,10 @@ int main() {
         w.tick_physics();
     }
     C = w.unit(c);
-    std::printf("edge slide: %.1f units west in 20 ticks, yaw %.1f, y %.1f\n", x0 - C->pos.x, C->yaw_deg, C->pos.y);
+    std::printf("edge slide: %.1f units west in 20 ticks, yaw goal %.1f, y %.1f\n", x0 - C->pos.x, C->yaw_goal, C->pos.y);
     CHECK(C->pos.y < 14095.0f, "stays inside the battlefield edge");
     CHECK(x0 - C->pos.x > 100.0f, "slides along the edge faster than the axis slide");
-    CHECK(C->yaw_deg > 120.0f && C->yaw_deg < 200.0f, "turns toward the slide direction");
+    // 0x50abd0 sets the heading goal to body yaw (+0x1a) +2 deg; the body follows in the unit tick (not run here).
+    CHECK(C->yaw_goal > 116.0f && C->yaw_goal < 200.0f, "turns toward the slide direction");
     return 0;
 }

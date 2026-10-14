@@ -1,5 +1,8 @@
 # Third-party licenses
 
+This project's own source is licensed GPL-3.0-or-later (`LICENSE`). It contains no original game data;
+users supply their own copy (docs/ASSET_RIGHTS.md).
+
 What the port links, bundles and references, and how releases comply. The authoritative per-release
 list is generated: `share/doc/joan-native/THIRD_PARTY_INVENTORY.json` inside every AppImage/tarball
 (`packaging/release/build_release.py`: every bundled file with SHA-256, owning Arch package, version,

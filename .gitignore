@@ -4,6 +4,7 @@
 !/.github/
 !/CMakeLists.txt
 !/README.md
+!/LICENSE
 !/cmake/
 !/docs/
 !/src/

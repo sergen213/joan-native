@@ -71,6 +71,8 @@ void CharPhysics::integrate(World& w, float dt_s) {
     for (const Unit& u : units)
         if (!bodiless(u) && !w.dead(u)) grid[key(u.pos.x, u.pos.y)].push_back(u.id);
 
+    for (auto it = slide_.begin(); it != slide_.end();)  // contact older than 100 ms: no slide memory
+        it = float(now) - it->second.z > 100.0f ? slide_.erase(it) : std::next(it);
     const int steps = (frame_ms + kSubstepMs - 1) / kSubstepMs;
     for (Unit& u : units) {
         if (bodiless(u)) continue;
@@ -87,6 +89,7 @@ void CharPhysics::integrate(World& w, float dt_s) {
         const bool alive = !w.dead(u);
         const float g = 9.81f * float(u.gravity_scale) * World::kUnitsPerMetre;
         float left = float(frame_ms) / 1000.0f;
+        bool turned = false;   // wall-slide heading step taken this tick
         for (int s = 0; s < steps && left > 0; ++s) {
             const float h = std::min(left, kSubstepMs / 1000.0f);
             left -= h;
@@ -146,13 +149,17 @@ void CharPhysics::integrate(World& w, float dt_s) {
                 // speed along it and turns 115 -> 182 deg in ~0.7 s (DIFFERENTIAL_VERIFICATION.md).
                 // The slide direction stays the step direction while the hero is in contact (set within the
                 // last 100 ms: unblocked substeps between blocked frames do not reset it).
-                // ponytail: the last slide direction is not saved (a save taken mid-slide resumes one
-                // step later with the request direction).
+                // The turn is per original frame (+2 deg per ~19 ms frame measured, 115 -> 182 deg in 0.65 s);
+                // the port takes it once per tick scaled by frame_ms / kSubstepMs. At one +2 step per 33 ms
+                // tick the heading was still 129 deg when a bend of the edge blocked the slide, the slide memory
+                // was lost (dot 0.63 < 0.707) and Joan stopped dead at the corner (13876, 14081).
+                // ponytail: Poly_clip_circle_move 0x671fb0 and the blocked-slide velocity-rotation fallback
+                // (asm 0x6aa1c3: +-0.01, +-0.21, .. rad; step ftol(1 unit / max axis step) = 0 when running, so
+                // it only re-aims +0x10e) are not ported.
                 float ex = 0, ey = 0;
                 if (wall_edge(u.pos.x, u.pos.y, u.pos.z, tx, ty, ex, ey)) {
                     const float sp = std::sqrt(vx * vx + vy * vy);
-                    auto prev = slide_.find(u.id);
-                    if (prev != slide_.end() && float(now) - prev->second.z > 100.0f) slide_.erase(prev), prev = slide_.end();
+                    const auto prev = slide_.find(u.id);
                     const float mx = prev != slide_.end() ? prev->second.x : vx / sp;
                     const float my = prev != slide_.end() ? prev->second.y : vy / sp;
                     float dot = mx * ex + my * ey;
@@ -161,12 +168,13 @@ void CharPhysics::integrate(World& w, float dt_s) {
                     if (ok(u.pos.x + sx * h, u.pos.y + sy * h)) {
                         tx = u.pos.x + sx * h, ty = u.pos.y + sy * h, vx = sx, vy = sy;
                         slide_[u.id] = {ex, ey, float(now)};
-                        if (dot > 0.707f) {
+                        if (dot > 0.707f && !turned) {
                             float diff = std::fmod(std::atan2(sy, sx) * 57.29578f - u.yaw_deg, 360.0f);
                             if (diff > 180) diff -= 360;
                             if (diff < -180) diff += 360;
-                            w.set_yaw(u, u.yaw_deg + (diff > 0 ? 2.0f : -1.0f));
+                            w.set_yaw(u, u.yaw_deg + (diff > 0 ? 2.0f : -1.0f) * float(frame_ms) / float(kSubstepMs));
                             if (u.id == w.player_id()) w.controller().camera_yaw_out = u.yaw_goal;
+                            turned = true;
                         }
                     } else {
                         tx = u.pos.x, ty = u.pos.y, vx = vy = 0;
@@ -200,6 +208,8 @@ std::vector<std::uint8_t> CharPhysics::save_state() const {
     ByteWriter w(b);
     w.i32(std::int32_t(push_.size()));
     for (const auto& [id, p] : push_) w.i32(id), w.f32(p.x), w.f32(p.y), w.i32(p.until);
+    w.i32(std::int32_t(slide_.size()));  // optional tail (older saves end after the pushes)
+    for (const auto& [id, d] : slide_) w.i32(id), w.f32(d.x), w.f32(d.y), w.f32(d.z);
     return b;
 }
 
@@ -211,6 +221,14 @@ bool CharPhysics::load_state(std::span<const std::uint8_t> b) {
         Push p;
         p.x = r.f32(), p.y = r.f32(), p.until = r.i32();
         push_[id] = p;
+    }
+    slide_.clear();
+    if (r.at_end()) return true;
+    for (int n = r.i32(); n > 0 && !r.at_end(); --n) {
+        const int id = r.i32();
+        Vec3 d;
+        d.x = r.f32(), d.y = r.f32(), d.z = r.f32();
+        slide_[id] = d;
     }
     return r.at_end();
 }

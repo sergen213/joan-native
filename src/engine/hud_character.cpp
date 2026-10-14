@@ -2,8 +2,6 @@
 #include "engine/hud_character.hpp"
 
 #include "engine/menu_saveload.hpp"
-#include "formats/res_archive.hpp"
-#include "formats/world_text.hpp"
 
 #include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_gamepad.h>
@@ -603,28 +601,15 @@ void CharacterWindow::shop(Ui& ui, game::Mission& m) {
     }
     const GameData& gd = m.data();
     if (shop_facility_ != f->recno) {   // FUN_006c3230: stock copy
-        shop_facility_ = f->recno, stock_.clear(), shop_msg_.clear(), sell_ratio_ = 0.5f;
+        shop_facility_ = f->recno, stock_.clear(), shop_msg_.clear();
         std::vector<Cell> placed;
-        if (auto path = m.vfs().resolve("item/sellitem.res"))
-            if (auto a = formats::ResArchive::open(*path); a && f->sell_list >= 1 && f->sell_list <= int(a->entries().size()))
-                for (const auto& l : formats::parse_kv_text(a->text(a->entries()[std::size_t(f->sell_list - 1)].name).value_or(""))) {
-                    std::string key = l.key;
-                    key.erase(std::remove_if(key.begin(), key.end(), [](unsigned char c) { return std::isspace(c); }), key.end());
-                    if (formats::iequals(key, "SellingRatio")) sell_ratio_ = float(std::atof(l.value.c_str()));
-                    const int id = gd.item_index(key);
-                    if (!id) continue;
-                    int col[3] = {1, -1, -1}, n = 0;
-                    for (std::size_t a0 = 0; a0 <= l.value.size() && n < 3; ++n) {
-                        const std::size_t e = std::min(l.value.find(':', a0), l.value.size());
-                        col[n] = std::atoi(l.value.substr(a0, e - a0).c_str());
-                        a0 = e + 1;
-                    }
-                    Stock s{id, col[2] < 0 ? gd.items[std::size_t(id)].min_level : col[2], col[1], Cell{id}};
-                    s.cell.level = s.level;
-                    if (!place_first_fit(gd, placed, 3, s.cell)) continue;
-                    placed.push_back(s.cell);
-                    stock_.push_back(s);
-                }
+        for (const game::ShopStock& g : game::shop_stock(m, f->recno, &sell_ratio_)) {
+            Stock s{g.item, g.level, g.quantity, Cell{g.item}};
+            s.cell.level = s.level;
+            if (!place_first_fit(gd, placed, 3, s.cell)) continue;
+            placed.push_back(s.cell);
+            stock_.push_back(s);
+        }
         auto& left = stock_left_[f->recno];
         if (left.size() != stock_.size()) left.clear();
         for (std::size_t i = 0; i < left.size(); ++i) stock_[i].quantity = left[i];

@@ -148,9 +148,12 @@ class Port(Backend):
         self.held.discard(KEYS[k][1])
 
     def mouse(self, dx):
-        # as joa_ref.rel: ceil(|dx|/40) chunks, one per frame (0x431790 truncates ftol(dx*0.18) per frame)
+        # as joa_ref.rel: ceil(|dx|/40) chunks, one per frame (0x431790 truncates ftol(dx*0.18) per frame). Blocks until
+        # the whole move is sent, as Orig.mouse (rel() is synchronous): queued chunks must not pile up across the
+        # closed-loop re-aims (face() every 150 ms), or the port over-turns and orbits waypoints.
         n = max(1, math.ceil(abs(dx) / 40))
         self.chunks += [round(dx / n)] * n
+        self.sleep(n * 1000 / 30)
 
     def sleep(self, ms):
         n = max(1, round(ms / (1000 / 30)))

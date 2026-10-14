@@ -34,7 +34,10 @@ public:
 private:
     InputFrame decide();
     void steer(InputFrame& f, const Unit& p, Vec3 goal, bool replan);
-    void fight(InputFrame& f, const Unit& p, const Unit& foe);
+    void fight(InputFrame& f, Unit& p, const Unit& foe);
+    void shoot(InputFrame& f, Unit& p, const Unit& foe);  // bow: range mode, aim, draw, release
+    bool load_ammo(Unit& p, bool explosive);               // character screen: arrows into the ammo slot
+    void shop(Unit& p);                                    // buy screen open: armour, arrows
     bool loot(InputFrame& f, const Unit& p, float radius = 1200);  // break boxes / pick up items nearby
     int swing_eta(const Unit& u) const;
     const Unit* protectee() const;  // mission plan: hero to stay with
@@ -56,6 +59,8 @@ private:
     Vec3 check_pos_{};
     int check_tick_ = 0, unstick_until_ = 0, unstick_dir_ = 0, stuck_count_ = 0;
     int fight_target_ = 0;
+    bool shot_ = false;              // shoot() ran this tick (range mode is left otherwise)
+    std::uint32_t shop_ms_ = ~0u;    // buy screen opening already shopped at
     bool retreat_ = false;           // HP < 30 % and F3 had no effect: guard near an ally until 70 %
     int heal_hp_ = 0;                // HP when F3 was last pressed
     std::vector<Vec3> done_wps_;     // markers stood at for 10 s without the script moving them

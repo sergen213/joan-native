@@ -96,6 +96,12 @@ public:
     int add_unit(std::string_view code);
     // FUN_0051ff00 + store_generals + lists/gold/time/command points -> profile (game-end CONTINUE).
     void store_profile();
+    // Hero switch (Ctrl_switch_commander; keys SWITCH_CHARACTER 24 / SWITCH_JOAN..ALENCON 25..28): `which` 0 cycles
+    // from the player's hero through Joan, Jean, La Hire, Alencon (0x9f8b10) to the next usable one the minimap shows
+    // (FUN_00717a90: |dx|,|dy| x view scale < 100 px; any when the player is dead; scale 0 = no minimap), 1..4 picks
+    // that hero. Usable: alive, controllable (+0x2f == 0), not retreated. The new hero's task is parked and its team's
+    // tasks dropped, the old hero resumes its parked task; in RTS mode (game_mode 4) both stay with the AI.
+    bool switch_hero(int which, float view_sx = 0, float view_sy = 0);
 
     // --- saves --------------------------------------------------------------------------------
     // Sections: MISN (campaign no, seed, profile), WRLD (World::serialize), VMST (Vm::save),

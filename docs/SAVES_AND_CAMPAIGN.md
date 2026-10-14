@@ -196,7 +196,8 @@ scenario, tick, finish, gold, state hash and any unimplemented builtin calls / s
 `--autopilot` lets the campaign bot play instead (`--ticks` = budget per attempt, a loss is retried
 `--retries` times, `--continue` chains missions with carried progression) and prints one report line
 per mission: result, ticks, attempts, deaths, kills, finished/enabled WIN+SIDE objectives, hash, and
-for a loss/timeout the blocking WIN objective, the bot's goal and the player position.
+for a loss/timeout the blocking WIN objective, the bot's goal and the player position. With `--save-dir DIR`
+the chain writes `DIR/bot-<stem>.jsav` at every mission start (resume one mission with `--load`).
 
 ### 8.1 Campaign bot (`src/game/autopilot_player.{hpp,cpp}`, test/diagnostic only)
 Drives the player through `Mission::tick(InputFrame)` with only player inputs (W + camera yaw along a
@@ -216,9 +217,20 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
 - **Rest:** below 70 % HP, enemies that have not noticed the player are left alone (backed away from);
   the bot stands and regenerates. Below 30 % with no food it retreats to the nearest allied hero.
 - **Allies:** waits for (regroups with) an ally hero only while it follows the player (FOLLOW_UNIT).
-- **Objectives:** the first active minimap way point not yet stood at for 10 s; near it, NPCs showing
-  the talk icon (`can_interact`) are walked up to and talked to once (the shops of mission 2); then
-  the open WIN objective's territory, the nearest enemy, items.
+- **Objectives:** the nearest active minimap way point not yet stood at for 10 s (mission 2: blacksmith
+  before the shop, so the buy screen comes before the shop talk that starts the attack); near it, NPCs
+  showing the talk icon (`can_interact`) are walked up to and talked to once; then the open WIN
+  objective's territory, the nearest enemy, items.
+- **Shopping:** while the buy screen is open (`start_buy_interface`), once per opening, the bot makes
+  the click handler's purchase (FUN_006c5a00: `World::give_item` of the item's Quantity at the stock
+  level, gold −= Price) from `shop_stock()` (mission_ui.hpp, the stock list the engine buy screen also
+  reads): a heavier armour than worn (then worn, `World::use_item`), explosive arrows up to 20, plain
+  arrows with the rest.
+- **Bow:** a foe 150–800 away (arrow damage is full up to FALL_S 800) with nobody within 100 (200 if
+  after the player): Z, camera yaw/pitch at the target's middle, A to draw, A in SHTIDLE to release;
+  explosive ammo (character-screen drag, `World::equip`) when ≥ 2 enemies stand within 150 of the
+  target. Z again leaves range mode when the bot does something else. Joan's arrow hits 11–29 against
+  the 4 of her A swing at level 3 (DAMAGE column 2 of JOAN.csv, DEF_RAT 0).
 - **Plan layer:** `Autopilot::protectee()` — mission 2 stages 3–5: stay with the Bastard (ORLEAN)
   and fight only enemies within 900 of him.
 - **Navigation:** stuck twice on the same line (house corners the path mesh cuts) → run off sideways,
@@ -226,9 +238,12 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
 - **Loss:** a finish 2 or the game-over box (`call_gameover_msg`, e.g. a hero that must live died or too
   many citizens were killed; it freezes every unit even when no LOSE record ends the mission).
 
-Not done yet: ranged combat (Z mode), siege use, RTS orders / troop hold-follow-recruit, shop purchases
-(the buy screen is engine-side), mounting, bribes, character switching, choice dialogs (headless
-answers choice 1). `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits, deaths and spawns;
+Hero switching is `Mission::switch_hero` (moved from the engine's hero_switch; the key path, RTS
+commander pick and rts_deinit call it) but the bot does not switch yet: with the bot idle as Jean, the
+AI Joan (DEFEND_PLACE at the gate) died within ~110 s of the mission-2 attack. Not done yet: siege use,
+RTS orders / troop hold-follow, mounting, bribes, choice dialogs (headless answers choice 1). The
+interact prompt (R) also recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits taken /
+dealt, deaths and spawns;
 `JOA_BOT_DBG=T` prints 200 ticks of per-frame inputs and nearby enemies from tick T.
 
 `game.campaign_legit` runs the chain from a new game (Normal, 40000 ticks per attempt, 2 retries) twice,
@@ -241,14 +256,16 @@ checks determinism and no script errors / unimplemented builtins, and asserts `k
 | 1 S1L1 | 1 Normal | WON | 31546 | 23 | 2041 / 194 | — |
 | 1 S1L1 | 2 Hard | LOST ×3 | 21532 | 19 | 1248 / 366 | killed (groups, ×1.5 damage) |
 | 1 S1L1 | 3 Very hard | LOST ×3 | 8332 | 10 | 740 / 232 | killed in the first camp fights |
-| 2 S3L1 | 1 Normal | LOST ×3 (chained) | 52088 | 9 | — | > 17 citizens killed ~100 s after the attack starts |
+| 2 S3L1 | 1 Normal | LOST (checkpoint) | 11581 | 7 | 1314 / 63 | > 17 citizens killed ~165 s after the attack starts |
 
-Mission 2: the bot meets the Bastard, collects ~17 food from crates, talks to both shopkeepers (stage
-3), then 28 English/Burgundian units spawned outside the west gate on one tick flood the city along
-four ATTACK_PLACE routes and kill citizens faster than Joan alone can intercept. The walkthrough
-answer is multi-hero play (Jean's squad near the blacksmith, archers on the wall, explosive arrows),
-which the bot does not do yet. A bot RETRY restarts with seed + attempt (the original reseeds from
-`time(NULL)`), so retries stay deterministic without replaying the identical loss.
+Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
+80 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
+John 10) spawn outside the west gate and flood the city along four ATTACK_PLACE routes. Stage 4 (and
+the citizens' objective 1) needs every ENGLISH unit inside First_Wave_Place — a box that also covers
+the spawn area outside the gate — dead, John gone (gate closed or John beaten) and the gate closed;
+citizens die meanwhile at ~1 per 15 s wherever the troops walk. Joan alone (melee 4 per A hit, arrows
+~15) kills ~7; the walkthrough wins with Jean's explosive arrows and Joan tanking at the gate. A bot
+RETRY restarts with seed + attempt (the original reseeds from `time(NULL)`).
 
 Port bug fixed with the bot: F3 / F4 (`World::use_recovery_item`, 0x43b490 / 0x43b990) now go
 through the potion effect `World::recover` (0x50b4f0 / 0x50ba00 / 0x50bcd0, called with force 0):

@@ -37,8 +37,8 @@ stderr as `progress <0-100> <message>`; the result is one line on stdout.
 nothing is installed. `stable` considers non-prerelease GitHub releases only; `experimental` also
 prereleases. Drafts and tags that are not `vSEMVER` are ignored. `--version`, `--help`.
 
-The repository is fixed at build time: CMake cache var `JOA_UPDATE_REPO` (default placeholder
-`OWNER/joan-native`; the release workflow sets `${{ github.repository }}`).
+The repository is fixed at build time: CMake cache var `JOA_UPDATE_REPO` (default
+`sergen213/joan-native`; the release workflow sets `${{ github.repository }}`).
 
 ### apply sequence
 
@@ -243,7 +243,6 @@ under `bin/ lib/ share/`, setuid/setgid bits, and original-data-like files (`.re
 
 ## Known gaps
 
-- `JOA_UPDATE_REPO` is a placeholder until the public repository exists.
 - No delta/partial-component updates; each version downloads all artifacts.
 - Release artifacts built on Arch need a recent glibc and libstdc++ (`min_glibc` = build host; libstdc++
   is host-provided); older distros are refused by the updater and need a build in an older container.

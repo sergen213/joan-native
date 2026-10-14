@@ -604,7 +604,7 @@ def main() -> None:
     parser.add_argument("--out", default=str(ROOT / "work/release/checks"))
     parser.add_argument("--ffmpeg-prefix", default="")
     parser.add_argument("--testhttp", default="")
-    parser.add_argument("--repo", default="OWNER/joan-native")
+    parser.add_argument("--repo", default="sergen213/joan-native")
     parser.add_argument("--game-dir", default="")
     parser.add_argument("--frames", type=int, default=120)
     args = parser.parse_args()

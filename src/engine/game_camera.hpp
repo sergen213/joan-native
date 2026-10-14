@@ -54,14 +54,6 @@ std::vector<CamTrack> parse_camera_tracks(std::string_view text);
 // linear angles / distance (0x427bb0). t_ms clamps to the key range.
 CamState eval_track(const std::vector<CamTrack::Key>& keys, float t_ms);
 
-// Ctrl_switch_commander 0x432300: `which` 0 = the next of JOAN / JEAN / LAHIRE / ALENCON (table 0x9f8b10) after the
-// player that is alive, controllable (+0x2f == 0), not task-locked, +0x114 != -1 and inside the minimap view
-// (FUN_00717a90; any distance while the player is dead), 1..4 = that hero. The player must be one of the four.
-// Range mode ends, ride mode follows the new hero's mount, World::set_player (HUD / camera / party follow
-// player_id); outside RTS the new hero's task is parked (+0x2be) and its team's tasks dropped, the old hero resumes
-// its parked task. RTS (mode 4): player swap only (both stay AI-driven). `minimap_scale` = minimap px per world
-// unit (0 = no minimap: every hero is in view). Returns true if the player changed.
-bool hero_switch(game::Mission& m, int which, glm::vec2 minimap_scale = glm::vec2(0.0f));
 // Unit_toggle_hold 0x5121c0 voice after AiSystem::toggle_hold: "RTS" + prefix + 006 (held) / 007 (resumed) for a
 // rank > 3 unit when in RTS or not the player (MissionEvent Sound, played 2D by GameAudio).
 void hold_voice(game::Mission& m, const game::Unit& u);
@@ -87,10 +79,10 @@ public:
     // commander keys. Keys come from the tick's InputFrame seen in before_tick (the GameInput is not read).
     void after_tick(game::Mission& m, const GameInput& input);
     // Action mode keys (PlayerCtrl_process 0x42e1a0): Shift + 25..32 toggles that commander's hold; 24 Switch
-    // character / 25..28 Joan, Jean, La Hire, Alencon = hero_switch, outside range mode, when the scenario is > 1 or
+    // character / 25..28 Joan, Jean, La Hire, Alencon = Mission::switch_hero, outside range mode, when the scenario is > 1 or
     // rts_unlocked (+0x79, the same test hook as Session::rts_unlocked), the player not climbing / (dis)mounting.
     bool rts_unlocked = false;
-    glm::vec2 minimap_scale{0.0f};  // hero_switch view test (set from the drawn HUD; 0 = no minimap)
+    glm::vec2 minimap_scale{0.0f};  // switch_hero view test (set from the drawn HUD; 0 = no minimap)
     // Rts_deinit 0x4404c0 with camera, before the gameplay part (Session::on_rts_exit): the commander last chosen by
     // key / portrait (+0x1237) becomes the player if he is a playable hero.
     void rts_deinit(game::Mission& m);

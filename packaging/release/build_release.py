@@ -189,7 +189,7 @@ def main() -> None:
     parser.add_argument("--ffmpeg-prefix", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--repo", default="OWNER/joan-native", help="GitHub OWNER/NAME the updater follows")
+    parser.add_argument("--repo", default="sergen213/joan-native", help="GitHub OWNER/NAME the updater follows")
     parser.add_argument("--cache-dir", type=Path, default=ROOT / "work/tools", help="runtime + source download cache")
     parser.add_argument("--sign-key", type=Path, help="Ed25519 seed file (else env JOA_UPDATE_SIGNING_KEY, else unsigned)")
     args = parser.parse_args()

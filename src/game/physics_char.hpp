@@ -40,8 +40,8 @@ public:
     // nav may be null: then World::terrain() (height / walkable) is used.
     explicit CharPhysics(const NavWorld* nav) : nav_(nav) {}
     void integrate(World& w, float dt_s) override;
-    // Pending push-asides (Mission save section "PHYS", written only while one is active).
-    bool pushing() const { return !push_.empty(); }
+    // Pending push-asides and wall-slide contacts (Mission save section "PHYS", written only while one is active).
+    bool pushing() const { return !push_.empty() || !slide_.empty(); }
     std::vector<std::uint8_t> save_state() const;
     bool load_state(std::span<const std::uint8_t> b);
 

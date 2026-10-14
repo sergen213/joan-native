@@ -10,3 +10,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DJOA_GAME_DIR=/path/to/or
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+## License
+
+GPL-3.0-or-later (`LICENSE`). *Wars and Warriors: Joan of Arc* and its data are © Enlight Software and are not
+included; third-party components: [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).

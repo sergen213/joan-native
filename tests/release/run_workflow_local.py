@@ -52,7 +52,7 @@ def main() -> None:
     subprocess.run(["docker", "run", "-d", "--name", name, *options, *mounts, image, "sleep", "infinity"],
                    check=True, stdout=subprocess.DEVNULL)
     env = {"CI": "true", "GITHUB_ACTIONS": "true", "GITHUB_WORKSPACE": WORKSPACE, "RUNNER_TEMP": "/__w/_temp",
-           "GITHUB_ENV": "/__w/_temp/github_env", "GITHUB_REPOSITORY": "OWNER/joan-native",
+           "GITHUB_ENV": "/__w/_temp/github_env", "GITHUB_REPOSITORY": "sergen213/joan-native",
            "GITHUB_REF_NAME": args.tag, "GITHUB_REF": f"refs/tags/{args.tag}", "HOME": "/github/home"}
 
     def expand(text: str) -> str:

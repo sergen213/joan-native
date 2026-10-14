@@ -196,4 +196,14 @@ private:
     template <class F> void visit(F& f);
 };
 
+// Buy-interface stock copy (i_buy.cpp FUN_006c3230) of shop facility `facility`: item/sellitem.res record
+// Facility::sell_list, lines "ITEM : ? : quantity (-1 no limit) : level (-1 = MinLevel)", unknown items skipped;
+// `selling_ratio` = the record's SellingRatio (0.5 when absent). A purchase (FUN_006c5a00) is World::give_item(item,
+// level, ItemDef::quantity) and gold -= ItemDef::price (HYPOTHESIS on the price expression); the engine buy screen
+// and the campaign bot both read this list.
+struct ShopStock {
+    int item = 0, level = 0, quantity = 0;
+};
+std::vector<ShopStock> shop_stock(Mission& m, int facility, float* selling_ratio = nullptr);
+
 }  // namespace joa::game

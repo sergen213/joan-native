@@ -300,7 +300,7 @@ void GameCamera::after_tick(game::Mission& m, const GameInput& input) {  // keys
             (w.dead(*p) || (!p->m.climb && (p->action < game::H_MNT_L || p->action > game::H_DMNT_R))))
             for (int a = 24; a <= 28; ++a)
                 if (tick_in_.pressed[std::size_t(a)]) {
-                    hero_switch(m, a - 24, minimap_scale);
+                    m.switch_hero(a - 24, minimap_scale.x, minimap_scale.y);
                     break;
                 }
     }

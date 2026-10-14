@@ -7,7 +7,7 @@
 //                                   PRESSED and MDX (mickeys) apply to the first tick only. After each tick:
 //                                   "T <now ms> <camera yaw deg>", then U lines of the units within 4000 of the player.
 //   set REC FIELD VALUE             test hook: hp | ep | xp | x | y | yaw
-//   objects                         O recno name cls type content x y z  (map items within 3000 of the player)
+//   objects                         O recno name cls type content x y z res stage on_floor  (map items within 3000 of the player)
 //   path X Y                        P x y z waypoints of the mission navmesh path from the player to (X, Y)
 // U rec name nat cls hp maxhp ep maxep str dex def lead level xp action x y z yaw morale armor_level leader
 #include <cmath>
@@ -100,8 +100,8 @@ int main() {
             const Unit* p = m.world().unit(m.world().player_id());
             for (int r = 1; p && r <= m.objects().size(); ++r)
                 if (const MapItem* it = m.objects().item(r); it && std::hypot(it->pos.x - p->pos.x, it->pos.y - p->pos.y) < 3000)
-                    std::printf("O %d %s %d %d %d %.0f %.0f %.0f\n", r, it->name.empty() ? "-" : it->name.c_str(), it->cls, it->type,
-                                it->content, it->pos.x, it->pos.y, it->pos.z);
+                    std::printf("O %d %s %d %d %d %.0f %.0f %.0f %d %d %d\n", r, it->name.empty() ? "-" : it->name.c_str(), it->cls, it->type,
+                                it->content, it->pos.x, it->pos.y, it->pos.z, it->res, it->stage, int(it->on_floor));
         } else if (cmd == "path") {
             Mission& m = *run->mission();
             float x = 0, y = 0;

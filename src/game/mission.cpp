@@ -1,5 +1,7 @@
 #include "game/mission.hpp"
 
+#include <cmath>
+
 #include "formats/pfd_mesh.hpp"
 #include "formats/world_text.hpp"
 #include "game/items_pickup.hpp"
@@ -369,6 +371,52 @@ void Mission::store_profile() {
     profile_.play_ms = state_.play_ms;
     profile_.command_points = world_->command_points;
     profile_.continued = true;
+}
+
+bool Mission::switch_hero(int which, float view_sx, float view_sy) {
+    static constexpr const char* kHeroes[4] = {"JOAN_OF_ARC", "JEAN_DE_METZ", "LAHIRE", "ALENCON"};  // 0x9f8b10
+    World& w = *world_;
+    auto find = [&](const char* code) -> Unit* {  // UnitArray_find_by_type: heroes are unique
+        for (Unit& u : w.units())
+            if (!u.deleted && u.cls >= 0 && std::size_t(u.cls) < gd_.units.size() && formats::iequals(gd_.units[std::size_t(u.cls)].code, code))
+                return &u;
+        return nullptr;
+    };
+    Unit* cur = w.unit(w.player_id());
+    if (!cur || cur->cls < 0) return false;
+    int at = -1;
+    for (int i = 0; i < 4; ++i)
+        if (formats::iequals(gd_.units[std::size_t(cur->cls)].code, kHeroes[i])) at = i;
+    if (at < 0) return false;
+    const auto usable = [&](const Unit* u) { return u && !u->deleted && !w.dead(*u) && u->m.control == 0 && u->retreat != -1; };
+    const auto in_view = [&](const Unit& u) {
+        return std::fabs(u.pos.x - cur->pos.x) * view_sx < 100.0f && std::fabs(u.pos.y - cur->pos.y) * view_sy < 100.0f;
+    };
+    Unit* next = nullptr;
+    if (which == 0) {
+        for (int i = (at + 1) % 4; i != at && !next; i = (i + 1) % 4)
+            if (Unit* u = find(kHeroes[i]); usable(u) && !u->no_react && (w.dead(*cur) || in_view(*u))) next = u;
+    } else if (which >= 1 && which <= 4 && which - 1 != at) {
+        if (Unit* u = find(kHeroes[which - 1]); u != cur && usable(u)) next = u;
+    }
+    if (!next) return false;
+    PlayerController& pc = w.controller();
+    pc.range_mode = false;               // Ctrl_range_exit(1)
+    pc.ride_mode = next->mount ? 1 : 0;  // +0xc4 by Unit_get_mount
+    const bool rts = w.game_mode == 4;
+    w.set_player(next->id);              // FUN_0042f9c0
+    if (rts) cur->ai_controlled = next->ai_controlled = true;  // RTS: everyone stays with the AI (Rts_init)
+    if (rts && which != 0) return true;
+    ai_->stop_all_order(*next);          // OrderQueue_finish_current + DynArray_zap
+    w.stop(*next);                       // Unit_stop(0, 1)
+    if (rts) return true;
+    AiUnit& s = ai_->st(*next);          // the new hero's task parked (+0x2a5 -> +0x2be), its team's tasks dropped
+    if (s.task.id != 0 || s.task.p1 == 0) s.task2 = s.task, s.task = {};
+    for (int id : std::vector<int>(next->members))
+        if (Unit* mu = w.unit(id)) ai_->stop_all_order(*mu), ai_->st(*mu).task = {};
+    AiUnit& o = ai_->st(*cur);           // the old hero resumes its parked task
+    if (o.task2.id != 0 || o.task2.p1 == 0) o.task = o.task2, o.task2 = {0, 0, 1};
+    return true;
 }
 
 void Mission::finish_objectives() {

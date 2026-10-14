@@ -1,10 +1,14 @@
 #include "game/mission_ui.hpp"
 
+#include <cctype>
+#include <cstdlib>
 #include <algorithm>
 #include <cstdio>
 #include <type_traits>
 
 #include "game/mission.hpp"
+#include "formats/res_archive.hpp"
+#include "formats/world_text.hpp"
 
 namespace joa::game {
 
@@ -553,6 +557,31 @@ void MissionUi::tick(Mission& m) {
         close_interface();
     }
     tick_messages(m);
+}
+
+std::vector<ShopStock> shop_stock(Mission& m, int facility, float* selling_ratio) {
+    std::vector<ShopStock> out;
+    if (selling_ratio) *selling_ratio = 0.5f;
+    const Facility* f = m.places().facility(facility);
+    const auto path = f ? m.vfs().resolve("item/sellitem.res") : std::nullopt;
+    auto a = path ? formats::ResArchive::open(*path) : std::nullopt;
+    if (!a || f->sell_list < 1 || f->sell_list > int(a->entries().size())) return out;
+    const GameData& gd = m.data();
+    for (const auto& l : formats::parse_kv_text(a->text(a->entries()[std::size_t(f->sell_list - 1)].name).value_or(""))) {
+        std::string key = l.key;
+        std::erase_if(key, [](unsigned char c) { return std::isspace(c); });
+        if (selling_ratio && formats::iequals(key, "SellingRatio")) *selling_ratio = float(std::atof(l.value.c_str()));
+        const int id = gd.item_index(key);
+        if (!id) continue;
+        int col[3] = {1, -1, -1}, n = 0;
+        for (std::size_t a0 = 0; a0 <= l.value.size() && n < 3; ++n) {
+            const std::size_t e = std::min(l.value.find(':', a0), l.value.size());
+            col[n] = std::atoi(l.value.substr(a0, e - a0).c_str());
+            a0 = e + 1;
+        }
+        out.push_back({id, col[2] < 0 ? gd.items[std::size_t(id)].min_level : col[2], col[1]});
+    }
+    return out;
 }
 
 }  // namespace joa::game

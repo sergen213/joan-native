@@ -69,8 +69,17 @@ int Autopilot::swing_eta(const Unit& u) const {
     return t >= 0 ? t : -1;
 }
 
-void Autopilot::fight(InputFrame& f, const Unit& p, const Unit& foe) {
+void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
     World& w = m_.world();
+    // Bow at range (arrow damage is full up to FALL_S 800): the foe 150..800 away and nobody about to strike the player
+    // (within 100, or within 200 and after her).
+    if (const float d = d2(p.pos, foe.pos); d >= 150 && d < 800 && std::fabs(foe.pos.z - p.pos.z) < 300 && load_ammo(p, false)) {
+        bool threat = false;
+        for (const Unit& u : w.units())
+            if (alive(w, u) && w.hostile_to_player(u) && !u.no_react)
+                threat |= d2(p.pos, u.pos) < (u.target == p.id ? 200.0f : 100.0f);
+        if (!threat) return shoot(f, p, foe);
+    }
     f.camera_yaw_deg = std::atan2(foe.pos.y - p.pos.y, foe.pos.x - p.pos.x) / kDeg;
     // Guard (Q) against swings about to land on the player (an English swing lands ~350 ms after it
     // starts). Guarding blocks only +-BLOCKANG around the facing and the controller does not turn while
@@ -128,11 +137,89 @@ void Autopilot::fight(InputFrame& f, const Unit& p, const Unit& foe) {
     }
 }
 
+// Ammo slot: the arrows the bow fires (explosive ammo = projectile kind 2, item types 0xf / 0x12). Swapping them is
+// the character screen's drag into the ammo slot (World::equip). Returns false without such arrows.
+bool Autopilot::load_ammo(Unit& p, bool explosive) {
+    World& w = m_.world();
+    if (!p.inv.ranged.item) return false;
+    const auto kind = [&](int item) {
+        const int t = w.data().items[std::size_t(item)].type;
+        return t < 0xd || t > 0x14 ? -1 : (t == 0xf || t == 0x12) ? 1 : 0;
+    };
+    if (p.inv.ammo.item && p.inv.ammo.quantity > 0 && kind(p.inv.ammo.item) == int(explosive)) return true;
+    for (std::size_t i = 0; i < p.inv.bag.size(); ++i)
+        if (kind(p.inv.bag[i].item) == int(explosive) && p.inv.bag[i].quantity > 0) return w.equip(p, int(i));
+    return p.inv.ammo.item && p.inv.ammo.quantity > 0 && !explosive;  // plain wanted, only explosive left: keep shooting
+}
+
+// Bow (range mode, Z): the camera aims at the target's middle (the release locks the nearest enemy within
+// |v|/100 + AIM_R of the aim ray, 0x42c260), A starts drawing (SHTLOAD), A in SHTIDLE releases. Explosive arrows
+// go at groups: their ground blast hits every enemy within 150 (no friendly fire).
+void Autopilot::shoot(InputFrame& f, Unit& p, const Unit& foe) {
+    World& w = m_.world();
+    int group = 0;
+    for (const Unit& u : w.units()) group += alive(w, u) && w.hostile_to_player(u) && d2(u.pos, foe.pos) < 150;
+    if (!load_ammo(p, group >= 2)) load_ammo(p, false);
+    shot_ = true;
+    const float dx = foe.pos.x - p.pos.x, dy = foe.pos.y - p.pos.y;
+    const float dz = foe.pos.z + float(w.data().units[std::size_t(foe.cls)].height) * 0.5f -
+                     (p.pos.z + float(w.data().units[std::size_t(p.cls)].height));
+    f.camera_yaw_deg = std::atan2(dy, dx) / kDeg;
+    f.camera_pitch_deg = std::atan2(dz, std::hypot(dx, dy)) / kDeg;
+    if (!w.controller().range_mode) {
+        if (w.can_act(p) && tick_ % 2 == 0) f.press(IN_RANGE_MODE);
+        return;
+    }
+    if (tick_ % 2 == 0 && (p.action == SHTIDLE || (p.action != SHTLOAD && p.action != SHTOUT && w.can_act(p)))) f.press(IN_ATTACK_A);
+}
+
+// Buy screen open (start_buy_interface): the click handler's purchase (FUN_006c5a00 -> World::give_item of the item's
+// Quantity at the stock level, gold -= Price), once per opening. A heavier armour than the one worn is bought and
+// worn first (inventory right-click, World::use_item); with a bow, explosive arrows up to 20, then plain arrows.
+void Autopilot::shop(Unit& p) {
+    if (shop_ms_ == m_.ui().interface_ms) return;
+    shop_ms_ = m_.ui().interface_ms;
+    World& w = m_.world();
+    const GameData& gd = w.data();
+    int& gold = m_.state().gold;
+    const std::vector<ShopStock> stock = shop_stock(m_, m_.ui().buy_shop);
+    auto buy = [&](const ShopStock& s) {
+        const ItemDef& d = gd.items[std::size_t(s.item)];
+        if (s.quantity == 0 || gold < d.price || !w.give_item(p, d.code, s.level, std::max(1, d.quantity))) return false;
+        gold -= d.price;
+        log.push_back(std::to_string(m_.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
+        return true;
+    };
+    for (const ShopStock& s : stock) {
+        const ItemDef& d = gd.items[std::size_t(s.item)];
+        if (d.item_class == "ARMOR" && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.defense > p.armor_level && buy(s))
+            for (std::size_t i = p.inv.bag.size(); i-- > 0;)
+                if (p.inv.bag[i].item == s.item) {
+                    w.use_item(p, int(i));
+                    break;
+                }
+    }
+    if (!p.inv.ranged.item) return;
+    auto count = [&](int item) {
+        int n = p.inv.ammo.item == item ? p.inv.ammo.quantity : 0;
+        for (const ItemInstance& it : p.inv.bag) n += it.item == item ? it.quantity : 0;
+        return n;
+    };
+    const int bow = gd.items[std::size_t(p.inv.ranged.item)].type;
+    for (const bool explosive : {true, false})
+        for (const ShopStock& s : stock) {
+            const int t = gd.items[std::size_t(s.item)].type;
+            if (t != (explosive ? 0xf : bow == 0xb ? 0xe : 0xd)) continue;
+            while ((!explosive || count(s.item) < 20) && buy(s)) {}
+        }
+}
+
 InputFrame Autopilot::decide() {
     InputFrame f;
     World& w = m_.world();
     Unit* pp = w.unit(w.player_id());
     goal.clear();
+    if (pp && alive(w, *pp) && m_.ui().buy_open) shop(*pp);
     if (!pp || !alive(w, *pp) || m_.ui().game_cut_scene || w.cut_scene) return f;
     Unit& p = *pp;
     // Character screen: every attribute point into HIT_POINT (the walkthroughs' rule; STR/DEF buy little).
@@ -164,19 +251,19 @@ InputFrame Autopilot::decide() {
         goal = "interact " + prompt_kind_;
         return f;
     }
-    // Objective marker: the first active minimap way point (scripts point the player with them) that
-    // was not stood at for 10 s already without the script moving it.
+    // Objective marker: the nearest active minimap way point (scripts point the player with them) that was not
+    // stood at for 10 s already without the script moving it (mission 2 shows the shop and the blacksmith at once).
     const Vec3* wp = nullptr;
     Vec3 wp_pos;
-    int wp_slot = 0;
+    int wp_slot = 0, slot = 0;
     for (const auto& x : m_.ui().waypoints) {
-        ++wp_slot;
+        ++slot;
         if (x.type == 0) continue;
         const Unit* fu = x.follow ? w.unit(x.follow) : nullptr;
-        wp_pos = fu ? fu->pos : Vec3{x.pos[0], x.pos[1], x.pos[2]};
-        if (std::any_of(done_wps_.begin(), done_wps_.end(), [&](Vec3 d) { return d2(d, wp_pos) < 1; })) continue;
-        wp = &wp_pos;
-        break;
+        const Vec3 at_pos = fu ? fu->pos : Vec3{x.pos[0], x.pos[1], x.pos[2]};
+        if (std::any_of(done_wps_.begin(), done_wps_.end(), [&](Vec3 d) { return d2(d, at_pos) < 1; })) continue;
+        if (wp && d2(p.pos, at_pos) >= d2(p.pos, wp_pos)) continue;
+        wp_pos = at_pos, wp = &wp_pos, wp_slot = slot;
     }
     // Enemies: keep the current target while it lives and stays near; else the nearest reachable one
     // close by, or one that is attacking the player. While hurt (< 70 %) an enemy that has not noticed
@@ -359,7 +446,9 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
 
 void Autopilot::step() {
     ++tick_;
-    const InputFrame in = decide();
+    shot_ = false;
+    InputFrame in = decide();
+    if (m_.world().controller().range_mode && !shot_) in = InputFrame{}, in.press(IN_RANGE_MODE);  // Z again: leave range mode
     const int pid = m_.world().player_id();
     static const int dbg_from = std::getenv("JOA_BOT_DBG") ? std::atoi(std::getenv("JOA_BOT_DBG")) : -1;
     if (dbg_from >= 0 && tick_ >= dbg_from && tick_ < dbg_from + 200) {

@@ -8,7 +8,7 @@ find_package(CURL REQUIRED)
 find_package(LibArchive REQUIRED)
 find_package(nlohmann_json 3 REQUIRED)
 
-set(JOA_UPDATE_REPO "OWNER/joan-native" CACHE STRING "GitHub OWNER/NAME whose releases joa-updater follows")
+set(JOA_UPDATE_REPO "sergen213/joan-native" CACHE STRING "GitHub OWNER/NAME whose releases joa-updater follows")
 if(NOT JOA_UPDATE_REPO MATCHES "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" OR JOA_UPDATE_REPO MATCHES "\\.\\.")
   message(FATAL_ERROR "JOA_UPDATE_REPO must be OWNER/NAME")
 endif()
