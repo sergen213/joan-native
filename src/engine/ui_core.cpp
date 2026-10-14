@@ -372,6 +372,12 @@ void Ui::image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0, glm::vec2 uv1, 
 
 void Ui::fill(glm::vec4 rect, glm::vec4 color) { image({}, rect, {0, 0}, {1, 1}, color); }
 
+void Ui::fill_window(glm::vec4 rect, glm::vec4 color) {
+    if (!out_ || rect.z <= 0.0f || rect.w <= 0.0f) return;
+    const glm::vec4 px = rect_pixels(rect);
+    out_->push_back({{px.x, px.y}, {px.z, px.w}, {0, 0}, {1, 1}, color, {}});
+}
+
 void Ui::sprite(const UiSprite* s, glm::vec2 pos, glm::vec4 color) {
     if (s) image(s->texture, {pos.x, pos.y, s->size.x, s->size.y}, s->uv0, s->uv1, color);
 }

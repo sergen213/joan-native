@@ -135,19 +135,19 @@ void GameUiBridge::draw(Ui& ui, game::Mission& m, HudModel& hud, std::vector<UiC
 void GameUiBridge::letterbox(Ui& ui, game::Mission& m) {
     const auto& cs = m.ui().cs;
     const glm::vec4 win = window_rect(ui);
-    if (cs.status == 7) return ui.fill(win, kBlack);
+    if (cs.status == 7) return ui.fill_window(win, kBlack);
     if (cs.status == 6 || cs.status == 8) {
         const float x = cs.wipe;
         const glm::vec2 u0 = cs.wipe_flip ? glm::vec2(1, 0) : glm::vec2(0, 0), u1 = cs.wipe_flip ? glm::vec2(0, 1) : glm::vec2(1, 1);
         ui.image(ui.texture("cut_scene_texture"), {x, win.y, 512, win.w}, u0, u1);
-        if (cs.status == 6) ui.fill({x + 512, win.y, win.x + win.z - x - 512, win.w}, kBlack);
-        else if (x > win.x) ui.fill({win.x, win.y, x - win.x, win.w}, kBlack);
+        if (cs.status == 6) ui.fill_window({x + 512, win.y, win.x + win.z - x - 512, win.w}, kBlack);
+        else if (x > win.x) ui.fill_window({win.x, win.y, x - win.x, win.w}, kBlack);
         if (cs.status == 6) return;
     }
     const float h = std::floor(1024.0f * 55.0f / 640.0f * cs.fade / 255.0f);
     if (h <= 1.0f) return;
-    ui.fill({win.x, win.y, win.z, h - win.y}, black(cs.fade));
-    ui.fill({win.x, 768 - h, win.z, win.y + win.w - (768 - h)}, black(cs.fade));
+    ui.fill_window({win.x, win.y, win.z, h - win.y}, black(cs.fade));
+    ui.fill_window({win.x, 768 - h, win.z, win.y + win.w - (768 - h)}, black(cs.fade));
 }
 
 // FUN_0063b830 (only while cs.status == 2 && fade == 255): ICON_1 / portrait / ICON_2 at (28,689), text
@@ -212,7 +212,7 @@ void GameUiBridge::title_screen(Ui& ui, game::Mission& m) {
     } else if (now > float(t.duration - t.fade_out) && t.fade_out > 0) {
         text_a = bg_a = (float(t.duration) - now) * 255.0f / float(t.fade_out);
     }
-    ui.fill(window_rect(ui), black(bg_a));
+    ui.fill_window(window_rect(ui), black(bg_a));
     const UiFont* f = ui.font("font_verdana_12_bold");
     if (!f || t.text.empty()) return;
     const float h = float(f->metrics.line_height()) * 5.0f;
@@ -287,7 +287,7 @@ void GameUiBridge::draw_loading(Ui& ui, int mission_no, float progress) {
     const float k = load_stage_ < 8 && kStageSec[load_stage_] > 0 ? std::min(1.0f, load_time_ / kStageSec[load_stage_]) : 1.0f;
 
     ui.frame(Anchor::Center);
-    ui.fill(window_rect(ui), kBlack);
+    ui.fill_window(window_rect(ui), kBlack);
     char set[4];
     std::snprintf(set, sizeof set, "M%d", std::clamp(mission_no, 1, 8));
     ui.sprite(set, "scr", {0, 194});
@@ -311,7 +311,7 @@ void GameUiBridge::draw_loading(Ui& ui, int mission_no, float progress) {
         ui.sprite("SL_COM", "bar", {405 + 2 * std::floor(load_shown_), 708}, white(a));
         ui.text(ui.font("Goudy_bold_18"), ui.text("SCELOAD", 1), {450, 744}, white(a));
     }
-    if (load_stage_ >= 7) ui.fill(window_rect(ui), black(load_stage_ == 7 ? 255.0f * k : 255.0f));
+    if (load_stage_ >= 7) ui.fill_window(window_rect(ui), black(load_stage_ == 7 ? 255.0f * k : 255.0f));
 }
 
 }  // namespace joa::engine

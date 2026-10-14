@@ -109,6 +109,19 @@ bool World::ai_shoot(Unit& u, int target) {
     return set_action(u, SHTLOAD);
 }
 
+// Unit_updateAction 0x7c7ab0 cases SHTLOAD (0x30, type 1) / SHTLOAD2 (0x32, type 0): an AI shooter whose +0x2db target
+// is not deleted re-solves its aim at the end of the draw, Aim_solve_by_type 0x4945c0 from the launch point to the
+// target's feet (+0x0e). The normalised z then picks SHTIDLE (< 0.1) or SHTIDLEH. ai_shoot's feet-to-feet direction
+// had z 0.15 for a target 40 units up the slope at 260 (mission-1 archer: SHTIDLEH; original SHTIDLE).
+// Launch point: the spawn_projectile HYPOTHESIS (the original transforms the ammo model's bone origin).
+void World::ai_reaim(Unit& u, int type) {
+    const Unit* t = unit(u.range_target);
+    if (!t || t->deleted) return;
+    const ThrowConsts& tc = gd_.throwi[type];
+    const Vec3 p0{u.pos.x, u.pos.y, u.pos.z + gd_.units[u.cls].cyl_height * 0.75f};
+    u.aim_dir = norm(solve_aim(p0, t->pos, tc.m, tc.mxd, tc.av, tc.gl, type == 0 ? 0.0f : 0.25f));
+}
+
 int World::spawn_projectile(Unit& s) {
     const UnitClass& cls = gd_.units[s.cls];
     const int ammo = s.inv.ammo.item ? s.inv.ammo.item : cls.srange;

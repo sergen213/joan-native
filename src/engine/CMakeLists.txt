@@ -56,7 +56,7 @@ endif()
 
 add_executable(joan-native main.cpp)
 target_link_libraries(joan-native PRIVATE joa_engine)
-target_compile_definitions(joan-native PRIVATE JOA_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(joan-native PRIVATE JOA_VERSION="${JOA_VERSION_STRING}")
 install(TARGETS joan-native RUNTIME DESTINATION bin)
 
 # tests/engine/<name>_test.cpp -> CTest engine.<name>; exit 77 = skipped.

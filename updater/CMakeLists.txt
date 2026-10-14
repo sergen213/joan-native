@@ -24,7 +24,7 @@ function(joa_update_library name)
   add_library(${name} STATIC update.cpp layout.cpp)
   target_include_directories(${name} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(${name} PUBLIC PkgConfig::SODIUM CURL::libcurl LibArchive::LibArchive nlohmann_json::nlohmann_json)
-  target_compile_definitions(${name} PUBLIC JOA_VERSION="${PROJECT_VERSION}" JOA_UPDATE_REPO="${JOA_UPDATE_REPO}"
+  target_compile_definitions(${name} PUBLIC JOA_VERSION="${JOA_VERSION_STRING}" JOA_UPDATE_REPO="${JOA_UPDATE_REPO}"
     PRIVATE JOA_UPDATE_PUBKEY="${JOA_UPDATE_PUBKEY}" ${ARGN})
   target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
 endfunction()

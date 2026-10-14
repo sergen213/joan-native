@@ -274,6 +274,7 @@ public:
     float try_ranged_hit(Unit& d, Unit& a, int type, bool ignore_down); // 0x5051e0
     int spawn_projectile(Unit& shooter);                                // 0x4ea700 + launch 0x5133e0
     bool ai_shoot(Unit& u, int target);                                 // AI fire start (SHTLOAD)
+    void ai_reaim(Unit& u, int type);                                   // draw end re-aim (0x7c7ab0 cases 0x30/0x32)
     std::vector<Projectile>& projectiles() { return projectiles_; }
 
     // progression (progression_xp.cpp)

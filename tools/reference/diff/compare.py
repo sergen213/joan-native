@@ -9,6 +9,7 @@ from diffrun import OUT, JOAN, JEAN, CI01, ARCHER, aname, wrap180  # noqa: E402
 
 ATTACKS = {28, 29, 30, 31, 32, 33, 34}  # ATTACK JATTACKB ENGATK.. DOWNATK
 IDLE = {0, 1, 2, 3, 4, 5, 6, 7}
+MOVES = {10, 11, 14, 15, 16, 17, 18, 19, 20}  # WALK RUN MOVE_L/R/B/FL/FR/BL/BR (a 100 ms RUN burst counts as a reaction)
 
 
 def load(backend, sc):
@@ -175,7 +176,23 @@ def m_block(r):
 def m_archer(r):
     a, b = r["m"]["archer_start"], r["m"]["archer_end"]
     d = hp_drops(r, a, b, {JOAN})
-    return {"arrow damage per hit": " ".join(str(h[2]) for h in d), "hits in 12 s": len(d),
+    ranged = [(t + a, rec) for t, rec, dmg, _, att in hp_drops(r, a - 15000, b + 1000) if att == "ranged/none"]
+    shots, hits, tgt, prev = [], 0, None, {}
+    for t, us in window(r, a - 15000, b):  # the archer's shots: SHTLOAD entry -> nearest live opponent = target
+        u = us.get(ARCHER)
+        if u and u["act"] == 48 and prev.get("act") != 48:
+            opp = [o for o in us.values() if o["nat"] and o["nat"] != u["nat"] and o["hp"] > 0]
+            if opp:
+                o = min(opp, key=lambda o: math.hypot(o["x"] - u["x"], o["y"] - u["y"]))
+                tgt = o["rec"]
+                shots.append(math.hypot(o["x"] - u["x"], o["y"] - u["y"]))
+        if u and u["act"] in (51, 56) and prev.get("act") not in (51, 56) and tgt:  # SHTOUT/SHTOUTH: hit within 1 s
+            hits += any(rec == tgt and t < th <= t + 1000 for th, rec in ranged)
+        prev = u or {}
+    return {"archer shot distance (mean of SHTLOAD entries)": sum(shots) / len(shots) if shots else None,
+            "archer shot distances": " ".join(str(round(s)) for s in shots) or "none",
+            "arrow hits / shots": f"{hits} / {len(shots)}",
+            "melee hits on Joan in 12 s": len([h for h in d if h[4] != "ranged/none"]),
             "archer actions": " ".join(sorted({aname(us[ARCHER]["act"]) for t, us in window(r, a, b) if ARCHER in us}))}
 
 
@@ -185,16 +202,31 @@ def m_potion(r):
     return {"HP before F3": ha, "HP after F3": hb, "healed": hb - ha}
 
 
+def kill_xp(r, rec, a):
+    """XP gains of rec after game time a, each with the unit(s) that died within 300 ms: 'CI01 L2 +100'."""
+    out, prev = [], None
+    for t, us in r["samples"]:
+        if t >= a and prev and rec in us and rec in prev and us[rec]["xp"] > prev[rec]["xp"]:
+            dead = [u for t2, s in r["samples"] if abs(t2 - t) <= 300 for u in s.values()
+                    if u["hp"] <= 0 and (p := at(r, t2 - 300)[1].get(u["rec"])) and p["hp"] > 0]
+            names = sorted({f"{u['name']} L{u['lvl']}" for u in dead})
+            out.append(f"{'/'.join(names) or '?'} +{us[rec]['xp'] - prev[rec]['xp']}")
+        prev = us
+    return ", ".join(out) or "none"
+
+
 def m_levelup(r):
+    a = r["m"]["fight_start"]
+    out = {"Joan kill XP": kill_xp(r, JOAN, a), "Jean kill XP": kill_xp(r, JEAN, a)}
     prev = None
     for t, us in r["samples"]:
         j = us[JOAN]
         if prev and j["lvl"] > prev["lvl"]:
-            return {f"{k} before/after": f"{prev[k]} / {j[k]}" for k in ("lvl", "xp", "mhp", "mep", "str", "dex", "def", "lead")} | \
-                   {"game ms into fight": t - r["m"]["fight_start"]}
+            return out | {f"{k} before/after": f"{prev[k]} / {j[k]}" for k in ("lvl", "xp", "mhp", "mep", "str", "dex", "def", "lead")} | \
+                   {"game ms into fight": t - a}
         prev = j
     j = r["samples"][-1][1][JOAN]
-    return {"level-up": f"not reached (lvl {j['lvl']}, xp {j['xp']})"}
+    return out | {"level-up": f"not reached (lvl {j['lvl']}, xp {j['xp']})"}
 
 
 def m_aggro(r):
@@ -207,7 +239,7 @@ def m_aggro(r):
             u, j = us.get(rec), us[JOAN]
             if not u:
                 break
-            if math.hypot(u["x"] - u0["x"], u["y"] - u0["y"]) > 30 or u["act"] in ATTACKS:
+            if math.hypot(u["x"] - u0["x"], u["y"] - u0["y"]) > 30 or u["act"] in ATTACKS | MOVES:
                 out[f"{rec} {u0['name']}: Joan dist at reaction"] = round(math.hypot(u["x"] - j["x"], u["y"] - j["y"]))
                 break
     return dict(sorted(out.items(), key=lambda kv: int(kv[0].split()[0])))
@@ -223,10 +255,13 @@ def fmt(v):
 
 def verdict(o, p, key=""):
     """Numbers: within 10 % (min 1); latencies ("ms" in the metric): within 70 ms, i.e. one or two original
-    frames + the 10 ms sampling period of the live-memory reader."""
+    frames + the 10 ms sampling period of the live-memory reader; positions "(x, y)": within 50 units."""
     if isinstance(o, (int, float)) and isinstance(p, (int, float)):
         tol = 70.0 if " ms" in key else max(abs(o) * 0.10, 1.0)
         return "match" if abs(o - p) <= tol else "MISMATCH"
+    xy = [tuple(map(float, s[1:-1].split(","))) for s in (o, p) if isinstance(s, str) and s.startswith("(") and s.count(",") == 1]
+    if len(xy) == 2:
+        return "match" if math.dist(*xy) <= 50 else "MISMATCH"
     return "match" if o == p else "differs"
 
 
@@ -254,6 +289,7 @@ def self_test():
     assert [(h[1], h[2], h[4]) for h in d] == [(JOAN, 3, "ranged/none"), (5, 4, "Joan")]
     assert by_attacker(d, "Joan") == "4"
     assert verdict(100, 109) == "match" and verdict(100, 120) == "MISMATCH" and verdict("a", "a") == "match"
+    assert verdict("(13528, 13021)", "(13527, 13022)") == "match" and verdict("(0, 0)", "(60, 0)") == "MISMATCH"
     print("ok")
 
 

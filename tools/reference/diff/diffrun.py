@@ -444,21 +444,31 @@ def sc_block(d):
 
 
 def sc_archer(d):
-    """Navmesh route toward the archer "Unit 63" (14), HP pinned; stand 700 units away facing it for 12 s."""
+    """Navmesh route toward the archer "Unit 63" (14), HP pinned; stand 700 units away facing it for 12 s (HP kept
+    >= 30). The archer follows its leader Anger Greetham (11) into melee range first on both sides, so the metrics
+    split arrow hits from melee hits and report the distance of every shot."""
     d.goto(ARCHER, 700, timeout_ms=60000, pin=True)
     d.set_hp(JOAN, 60)
-    d.mark("archer_start"); d.face(d.bearing(ARCHER)); d.sleep(12000); d.mark("archer_end")
+    d.mark("archer_start"); d.face(d.bearing(ARCHER))
+    t0 = d.now()
+    while d.now() - t0 < 12000:
+        d.sleep(150)
+        if d.player()["hp"] < 30:
+            d.set_hp(JOAN, 60)
+    d.mark("archer_end")
     return {}
 
 
-BOX = (13509, 12699)  # map item 2 (class 10 box, content item 92), the only box within 3000 of the start
+# Map item 1 (class 10 box, res 283, content 36 SMALL_BREAD: ItemClass POTION, "Red Potion"), on the hill north of the
+# first camp, away from every enemy. (Map item 2 by the start holds content 92 = ARROW, not an HP item.)
+BOX = (12527, 14822)
 
 
 def sc_potion(d):
-    """Break the box near the start (LMB x8), walk over the drop at full HP (it goes to the bag), then HP = 20
+    """Break the bread box (LMB from <= 90 units), walk over the drop at full HP (it goes to the bag), then HP = 20
     (test hook) and F3 (HP recovery item 0x43b490)."""
-    d.goto(BOX, 70, timeout_ms=30000)
-    for _ in range(8):
+    d.goto(BOX, 90, timeout_ms=40000)
+    for _ in range(4):
         d.face(math.degrees(math.atan2(BOX[1] - d.player()["y"], BOX[0] - d.player()["x"])), tol=10)
         d.tap("lmb"); d.sleep(500)
     d.goto(BOX, 10, timeout_ms=4000)
@@ -469,20 +479,22 @@ def sc_potion(d):
 
 def sc_levelup(d, limit_ms=120000):
     """XP test hook: Joan's XP = 990 (level 2 at 1000); fight the first camp with HP pinned until the next XP gain
-    levels her up."""
+    levels her up. The target is kept until it dies, and it is set to 1 HP (test hook) right before each of Joan's
+    swings, so that Joan, not Jean, lands the kill that credits XP (Unit_die 0x7c6240 -> EXPUP 0x5229a0)."""
     d.set_xp(JOAN, 990)
     d.goto(CI01, 90, timeout_ms=30000, pin=True)
     d.mark("fight_start")
-    t0 = d.now()
+    t0, tgt = d.now(), CI01   # first CI01 (the camp member the route ends at), then the nearest live foe
     while d.player()["lvl"] < 2 and d.now() - t0 < limit_ms:
-        foes = [u for u in d.units().values() if u["nat"] != d.player()["nat"] and u["hp"] > 0 and u["nat"]]
-        if not foes:
-            break
-        f = min(foes, key=lambda u: d.dist(u["rec"]))
-        if d.dist(f["rec"]) > 100:
-            d.face(d.bearing(f["rec"]), tol=10); d.hold("w", 300)
+        if tgt is None or (d.target(tgt) or {"hp": 0})["hp"] <= 0:
+            foes = [u for u in d.units().values() if u["nat"] != d.player()["nat"] and u["hp"] > 0 and u["nat"]]
+            if not foes:
+                break
+            tgt = min(foes, key=lambda u: d.dist(u["rec"]))["rec"]
+        if d.dist(tgt) > 100:
+            d.face(d.bearing(tgt), tol=10); d.hold("w", 300)
         else:
-            d.face(d.bearing(f["rec"]), tol=20); d.tap("lmb"); d.sleep(250)
+            d.face(d.bearing(tgt), tol=20); d.set_hp(tgt, 1); d.tap("lmb"); d.sleep(250)
         if d.player()["hp"] < 40:
             d.set_hp(JOAN, 60)
     d.mark("fight_end"); d.sleep(1000)

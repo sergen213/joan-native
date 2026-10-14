@@ -89,5 +89,25 @@ int main() {
     const WallRun b = wall_run(*gd, 400);
     CHECK(b.unit_hit && !b.item_hit && b.joan_hp == 57 && b.got.empty(), "behind: unit %d item %d hp %d", int(b.unit_hit),
           int(b.item_hit), b.joan_hp);
+
+    // Draw-end re-aim (0x7c7ab0 case 0x30, Aim_solve_by_type 0x4945c0 to the target's feet): mission-1 geometry,
+    // Joan 40 units up the slope at 260. The feet-to-feet direction from ai_shoot has z 0.15 (-> SHTIDLEH); the
+    // re-solved aim from the launch point is flat -> SHTIDLE, as the original archer (DIFFERENTIAL_VERIFICATION.md).
+    {
+        World v(*gd, &flat, 0);
+        const int jj = v.spawn_unit("JOAN_OF_ARC", gd->nation_id("FRENCH"), {260, 0, 40}, 180);
+        const int aa = v.spawn_unit("ENGLISH_ARCHER", gd->nation_id("ENGLISH"), {0, 0, 0}, 0);
+        v.set_player(jj);
+        v.tick({});
+        v.unit(jj)->pos.z = 40;
+        CHECK(v.ai_shoot(*v.unit(aa), jj) && v.unit(aa)->aim_dir.z > 0.1f, "feet-to-feet aim z %f", v.unit(aa)->aim_dir.z);
+        int drawn = -1;
+        for (int t = 0; t < 120 && drawn < 0; ++t) {
+            v.unit(jj)->pos.z = 40;
+            v.tick({});
+            if (v.unit(aa)->action != SHTLOAD) drawn = v.unit(aa)->action;
+        }
+        CHECK(drawn == SHTIDLE, "after the draw: action %d aim z %f", drawn, v.unit(aa)->aim_dir.z);
+    }
     return finish();
 }

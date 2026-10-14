@@ -119,6 +119,8 @@ public:
     // ---- drawing (design units) ----
     void image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0 = {0, 0}, glm::vec2 uv1 = {1, 1}, glm::vec4 color = kUiWhite);
     void fill(glm::vec4 rect, glm::vec4 color);
+    // Like fill(), but never clipped to the 1024x768 canvas: for full-window bars/black screens in pillar areas.
+    void fill_window(glm::vec4 rect, glm::vec4 color);
     void sprite(const UiSprite* s, glm::vec2 pos, glm::vec4 color = kUiWhite);
     void sprite(const UiSprite* s, glm::vec4 rect, glm::vec4 color = kUiWhite);  // stretched
     void sprite(std::string_view set, std::string_view name, glm::vec2 pos, glm::vec4 color = kUiWhite);

@@ -12,6 +12,11 @@ option(JOA_BUILD_UPDATER  "Build GitHub Releases updater" ON)
 option(JOA_SANITIZE       "Build with ASan+UBSan" OFF)
 # Original game data directory used by asset-backed tests (never written to).
 set(JOA_GAME_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Original Joan of Arc installation used by tests")
+# Full product version reported by binaries and compared by the updater (release builds pass the tag, e.g. 0.1.0-alpha.2).
+set(JOA_VERSION_STRING "${PROJECT_VERSION}" CACHE STRING "Product version including any pre-release suffix")
+if(NOT JOA_VERSION_STRING MATCHES "^${PROJECT_VERSION}([-+].*)?$")
+  message(FATAL_ERROR "JOA_VERSION_STRING ${JOA_VERSION_STRING} does not match project version ${PROJECT_VERSION}")
+endif()
 
 if(JOA_SANITIZE)
   add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)

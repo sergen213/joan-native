@@ -714,10 +714,14 @@ void World::update_action(Unit& u) {
     }
     case SHTLOAD:
         if (!u.ai_controlled) break;   // player holds until drawn (controller)
+        ai_reaim(u, 1);
         if (crossbow && find_move(u, SHTLOAD2)) set_action(u, SHTLOAD2);
         else set_action(u, u.aim_dir.z < 0.1f ? SHTIDLE : SHTIDLEH);
         break;
-    case SHTLOAD2: set_action(u, u.aim_dir.z < 0.1f ? SHTIDLE : SHTIDLEH); break;
+    case SHTLOAD2:
+        if (u.ai_controlled) ai_reaim(u, 0);
+        set_action(u, u.aim_dir.z < 0.1f ? SHTIDLE : SHTIDLEH);
+        break;
     case SHTIDLE:
         if (u.ai_controlled) set_action(u, SHTOUT);
         break;

@@ -1841,8 +1841,8 @@ Used only for PROJ/EXPL shots with dist > 300 (separately for x and y). Normal a
 
 | state | meaning | transition |
 |---|---|---|
-| 0x30 | draw / load (attach ammo model to unit+0x1bd) | rem==0: player → hold; AI: weapon(+0x1bf) type 0xc crossbow → 0x32; else aimDir.z<0.1 → 0x36 else 0x39 |
-| 0x32 | crossbow aim | rem==0 → 0x36 (z<0.1) / 0x39 |
+| 0x30 | draw / load (attach ammo model to unit+0x1bd) | AI with a live +0x2db target: aimDir re-solved, `Aim_solve_by_type 0x4945c0` type 1 from the ammo model's bone origin to the target's feet (+0x0e); rem==0: player → hold; AI: weapon(+0x1bf) type 0xc crossbow → 0x32; else aimDir.z<0.1 → 0x36 else 0x39 (port `World::ai_reaim`) |
+| 0x32 | crossbow aim | AI: aimDir re-solved as 0x30 with type 0; rem==0 → 0x36 (z<0.1) / 0x39 |
 | 0x36 | aim hold (level) | rem==0: player waits for release (0x42ba40→0x33); AI → 0x33 |
 | 0x39 | aim hold (high) | rem==0: AI → 0x38 |
 | 0x33 / 0x38 | shoot / shoot-high | **spawn when rem ≤ release** (once; ammo model consumed via 0x49f370); rem==0: TREBUCHET → 0x34, else idle (0x508b90) |
