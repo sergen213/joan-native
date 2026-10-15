@@ -204,7 +204,11 @@ Drives the player through `Mission::tick(InputFrame)` with only player inputs (W
 navmesh path, A/B combos, Q guard / down attack, R at the interact indicator, F3) plus the
 character-screen attribute allocation. Strategy (from the mission scripts and the Steam walkthrough):
 
-- **Points:** every attribute point into HIT_POINT (+4 max HP each).
+- **Points:** every attribute point into HIT_POINT (+4 max HP each); every skill point into ADD on the lowest
+  of the A / AA / AAA / AAAB combos it swings (combo level ×(lvl+10)/11 damage); a stronger one-hand sword in
+  the bag goes into the hand (mission 1's archer captain drops JOAN_SWORD_LV2). Another hero's points are
+  spent the way the in-game hint says: with no enemy within 400, switch to him (`Mission::switch_hero`, the
+  key path), spend on his character screen, switch back (mission 2: Jean's 10 points, 50 → 90 HP).
 - **Melee:** an English swing lands `anim_start + script StartTime` (~350 ms) after it starts. Above 45 %
   HP the bot attacks instead of guarding (every hit flinches its targets and A A A B cleaves; in a ring of
   attackers a guard only blocks the front — mission 2 kills went from 3–8 to 15–33 per run); below it, it
@@ -216,7 +220,13 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
   items walked over within 1200 when no enemy stands within 500 of them (the mission-1 tutorial).
 - **Rest:** below 70 % HP, enemies that have not noticed the player are left alone (backed away from);
   the bot stands and regenerates. Below 30 % with no food it retreats to the nearest allied hero.
-- **Allies:** waits for (regroups with) an ally hero only while it follows the player (FOLLOW_UNIT).
+- **Allies:** a following ally hero (FOLLOW_UNIT) more than 700 behind, unless he is busy with a foe, and
+  the **letter bearer** (a friend in the player's team dropping a MISSION item: mission 1's guards only open
+  to him, and only on the first visit) more than 700 away are waited for standing, 30 s at most per wait
+  (walking back turned the follower around too: mission 1 Joan and Jean walked back and forth for minutes).
+  The bearer is a ward (below). A switchable ally hero within 1000 of a ward that dies for good when he
+  becomes commandable (mission 2: Jean beside the Bastard as the attack starts) is put on hold there
+  (Shift + his key, `AiSystem::toggle_hold`, his men too; the walkthrough holds Jean).
 - **Objectives:** the nearest active minimap way point not yet stood at for 10 s (mission 2: blacksmith
   before the shop, so the buy screen comes before the shop talk that starts the attack); near it, NPCs
   showing the talk icon (`can_interact`) are walked up to and talked to once; then the open WIN
@@ -224,8 +234,9 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
 - **Shopping:** while the buy screen is open (`start_buy_interface`), once per opening, the bot makes
   the click handler's purchase (FUN_006c5a00: `World::give_item` of the item's Quantity at the stock
   level, gold −= Price) from `shop_stock()` (mission_ui.hpp, the stock list the engine buy screen also
-  reads): a heavier armour than worn (then worn, `World::use_item`), explosive arrows up to 20 (packs of 5
-  for 500: 15 with mission 2's 1980 gold), plain arrows (10 for 100) with the rest.
+  reads): explosive arrows up to 20 (packs of 5 for 500), then a heavier armour than worn (then worn,
+  `World::use_item`; mission 2's JOAN_ARMOR_LV2 costs 3000, all the Normal gold, which left Joan without
+  explosive arrows), plain arrows (10 for 100) with the rest.
 - **Bow:** a foe 150–800 away (arrow damage is full up to FALL_S 800; also up/down a wall, |dz| < 700)
   with nobody within 100 (200 if after the player): Z, camera yaw/pitch at the target's middle, A to
   draw, A in SHTIDLE to release. **Explosive volley** first: the densest group of 2+ (within the blast's
@@ -240,9 +251,10 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
   underneath (mission 2 timed out with Joan walking under a wall-top English for 26000 ticks).
 - **Targets:** the current foe while within 700, else the nearest within 3000 (450 while a marker pulls),
   with whoever targets the player ×0.5, archers within 350 ×0.3 and **enemies after a citizen ×0.4**.
-  With nobody in reach the bot hunts the enemy with the smallest distance to the player + to `home()`
-  (centroid of the units not hostile to the player: the town under attack before the next towns'
-  garrisons), enemies on another level +5000.
+  With nobody in reach the bot hunts the enemy (not a cannon or horse: mission 2 Normal timed out next
+  to the stage-5 cannons) with the smallest distance to the player + to `home()` (centroid of the units not
+  hostile to the player: the town under attack before the next towns' garrisons), enemies on another level
+  +5000.
 - **Interact:** the indicator is computed before the physics step moves the player, so the bot stops and
   presses R only once it stayed lit 3 ticks (R while walking landed out of reach: mission 2 never got the
   shop talk). Gates are never toggled in passing.
@@ -261,31 +273,32 @@ Hero switching is `Mission::switch_hero` (the key path, RTS commander pick and r
 `AiSystem::toggle_hold` (Shift+N). Tried on mission 2: the bot as Jean with Joan on the AI (the script's
 DEFEND_PLACE at the gate) lost Joan in 5/6 seeds; Joan anchored at the Bastard (enemies > 1500 from him
 ignored) lost on citizens in 10/12 seeds; neither is used. Jean's RAPIDFBOW (damage 16 vs Joan's BOW 8)
-with his 90 arrows is the untried switching use (the bot would play Jean, Joan held). Not done yet:
-spending skill points (Learn / ADD: combo levels ×(lvl+10)/11 damage, RUSH from level 4), selling (the buy
-screen sells at Price × SellingRatio), hero-to-hero item transfer (not modelled by the port), siege use,
-RTS orders, mounting, bribes, choice dialogs (headless answers choice 1). The interact prompt (R) also
-recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks plus hits taken / dealt, hits on friendly
-heroes (attacker team), deaths (killer team), spawns, interact prompts and the player's shots / projectile
-hits; `JOA_BOT_DBG=T` prints 200 ticks of per-frame inputs and nearby enemies from tick T.
+with his 90 arrows is the untried switching use (the bot would play Jean, Joan held). Not done yet: learning
+new upgrades (RUSH from level 4, BB), selling (the buy screen sells at Price × SellingRatio), hero-to-hero item
+transfer (not modelled by the port), siege use, RTS orders, mounting, bribes, choice dialogs (headless answers
+choice 1). The interact prompt (R) also recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks (with
+the ally hero's task and target) plus hits taken / dealt, hits on friendly heroes (attacker team), deaths
+(killer team), spawns, interact prompts and the player's shots / projectile hits; `JOA_BOT_DBG=T` prints 200
+ticks of per-frame inputs and nearby enemies from tick T.
 
-`game.campaign_legit` runs the chain from a new game (Normal, 40000 ticks per attempt, 2 retries) twice,
-checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (1).
-`joa-campaign --autopilot --difficulty D` measures other difficulties (seed 1, 40000 ticks, 2 retries):
+`game.campaign_legit` runs the chain from a new game (Normal, 90000 ticks per attempt, 2 retries) twice,
+checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (2).
+`joa-campaign --autopilot --continue --difficulty D` (seed 1, 90000 ticks, 2 retries, `work/cb7/chain.sh`):
 
-| mission | difficulty | result | ticks | kills | HP dealt / taken | cause |
-|---|---|---|---|---|---|---|
-| 1 S1L1 | 0 Easy | WON | 18024 | 38 | 2803 / 95 | — |
-| 1 S1L1 | 1 Normal | WON | 26530 | 38 | 2665 / 178 | — |
-| 2 S3L1 | 0 Easy | not won | 40000 | — | — | see the seed sweep below |
-| 2 S3L1 | 1 Normal | not won | 40000 | — | — | see the seed sweep below |
+| mission | difficulty | result | ticks | attempts | kills | HP dealt / taken | cause |
+|---|---|---|---|---|---|---|---|
+| 1 S1L1 | 0 Easy | WON | 46311 | 1 | 50 | 3278 / 225 | — |
+| 1 S1L1 | 1 Normal | WON | 30187 | 1 | 49 | 3273 / 366 | — |
+| 2 S3L1 | 0 Easy | WON | 60490 | 2 | 117 | 15882 / 762 | attempt 1 lost |
+| 2 S3L1 | 1 Normal | WON | 102618 | 3 | 192 | 27144 / 2654 | attempt 3 (seed 3) won at t81190 |
+| 3 S2L1 | 0 / 1 | timeout | 90000 | 1 | 42 / 191 | — | "Capture Camp du pied fragile" not reached |
 
-Mission 2 from the chain checkpoints (the bot's own mission-1 result), RETRY seeds 1–12, 40000 ticks each
-(`work/cb5` probe): **Easy** 6/12 survive the first wave into stage 4 (6 lost on citizens); **Normal** 3/12 reach
-stage 4, 8 lose the Bastard (swarmed at the town hall ~t9000–11000 by team 32's ten polemen and team 31, while
-Joan fights at the gate), 1 on citizens. Stage 4 runs then time out: Joan hunts the de Bourges / de Blois
-garrisons (opening the gate herself) but no run reached stage 5 in the budget. Before this round's fixes
-(clear shots, wall-top foes, gate travel) Normal lost 11/12 in stage 3.
+Seed sweeps (one attempt each, 90000 ticks): mission 1 **Easy 10/12** (seed 11 dies in the first tutorial fight,
+seed 3 times out), **Normal 12/12**. Mission 2 from the chain checkpoints (`work/cb7/eval.sh`, RETRY seeds 1–12):
+**Easy 2/12** won (seeds 2, 4), 1 timeout in stage 3, 8 lost on citizens, 1 the Bastard; **Normal 2/12** won
+(seeds 3, 11), 8 lost on citizens, 2 the Bastard. A win takes 50000–81000 ticks (stage 4: the de Bourges / de
+Blois garrisons; stage 5: William de la Pole, 580 HP). Holding Jean beside the Bastard took Normal from 0/12 to
+1–2/12; buying explosive arrows before the armour from 0/12 stage-3 survivors to 1/12.
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
 0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
@@ -299,6 +312,46 @@ Citizens (39) die at up to one per 3 s while ~30 enemies roam; the Bastard (leve
 falls ~90 s after the attack when Joan is away from the town hall. Not done: stage 4's Orleans talk / the
 two towns (the gate must be reopened), stage 5's cannon assault. A bot RETRY restarts with seed + attempt
 (the original reseeds from `time(NULL)`).
+
+**S3L1 after stage 3 (from `S3L1_tactic.sce` / `S3L1_finish.sce`).** Stage 4 (tactic l.2020): count time > 30 s,
+objective 5 done, John gone, gate closed. Stage 4 → 5 (l.2095–2510): talk to the Bastard at the town hall
+(way point 6578,5544: deletes `S3_Block`, enables 11 / 12), clear every ENGLISH unit from `S3L1_2_Town_1_Place`
+(de Bourges) and `S3L1_2_Town_2_Place` (de Blois) (event bit 1, the way point comes back), talk to the Bastard
+again (Tiger's eye, wall archers, 10 s pause), then with Joan and Jean inside `Check Enemy Place` / `Check Enemy
+Place 2` and the gate shut the second wave (William, John, cannons, six reserve squads) spawns: stage 5. If Joan
+is outside or the gate open at that check the Bastard says once "Return to the castle immediately, and close the
+gate!". Stage 5: opening the gate (or the cannons breaking it) sends every squad at the town hall. Win: stage 6
+= objectives 3 and 4 (`S3L1_finish.sce`): after 10 s of stage 5, `get_unit_retreat` of William and of John is
+−1 (beaten with the retreat flag the script sets: Unit_die leaves them at 1 HP), each then gets a cut scene,
+`del_unit` and WIN.
+
+Bot changes for it: `travel()` also treats a path that leaves the walkable mesh (a step of > 200 in z: the wall
+top to the coarse world-mesh leg outside the closed gate) as blocked and opens the gate; a gate the bot opened
+is closed behind it once the player is 60+ inside (gate facing = outside; the interact refuses foreigners in
+front) and heading inside; it is not opened from inside while 8+ enemies stand within 2500 outside (stage 5);
+the path is replanned whenever any gate changes state; a re-shown way point is a new errand; an NPC is talked
+to again after 100 s (the 30 s give-up timer restarts per approach); the "close the gate" message sends the bot
+back through the gate it opened; resting with > 10 food eats; wards (allied heroes with retreat 0, friends a
+way point follows) pull enemies on them to ×0.3 from up to 4000 and, swarmed by 4+, are run to; MISSION items
+lying anywhere are fetched.
+
+**Port bug fixed:** AI_energyAttack 0x4bca60 charges the EGATK_MP / EGATK_HP price only to units NOT hostile to
+the player (Unit_isHostileToPlayer 0x5094d0); the port charged the hostile side and spared allies. William / John
+at ≤ 20 % HP killed themselves with it (HP 0 without Unit_die, deleted next tick), so objectives 3 / 4 could
+never finish (`game.ai_energy_cost`, GAMEPLAY_AI_TROOPS.md §20). Re-verified on the disassembly (0x4bcc75–0x4bcce6:
+`ecx` = UnitArray_get(player), `push` the unit's recno, call 0x407ced → 0x5094d0, nonzero clears the pay flag) and
+Script_can_energy_attack 0x652c10 (returns 1 for the player's enemies before any price check). The EP price is
+`EP_CONSUME` (Inventory_aggregate_effect 0x15, 100 % without items) × max EP × EGATK_MP / 100 / 100 in both
+(0x4bcc05–0x4bcc3d), now also for AI units (was the "100 %" hypothesis).
+
+**Port bug fixed:** Unit_auto_pickup 0x49da30 only lets units of the player unit's nation (0x49da91: UnitArray_get
+(player) +2 == unit +2) with LOD tier ≤ 3 (+0x22, within 8000 of the player) pick up floor items; the port let every
+general (enemy captains too) pick them up. Jean picking up mission 1's dropped Imperial Scroll is original behaviour
+(French, a hero: MISSION items are hero-only), and once he withdraws (`del_unit_team 2`, `jean_recno = 0` in
+S1L1_tactic.sce) the gate check `get_item_quantity_in_unit_inventory(scroll, jean_recno)` fails, so the original
+soft-locks the same way; the script's only other routes are the bearer himself inside "Messenger Detect" on the
+first visit to "Castle Gate Place" (cut scene 3) or Joan carrying the scroll (cut scene 4). The bot therefore
+escorts the bearer (waits for him, guards him as a ward) and fetches a dropped MISSION item itself.
 
 Port bug fixed with the bot: F3 / F4 (`World::use_recovery_item`, 0x43b490 / 0x43b990) now go
 through the potion effect `World::recover` (0x50b4f0 / 0x50ba00 / 0x50bcd0, called with force 0):

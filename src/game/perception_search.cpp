@@ -194,8 +194,7 @@ bool AiSystem::can_energy_attack(const Unit& u) const {  // 0x652c10
     const Unit* p = w_.unit(w_.player_id());
     if (p && !p->deleted && u.nation != 0 && w_.hostile(u.nation, p->nation)) return true;
     const auto& c = w_.data().c;
-    // HYPOTHESIS: Inventory_aggregate_effect(0x15) taken as 100 % (no energy-cost items on AI units).
-    const int mp = int(float(w_.max_ep(u)) * float(c.egatk_mp) / 100.0f);
+    const int mp = int(float(w_.bonus(u, EP_CONSUME)) * (float(w_.max_ep(u) * c.egatk_mp) / 100.0f) / 100.0f);
     const int hp = int(float(w_.max_hp(u)) * float(c.egatk_hp) / 100.0f);
     if (u.ep < mp || u.hp <= 3 * hp) return false;
     return w_.can_use_special(u, ENGATK);

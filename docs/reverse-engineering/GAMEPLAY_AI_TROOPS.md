@@ -931,10 +931,10 @@ if (anim==ATTACK && combo_len && remaining==0) reset_combo;
 if (!can_energy_attack(u) /*0x652c10*/) { done; return; }
 mp = ftol( maxMP*EGATK_MP/100 * effect_pct(0x15)/100 );  hp = ftol( maxHP*EGATK_HP/100 );
 set_anim(ENGATK,0,1);
-if (!(player valid && player.is_ally(u) /*0x5094d0*/)) { set_mp(MP-mp); set_hp(HP-hp); }   // player's allies (incl. player) pay nothing
+if (!(player valid && player.is_hostile_to_player(u) /*0x5094d0*/)) { set_mp(MP-mp); set_hp(HP-hp); }   // the player's enemies pay nothing
 u+0x151 = now;
 ```
-can_energy_attack 0x652c10: player ally → 1; else MP ≥ mp && HP > 3*hp && has ENGATK anim && (anim usable 0x416ed0 || crew/weapon 0x50d3d0(0xd,0)>0).
+can_energy_attack 0x652c10: hostile to the player → 1 (no price check); else MP ≥ mp && HP > 3*hp && has ENGATK anim && (anim usable 0x416ed0 || crew/weapon 0x50d3d0(0xd,0)>0). 0x5094d0 is Unit_isHostileToPlayer: unit nation 0 → 0, else FUN_004b6860(player nation, unit nation) = the nation-relation hostility byte (same nation 0, either nation 0 → 1). The port used to charge the hostile side: a retreat-flagged boss (mission 2's William / John) at ≤ 20 % HP killed itself with its energy attack (HP 0 without Unit_die, deleted next tick), so its "defeat" objective never finished (`game.ai_energy_cost`).
 
 #### 21 RUSH_ATTACK 0x4bcdb0 — CONFIRMED
 ```c

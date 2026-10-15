@@ -17,9 +17,9 @@ using namespace joa::game;
 
 namespace {
 
-constexpr int kTicks = 40000;      // per attempt (22 min of game time)
+constexpr int kTicks = 90000;      // per attempt (50 min of game time; mission 2 on Normal is won at ~81000)
 constexpr int kRetries = 2;
-constexpr int kExpectedWins = 1;   // mission 1 on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
+constexpr int kExpectedWins = 2;   // missions 1 and 2 on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
 
 int fails = 0;
 

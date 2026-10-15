@@ -1988,7 +1988,8 @@ The per-part "Open items" lists above hold the details. Summary:
   FUN_0042cf20(0), actor +0x10a; exit 0x42b6e0 → (1)). HIGH (ECX of the call inferred).
 - **Unit_dropItem** 0x406631: ItemArray_create(drop item) at the unit position/heading (+0x1a), floor marker 0x456cd0
   with quantity = item Quantity (+0x2a). CONFIRMED.
-- **Unit_auto_pickup** 0x49da30 (unit phase 0 head, CONFIRMED structure): rank (+0x104) > 3, active body; for each
+- **Unit_auto_pickup** 0x49da30 (unit phase 0 head, CONFIRMED structure): rank (+0x104) > 3, active body, LOD tier
+  (+0x22) ≤ 3, nation (+2) == the player unit's nation (0x49da91; the port let enemy generals pick up too); for each
   floor item with Pickable (+0x1c4) and (class != MISSION or hero +0x120): horizontal distance ≤ item radius + unit
   radius (actor +0xc8 / +0xf0 × scale), |dz| ≤ unit actor height (+0xf4). Then: red potion (type 0x15) whose amount
   (+0x4e) < max HP − HP → used (0x50b4f0); MISSION S7_GOLDBAR → gold-crate counter + message; MISSION S7_food* → food

@@ -504,11 +504,14 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
         if (engatk(u.action) || locked) { done(); break; }
         if (u.mount || !w_.find_move(u, ENGATK) || !can_energy_attack(u)) { done(); break; }
         const auto& k = w_.data().c;
-        const int mp = int(float(w_.max_ep(u)) * float(k.egatk_mp) / 100.0f);
+        const int mp = int(float(w_.bonus(u, EP_CONSUME)) * (float(w_.max_ep(u) * k.egatk_mp) / 100.0f) / 100.0f);
         const int hp = int(float(w_.max_hp(u)) * float(k.egatk_hp) / 100.0f);
         w_.set_action(u, ENGATK);
+        // 0x4bca60: the price is paid unless the unit is hostile to the player (Unit_isHostileToPlayer 0x5094d0 on the
+        // player) - the player's enemies attack for free (Script_can_energy_attack 0x652c10 skips their price check
+        // too), so a boss never kills itself with it past its retreat flag (mission 2: William/John at 116 HP).
         const Unit* p = w_.unit(w_.player_id());
-        if (!(p && (p->id == u.id || (u.nation && !w_.hostile(p->nation, u.nation))))) {  // player's allies pay nothing
+        if (!(p && !p->deleted && w_.hostile_to_player(u))) {
             w_.set_ep(u, u.ep - mp);
             w_.set_hp(u, u.hp - hp);
         }

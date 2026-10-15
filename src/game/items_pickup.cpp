@@ -16,8 +16,10 @@ constexpr float kItemRadius = 15.0f;
 void install_auto_pickup(Mission& m) {
     m.world().auto_pickup = [&m](Unit& u) {
         World& w = m.world();
-        // rank > 3 (+0x104), an active body in a loaded level (+0x339 / +0x2f5), alive.
-        if (u.rank <= 3 || !u.m.active || w.dead(u)) return;
+        // rank > 3 (+0x104), an active body in a loaded level (+0x339 / +0x2f5), LOD tier <= 3 (+0x22: within 8000
+        // of the player), the player's nation (0x49da91: UnitArray_get(player) +2 == unit +2), alive.
+        const Unit* pl = w.unit(w.player_id());
+        if (u.rank <= 3 || !u.m.active || u.lod_tier > 3 || !pl || pl->nation != u.nation || w.dead(u)) return;
         const GameData& gd = w.data();
         const UnitClass& cls = gd.units[size_t(u.cls)];
         const float reach = cls.cyl_radius + kItemRadius;   // item radius + unit radius (actor +0xf0)

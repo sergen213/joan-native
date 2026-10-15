@@ -24,6 +24,11 @@ bool alive(const World& w, const Unit& u) { return !u.deleted && !w.dead(u) && u
 // --- decisions ----------------------------------------------------------------------------------
 
 void Autopilot::steer(InputFrame& f, const Unit& p, Vec3 g, bool replan) {
+    // A gate opened / closed (by anyone) frees / shuts its passage: the old path is stale.
+    unsigned gates = 0;
+    for (int r = 1; r <= m_.objects().size(); ++r)
+        if (const MapItem* it = m_.objects().item(r); it && it->cls == 1) gates = gates * 31 + unsigned(it->state);
+    if (gates != gates_) gates_ = gates, replan = true;
     // Path on the mission navmesh (generous expansion budget: a player knows the roads).
     if (replan || d2(path_goal_, g) > 250 || tick_ - path_tick_ > 300 || wp_ >= path_.size()) {
         path_.clear(), wp_ = 0, path_goal_ = g, path_tick_ = tick_;
@@ -68,18 +73,49 @@ Vec3 Autopilot::home() const {
     return n ? Vec3{sx / float(n), sy / float(n), 0} : Vec3{};
 }
 
-// The friendly side of a gate: towards home().
-Vec3 Autopilot::gate_inside(const MapItem& g) const {
-    const Vec3 h = home();
-    const float dx = h.x - g.pos.x, dy = h.y - g.pos.y, l = std::max(1.0f, std::hypot(dx, dy));
-    return {g.pos.x + dx / l * 100, g.pos.y + dy / l * 100, g.pos.z};
+// Hero key (Mission::switch_hero 1..4: Joan, Jean, La Hire, Alencon), 0 for anyone else.
+int Autopilot::hero_key(const Unit& u) const {
+    const std::string& c = m_.world().data().units[std::size_t(u.cls)].code;
+    return c == "JOAN_OF_ARC" ? 1 : c == "JEAN_DE_METZ" ? 2 : c == "LAHIRE" ? 3 : c == "ALENCON" ? 4 : 0;
 }
 
-// Walk to g. The path mesh shuts a closed gate's passage, so a path ending well short of g with a closed
-// interactable gate near its end is blocked by that gate: walk up to it and open it (R at its indicator).
+// A friend in the player's team dropping a MISSION item (mission 1's letter bearer, team 1 once escorted).
+const Unit* Autopilot::bearer() const {
+    const World& w = m_.world();
+    const Unit* p = w.unit(w.player_id());
+    for (const Unit& u : w.units())
+        if (p && p->team && u.id != p->id && alive(w, u) && u.team == p->team && !w.hostile_to_player(u) && u.drop_item > 0 &&
+            u.drop_item < int(w.data().items.size()) && w.data().items[std::size_t(u.drop_item)].item_class == "MISSION")
+            return &u;
+    return nullptr;
+}
+
+// How far q lies on the friendly side of a gate: its facing points out (the gate interact refuses a foreign unit
+// in front of it, FUN_0041af80; mission 2's Castle Gate faces the English camp).
+static float gate_depth(const MapItem& g, Vec3 q) { return -(std::cos(g.dir) * (q.x - g.pos.x) + std::sin(g.dir) * (q.y - g.pos.y)); }
+
+// The friendly side of a gate: 100 behind it.
+Vec3 Autopilot::gate_inside(const MapItem& g) const {
+    return {g.pos.x - std::cos(g.dir) * 100, g.pos.y - std::sin(g.dir) * 100, g.pos.z};
+}
+
+// Walk to g. The path mesh shuts a closed gate's passage, so a path ending well short of g, or one leaving it by a
+// step no one walks (mission 2: up the wall stairs and off the wall top onto the coarse world-mesh leg outside, a
+// 520 drop), with a closed interactable gate near that point is blocked by that gate: walk up to it and open it
+// (R at its indicator). A gate the bot opened itself is closed behind it once the player is back through it
+// (clear of the door leaves) and heading for somewhere inside (mission 2 stage 4 only calls the second wave
+// with the gate shut).
 void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
     const MapObjects& o = m_.objects();
     travel_tick_ = tick_;
+    if (const MapItem* it = o.item(opened_gate_);
+        it && it->state == 1 && d2(p.pos, it->pos) < 1000 && gate_depth(*it, p.pos) > 60 && gate_depth(*it, g) > 0) {
+        goal += " (close gate behind)";
+        shut_tick_ = tick_;
+        if (const Vec3 in = gate_inside(*it); d2(p.pos, in) > 60) steer(f, p, in, false);
+        else f.mouse_dx = m_.world().rel_angle(p, it->pos) / 0.18f;
+        return;
+    }
     if (const MapItem* it = o.item(open_gate_); it && it->state == 0 && d2(open_goal_, g) < 500) {
         goal += " via gate";
         if (d2(p.pos, it->pos) > 100) steer(f, p, it->pos, false);
@@ -87,11 +123,23 @@ void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
     }
     open_gate_ = 0;
     steer(f, p, g, false);
-    if (path_.empty() || (d2(path_.back(), g) < 300 && std::fabs(path_.back().z - g.z) < 150)) return;
+    Vec3 stop = path_.back();
+    bool blocked = d2(stop, g) >= 300 || std::fabs(stop.z - g.z) >= 150;
+    for (std::size_t i = 0; !blocked && i + 1 < path_.size(); ++i)
+        if (std::fabs(path_[i + 1].z - path_[i].z) > 200) stop = path_[i], blocked = true;
+    if (!blocked) return;
     float best = 1000;
     for (int r = 1; r <= o.size(); ++r)
-        if (const MapItem* it = o.item(r); it && it->cls == 1 && it->state == 0 && it->interact == 0x200 && d2(it->pos, path_.back()) < best)
-            best = d2(it->pos, path_.back()), open_gate_ = r, open_goal_ = g;
+        if (const MapItem* it = o.item(r); it && it->cls == 1 && it->state == 0 && it->interact == 0x200 && !it->need_key && d2(it->pos, stop) < best)
+            best = d2(it->pos, stop), open_gate_ = r, open_goal_ = g;
+    // A gate held shut against a host outside (8+ within 2500: mission 2 stage 5, where opening it sends the second
+    // wave at the town hall) is not opened from inside.
+    if (const MapItem* it = o.item(open_gate_); it && gate_depth(*it, p.pos) > 0) {
+        int out = 0;
+        for (const Unit& u : m_.world().units())
+            out += alive(m_.world(), u) && m_.world().hostile_to_player(u) && d2(u.pos, it->pos) < 2500 && gate_depth(*it, u.pos) < 0;
+        if (out >= 8) open_gate_ = 0;
+    }
 }
 
 // ms until the hit of u's current melee swing lands (animation start + the move script's StartTime,
@@ -228,8 +276,9 @@ void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
         else f.held.set(IN_DEFEND);
         return;
     }
-    if (d > 85) {  // close in
+    if (d > 85) {  // close in; a foe the path mesh cannot bring the player to (behind mission 3's locked prison gate) is left
         steer(f, p, foe.pos, false);
+        if ((d2(path_.back(), foe.pos) > 150 && d2(p.pos, path_.back()) < 100) || stuck_count_ >= 3) unreach_[foe.id] = tick_;
         return;
     }
     f.mouse_dx = w.rel_angle(p, foe.pos) / 0.18f;
@@ -317,6 +366,20 @@ void Autopilot::shop(Unit& p) {
         log.push_back(std::to_string(m_.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
         return true;
     };
+    auto count = [&](int item) {
+        int n = p.inv.ammo.item == item ? p.inv.ammo.quantity : 0;
+        for (const ItemInstance& it : p.inv.bag) n += it.item == item ? it.quantity : 0;
+        return n;
+    };
+    const int bow = p.inv.ranged.item ? gd.items[std::size_t(p.inv.ranged.item)].type : 0;
+    auto arrows = [&](bool explosive) {
+        for (const ShopStock& s : stock) {
+            const int t = gd.items[std::size_t(s.item)].type;
+            if (bow && t == (explosive ? 0xf : bow == 0xb ? 0xe : 0xd))
+                while ((!explosive || count(s.item) < 20) && buy(s)) {}
+        }
+    };
+    arrows(true);
     for (const ShopStock& s : stock) {
         const ItemDef& d = gd.items[std::size_t(s.item)];
         if (d.item_class == "ARMOR" && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.defense > p.armor_level && buy(s))
@@ -326,19 +389,37 @@ void Autopilot::shop(Unit& p) {
                     break;
                 }
     }
-    if (!p.inv.ranged.item) return;
-    auto count = [&](int item) {
-        int n = p.inv.ammo.item == item ? p.inv.ammo.quantity : 0;
-        for (const ItemInstance& it : p.inv.bag) n += it.item == item ? it.quantity : 0;
-        return n;
-    };
-    const int bow = gd.items[std::size_t(p.inv.ranged.item)].type;
-    for (const bool explosive : {true, false})
-        for (const ShopStock& s : stock) {
-            const int t = gd.items[std::size_t(s.item)].type;
-            if (t != (explosive ? 0xf : bow == 0xb ? 0xe : 0xd)) continue;
-            while ((!explosive || count(s.item) < 20) && buy(s)) {}
+    arrows(false);
+}
+
+// Character screen (F1, the player's hero): every attribute point into HIT_POINT (the walkthroughs' rule; STR/DEF buy
+// little), every skill point into ADD on the lowest of the A / AA / AAA / AAAB combos the bot swings (damage x (lvl+10)/11),
+// and a stronger one-hand sword from the bag into the hand (mission 1's archer captain drops JOAN_SWORD_LV2).
+void Autopilot::character_screen(Unit& p) {
+    World& w = m_.world();
+    const GameData& gd = w.data();
+    while (p.attr_points > 0 && w.allocate_point(p, 6, false)) {}
+    while (p.skill_points > 0) {
+        int best = -1;
+        for (std::size_t i = 0; i < p.upgrades.size(); ++i) {
+            const UpgradeEntry& e = p.upgrades[i];
+            const UpItem& up = gd.upitems[std::size_t(e.upitem)];
+            if (up.type == 9 && e.applied > 0 && e.combo_level < 10 &&
+                (up.para1 == "A" || up.para1 == "AA" || up.para1 == "AAA" || up.para1 == "AAAB") &&
+                (best < 0 || e.combo_level < p.upgrades[std::size_t(best)].combo_level))
+                best = int(i);
         }
+        if (best < 0 || !w.allocate_point(p, 8, false, best)) break;
+    }
+    const ItemInstance& hand = p.inv.melee[0];
+    const int cur = hand.item ? gd.items[std::size_t(hand.item)].base_damage(hand.level) : 0;
+    for (std::size_t i = 0; i < p.inv.bag.size(); ++i) {
+        const ItemDef& d = gd.items[std::size_t(p.inv.bag[i].item)];
+        if (d.type == 9 && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(p.inv.bag[i].level) > cur) {
+            w.equip(p, int(i));
+            break;
+        }
+    }
 }
 
 InputFrame Autopilot::decide() {
@@ -349,8 +430,28 @@ InputFrame Autopilot::decide() {
     if (pp && alive(w, *pp) && m_.ui().buy_open) shop(*pp);
     if (!pp || !alive(w, *pp) || m_.ui().game_cut_scene || w.cut_scene) return f;
     Unit& p = *pp;
-    // Character screen: every attribute point into HIT_POINT (the walkthroughs' rule; STR/DEF buy little).
-    while (p.attr_points > 0 && w.allocate_point(p, 6, false)) {}
+    character_screen(p);
+    // The other heroes' points: the in-game hint says "switch to that character to assign their available points". With
+    // nobody hostile within 400, switch to a hero holding points (the key path), spend them on his character screen
+    // above, switch back (two ticks). Mission 2: Jean holds 10 attribute points (+40 HP), switchable once the attack starts.
+    if (Unit* home = w.unit(home_hero_); home_hero_ && home && p.id != home_hero_) {
+        m_.switch_hero(hero_key(*home));
+        home_hero_ = 0;
+        return f;
+    }
+    home_hero_ = 0;
+    const auto calm = [&](const Unit& h) {
+        for (const Unit& u : w.units())
+            if (alive(w, u) && w.hostile_to_player(u) && d2(u.pos, h.pos) < 400) return false;
+        return true;
+    };
+    if (!m_.ui().buy_open && hero_key(p) && calm(p) && tick_ >= switch_retry_)
+        for (const Unit& u : w.units())
+            if (u.id != p.id && alive(w, u) && hero_key(u) && (u.attr_points > 0 || u.skill_points > 0) && calm(u)) {
+                if (m_.switch_hero(hero_key(u))) home_hero_ = p.id;
+                else switch_retry_ = tick_ + 900;   // not controllable yet (mission 2 before the attack)
+                return f;
+            }
     // F3 below half HP while food lasts; below 30 % with no food left, fall back to the nearest friendly
     // hero (Jean...) and only guard until regen / a level-up brings HP back to 70 %.
     const int hp_pct = p.hp * 100 / std::max(1, w.max_hp(p));
@@ -385,8 +486,9 @@ InputFrame Autopilot::decide() {
     const MapItem* pit = m_.objects().item(prompt_item);
     const bool gate_prompt = pit && pit->cls == 1;
     const bool open_it = gate_prompt && prompt_item == open_gate_ && pit->state == 0 && tick_ - travel_tick_ <= 1;
+    const bool close_it = gate_prompt && prompt_item == opened_gate_ && pit->state == 1 && tick_ - shut_tick_ <= 1;
     if (prompt_ && fresh_talk && tick_ - last_interact_ > 20 && prompt_kind_ != "mount" && prompt_kind_ != "bribe" &&
-        (!gate_prompt || prompt_item == gate_ || open_it) && prompt_kind_ != "recruit_screen" && prompt_kind_ != "workshop") {
+        (!gate_prompt || prompt_item == gate_ || open_it || close_it) && prompt_kind_ != "recruit_screen" && prompt_kind_ != "workshop") {
         goal = "interact " + prompt_kind_;
         if (tick_ - prompt_tick_ < 3) return f;
         last_interact_ = tick_;
@@ -397,14 +499,19 @@ InputFrame Autopilot::decide() {
     }
     // Objective marker: the nearest active minimap way point (scripts point the player with them) that was not
     // stood at for 10 s already without the script moving it (mission 2 shows the shop and the blacksmith at once).
+    // A marker the script hides and shows again is a new errand (mission 2 stage 4: back to the town hall).
     const Vec3* wp = nullptr;
     Vec3 wp_pos;
     int wp_slot = 0, slot = 0;
+    wp_shown_.resize(m_.ui().waypoints.size());
     for (const auto& x : m_.ui().waypoints) {
         ++slot;
+        const bool was = wp_shown_[std::size_t(slot - 1)];
+        wp_shown_[std::size_t(slot - 1)] = x.type != 0;
         if (x.type == 0) continue;
         const Unit* fu = x.follow ? w.unit(x.follow) : nullptr;
         const Vec3 at_pos = fu ? fu->pos : Vec3{x.pos[0], x.pos[1], x.pos[2]};
+        if (!was) std::erase_if(done_wps_, [&](Vec3 d) { return d2(d, at_pos) < 1; });
         if (std::any_of(done_wps_.begin(), done_wps_.end(), [&](Vec3 d) { return d2(d, at_pos) < 1; })) continue;
         if (wp && d2(p.pos, at_pos) >= d2(p.pos, wp_pos)) continue;
         wp_pos = at_pos, wp = &wp_pos, wp_slot = slot;
@@ -444,15 +551,43 @@ InputFrame Autopilot::decide() {
     const bool fresh = hp_pct >= 70;
     const Unit* foe = nullptr;
     const Unit* lurker = nullptr;  // nearest unaware enemy within 600
+    const auto reachable = [&](const Unit& u) { const auto it = unreach_.find(u.id); return it == unreach_.end() || tick_ - it->second > 1800; };
     if (const Unit* t = w.unit(fight_target_);
-        t && alive(w, *t) && t->m.active && w.hostile_to_player(*t) && d2(p.pos, t->pos) < 700)
+        t && alive(w, *t) && t->m.active && w.hostile_to_player(*t) && d2(p.pos, t->pos) < 700 && reachable(*t))
         foe = t;
+    // Wards: allied heroes that die for good (retreat 0: a hero with the retreat flag, Jean, withdraws instead; mission
+    // 2 is lost with the Bastard) and friends a minimap marker follows (mission 1's letter bearer before the escort), the bearer in the player's team. Enemies within 400
+    // of them or after them count at 0.3 of their distance, from up to 4000 away.
+    std::vector<const Unit*> wards;
+    for (const Unit& u : w.units())
+        if (u.id != p.id && alive(w, u) && u.nation == p.nation && u.rank >= 4 && u.retreat == 0) wards.push_back(&u);
+    for (const auto& x : m_.ui().waypoints)
+        if (const Unit* u = x.type && x.follow ? w.unit(x.follow) : nullptr; u && u->id != p.id && alive(w, *u) && !w.hostile_to_player(*u))
+            wards.push_back(u);
+    if (const Unit* b = bearer()) wards.push_back(b);
+    // Holds: the territory of a finished WIN objective (a captured camp: mission 3 takes it back, and objective 1 with it,
+    // once no French stands inside and the English reinforcement waves sent after the capture walk in). Enemies within
+    // 1500 of it count like enemies on a ward, and 4+ there call the bot back.
+    std::vector<Vec3> holds;
+    for (const EndCondition& c : m_.state().end)
+        if (c.has_des && c.enabled && c.type == EndCondition::Win && c.finish == 1 && !c.territory_link.empty())
+            if (const Territory* t = m_.places().territory(m_.places().territory_by_name(c.territory_link)))
+                holds.push_back({float(t->center_x), float(t->center_y), p.pos.z});
+    const auto near_hold = [&](Vec3 q) { return std::any_of(holds.begin(), holds.end(), [&](Vec3 h) { return d2(q, h) < 1500; }); };
+    // A switchable ally hero standing by a ward that dies for good when the bot may command him (mission 2: Jean beside the
+    // Bastard as the attack starts) is put on hold there (Shift + his key, Unit_toggle_hold with his men; the walkthrough
+    // holds Jean): he guards the ward instead of following the player across the city.
+    for (const Unit* h : wards)
+        for (Unit& u : w.units())
+            if (h->retreat == 0 && u.id != p.id && hero_key(u) && alive(w, u) && u.m.control == 0 && !held_.count(u.id) &&
+                d2(u.pos, h->pos) < 1000)
+                m_.ai().toggle_hold(u, true), held_.insert(u.id);
     if (!foe || foe->target != p.id) {  // archers close by first, then whoever targets the player, then the nearest
         float best = 1e30f;
         const float reach = wp ? 450.0f : 3000.0f;  // beyond: "hunt" walks there
         const bool bow = p.inv.ranged.item && p.inv.ammo.item && p.inv.ammo.quantity > 0;
         for (const Unit& u : w.units()) {
-            if (!alive(w, u) || !u.m.active || !w.hostile_to_player(u) || u.no_react) continue;
+            if (!alive(w, u) || !u.m.active || !w.hostile_to_player(u) || u.no_react || !reachable(u)) continue;
             float d = d2(p.pos, u.pos);
             // Same level, or another (a wall top, the ground below one) within bow range.
             if (const float dz = std::fabs(u.pos.z - p.pos.z); dz > 150 && !(bow && dz < 700 && d < 800)) continue;
@@ -468,7 +603,10 @@ InputFrame Autopilot::decide() {
             if (const Unit* t = w.unit(u.target); t && alive(w, *t) && w.data().units[std::size_t(t->cls)].unit_class == 0 && !w.hostile_to_player(*t))
                 d *= 0.4f;
             if ((c.unit_class == 5 || c.unit_class == 6) && d < 350) d *= 0.3f;
-            if (d < reach && d < best) best = d, foe = &u;
+            const bool on_ward = near_hold(u.pos) ||
+                                 std::any_of(wards.begin(), wards.end(), [&](const Unit* h) { return u.target == h->id || d2(u.pos, h->pos) < 400; });
+            if (on_ward) d *= 0.3f;
+            if (d < (on_ward ? 4000.0f : reach) && d < best) best = d, foe = &u;
         }
     }
     if (retreat_) {
@@ -484,6 +622,40 @@ InputFrame Autopilot::decide() {
         }
         goal = "retreat hp " + std::to_string(hp_pct) + "%";
         return f;
+    }
+    // A ward swarmed (4+ enemies within 500) more than 700 away: break off and run to it; the fight there (volleys into
+    // the crowd) beats trading blows where the player stands (mission 2 Easy: Bastard losses 4/12 -> 0/12).
+    for (const Unit* h : wards) {
+        int n = 0;
+        for (const Unit& u : w.units()) n += alive(w, u) && w.hostile_to_player(u) && !u.no_react && d2(u.pos, h->pos) < 500;
+        if (n >= 4 && d2(p.pos, h->pos) > 700) {
+            goal = "rescue #" + std::to_string(h->id) + " from " + std::to_string(n);
+            fight_target_ = 0;
+            travel(f, p, h->pos);
+            return f;
+        }
+    }
+    for (const Vec3 h : holds) {
+        int n = 0;
+        for (const Unit& u : w.units()) n += alive(w, u) && w.hostile_to_player(u) && !u.no_react && d2(u.pos, h) < 1500;
+        if (n >= 4 && d2(p.pos, h) > 1500) {
+            goal = "hold " + at(h) + " from " + std::to_string(n);
+            fight_target_ = 0;
+            travel(f, p, h);
+            return f;
+        }
+    }
+    // Told to come back and close the gate (mission 2 stage 4 only calls the second wave with the player in the
+    // city behind a shut gate: "Return to the castle immediately, and close the gate!"): back through the gate the
+    // bot opened itself, which travel() closes behind her.
+    if (const MapItem* g = m_.objects().item(opened_gate_); go_home_ && g && !(foe && foe->target == p.id && d2(p.pos, foe->pos) < 300)) {
+        if (g->state == 0 && gate_depth(*g, p.pos) > 0) {
+            go_home_ = false;
+        } else {
+            goal = "home";
+            travel(f, p, home());
+            return f;
+        }
     }
     // Explosive arrows are worth most on a big group (a squad gathered at its rally point): with some left and
     // nobody on the player, walk up to the densest group of 5+ within 3000 (the volley starts at 800).
@@ -507,35 +679,47 @@ InputFrame Autopilot::decide() {
     // Loot: crates and barrels hold food and arrows (the mission-1 tutorial says so), dropped items lie
     // where units died. Break / walk over the nearest within reach, skipping ones that took too long.
     if (loot(f, p)) return f;
-    // Rest: Joan regenerates (1 HP / 10 s early on); nothing is gained by walking into the next fight hurt.
+    // Rest: Joan regenerates (1 HP / 10 s early on); nothing is gained by walking into the next fight hurt. With
+    // food to spare (more than 10) she eats instead of waiting (mission 2 stage 4: 29 food, 2 HP per 20 s).
     // An ally hero told to follow the player (FOLLOW_UNIT, Jean in mission 1) travels with her; heroes
     // that guard a place are not waited for.
     const bool follows = ally && m_.ai().curr_task(*ally) == task::FOLLOW_UNIT && m_.ai().curr_task_para(*ally, 1) == p.id;
     if (!fresh && p.retreat != -1) {
         goal = "rest hp " + std::to_string(hp_pct) + "%";
+        if (food > 10 && tick_ - last_heal_ > 30) f.press(IN_HEAL_ITEM), last_heal_ = tick_;
         if (follows && d2(p.pos, ally->pos) > 250) steer(f, p, ally->pos, false);
         return f;
     }
-    // Travel together: a following ally left more than 700 behind is waited for (walked back to).
-    if (follows && d2(p.pos, ally->pos) > 700 && d2(p.pos, ally->pos) < 3000) {
-        goal = "regroup with #" + std::to_string(ally->id);
-        steer(f, p, ally->pos, false);
+    // Travel together: a following ally (Jean) left more than 700 behind, unless busy with a foe, and the letter bearer
+    // (a friend dropping a MISSION item: the mission 1 guards only open to him) are waited for, standing: walking back
+    // turned a follower around too (mission 1: Joan and Jean walked back and forth for minutes). 30 s per wait at most.
+    const Unit* busy = ally ? w.unit(ally->target) : nullptr;
+    const Unit* lag = follows && !(busy && alive(w, *busy) && w.hostile_to_player(*busy)) && d2(p.pos, ally->pos) > 700 &&
+                              d2(p.pos, ally->pos) < 3000 ? ally : nullptr;
+    if (const Unit* b = bearer(); b && d2(p.pos, b->pos) > 700 && d2(p.pos, b->pos) < 4000) lag = b;
+    if (!lag) wait_tick_ = -1;
+    else if (wait_tick_ < 0) wait_tick_ = tick_;
+    if (lag && tick_ - wait_tick_ < 900) {
+        goal = "wait for #" + std::to_string(lag->id);
         return f;
     }
     // A marker often stands at a door with the person to see inside (the shops in mission 2): near the
-    // marker, walk up to an NPC showing the talk icon (can_interact) not talked to yet. A reached marker
+    // marker, walk up to an NPC showing the talk icon (can_interact) not talked to in the last 100 s (mission 2
+    // stage 4 sends the player back to the Bastard). A reached marker
     // the script does not move on within 10 s means "continue from here": the next marker, the open WIN
     // objective's territory (the minimap shows towns), else the nearest enemy.
     if (wp) {
         const Unit* npc = nullptr;
         if (d2(p.pos, *wp) < 900)
             for (const Unit& u : w.units())
-                if (u.id != p.id && alive(w, u) && u.m.can_interact && !w.hostile_to_player(u) && !talked_.count(u.id) &&
+                if (u.id != p.id && alive(w, u) && u.m.can_interact && !w.hostile_to_player(u) &&
+                    (!talked_.count(u.id) || tick_ - talked_[u.id] > 3000) &&
                     d2(u.pos, *wp) < 600 && (!npc || d2(p.pos, u.pos) < d2(p.pos, npc->pos)))
                     npc = &u;
         if (npc) {
             goal = "talk to #" + std::to_string(npc->id) + " " + npc->name;
-            if (npc->id != talk_key_) talk_key_ = npc->id, talk_tick_ = tick_;
+            if (npc->id != talk_key_ || tick_ - talk_seen_ > 30) talk_key_ = npc->id, talk_tick_ = tick_;  // a new approach
+            talk_seen_ = tick_;
             if (tick_ - talk_tick_ > 900) talked_[npc->id] = tick_;  // no talk icon in 30 s: give up on it
             if (d2(p.pos, npc->pos) > 60) steer(f, p, npc->pos, false);
             else f.mouse_dx = w.rel_angle(p, npc->pos) / 0.18f;
@@ -563,13 +747,16 @@ InputFrame Autopilot::decide() {
     float far_d = 0;
     const Vec3 h = home();
     for (const Unit& u : w.units())
-        if (alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react) {
+        if (const auto& c = w.data().units[std::size_t(u.cls)];
+            alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react && c.unit_class != 8 && c.special != 2 && reachable(u)) {  // not cannons / horses
             const float d = d2(p.pos, u.pos) + d2(h, u.pos) + (std::fabs(u.pos.z - p.pos.z) > 150 ? 5000.0f : 0.0f);
             if (!far || d < far_d) far = &u, far_d = d;
         }
     if (far) {
         goal = "hunt #" + std::to_string(far->id) + " " + at(far->pos);
         travel(f, p, far->pos);
+        if (!open_gate_ && !path_.empty() && d2(path_goal_, far->pos) < 250 && d2(path_.back(), far->pos) > 150 && d2(p.pos, path_.back()) < 100)
+            unreach_[far->id] = tick_;
         return f;
     }
     // Nothing left: everything lying around, else stand.
@@ -586,9 +773,11 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     int best_key = 0;
     float best_d = radius;
     bool box = false;
-    auto consider = [&](int key, Vec3 pos, bool is_box) {
-        if (std::fabs(pos.z - p.pos.z) > (is_box ? 60.0f : 150.0f) || skip_.count(key)) return;
-        const float d = d2(p.pos, pos);
+    // `far`: a MISSION item (mission 1's Imperial Scroll, dropped by the messenger when he falls: "You must retrieve
+    // the letter from the stricken French archer") is fetched from anywhere, before anything else lying around.
+    auto consider = [&](int key, Vec3 pos, bool is_box, bool far = false) {
+        if ((!far && std::fabs(pos.z - p.pos.z) > (is_box ? 60.0f : 150.0f)) || skip_.count(key)) return;
+        const float d = far ? 0.0f : d2(p.pos, pos);
         if (d >= best_d) return;
         for (const Unit& u : w.units())  // left alone while an enemy stands next to it
             if (alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react && d2(u.pos, pos) < 500) return;
@@ -603,7 +792,7 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     }
     for (const WorldItem& it : w.items())
         if (!it.deleted && it.item > 0 && it.item < int(gd.items.size()) && gd.items[std::size_t(it.item)].pickable)
-            consider(it.id, it.pos, false);
+            consider(it.id, it.pos, false, gd.items[std::size_t(it.item)].item_class == "MISSION");
     if (!best_key) return false;
     if (best_key != loot_key_) loot_key_ = best_key, loot_tick_ = tick_;
     if (tick_ - loot_tick_ > 900) return skip_.insert(best_key), false;  // not reached / not taken in 30 s
@@ -650,8 +839,8 @@ void Autopilot::step() {
             std::printf("[bot %d] shot #%d %s at #%d %s\n", tick_, e.other, e.name.c_str(), fight_target_, goal.c_str());
         if (trace && e.type == Ev::ProjectileHit && e.value >= 2)
             std::printf("[bot %d] projectile #%d type %d hit %s #%d\n", tick_, e.other, e.value, e.name.empty() ? "unit" : e.name.c_str(), e.unit);
-        if (trace && e.type == Ev::Hit && e.unit != pid)  // hits taken by the other heroes / the Bastard
-            if (const Unit* v = tw.unit(e.unit); v && v->rank >= 4 && !tw.hostile_to_player(*v))
+        if (trace && e.type == Ev::Hit && e.unit != pid)  // hits taken by the other heroes (both sides) / the Bastard
+            if (const Unit* v = tw.unit(e.unit); v && v->rank >= 4)
                 if (const Unit* a = tw.unit(e.other))
                     std::printf("[bot %d] %s hit -%d (hp %d) by #%d %s team %d %s\n", tick_, v->name.c_str(), e.value, v->hp, a->id,
                                 tw.data().units[std::size_t(a->cls)].code.c_str(), a->team, e.name.c_str());
@@ -679,6 +868,8 @@ void Autopilot::step() {
             prompt_ = e.a != 0, prompt_id_ = e.b, prompt_kind_ = e.text, prompt_tick_ = tick_;
             if (trace) std::printf("[bot %d] prompt %d #%d %s\n", tick_, e.a, e.b, e.text.c_str());
         }
+        if ((e.kind == K::AttentionMessage || e.kind == K::Interact) && trace) std::printf("[bot %d] %s %d %d %s\n", tick_, event_kind_name(e.kind), e.a, e.b, e.text.c_str());
+        if (e.kind == K::AttentionMessage && e.text.find("close the gate") != std::string::npos && opened_gate_) go_home_ = true;
         if (e.kind == K::ObjectiveFinish || e.kind == K::ObjectiveFail || e.kind == K::Minimap || e.kind == K::ObjectiveAdd)
             last_progress_tick = tick_;
         if (e.kind == K::ObjectiveFinish || e.kind == K::ObjectiveFail || e.kind == K::Victory || e.kind == K::Defeat)
@@ -699,9 +890,9 @@ void Autopilot::step() {
             const Unit* j = nullptr;
             for (const Unit& u : w.units())
                 if (!u.deleted && u.id != p->id && u.nation == p->nation && u.rank >= 4) j = &u;
-            std::printf("[bot %d] %s hp %d/%d ep %d/%d lv %d xp %d food %d stage %d kills %d ally %s hp %d | %s\n", tick_, at(p->pos).c_str(),
-                        p->hp, w.max_hp(*p), p->ep, w.max_ep(*p), p->level, p->xp, food, m_.scenario().stage, kills,
-                        j ? at(j->pos).c_str() : "-", j ? j->hp : 0, goal.c_str());
+            std::printf("[bot %d] %s hp %d/%d ep %d/%d lv %d xp %d food %d stage %d kills %d ally %s hp %d task %d tgt %d | %s\n", tick_,
+                        at(p->pos).c_str(), p->hp, w.max_hp(*p), p->ep, w.max_ep(*p), p->level, p->xp, food, m_.scenario().stage, kills,
+                        j ? at(j->pos).c_str() : "-", j ? j->hp : 0, j ? m_.ai().curr_task(*j) : 0, j ? j->target : 0, goal.c_str());
         }
     }
 }
