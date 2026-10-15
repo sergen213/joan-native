@@ -99,6 +99,141 @@ Vec3 Autopilot::gate_inside(const MapItem& g) const {
     return {g.pos.x - std::cos(g.dir) * 100, g.pos.y - std::sin(g.dir) * 100, g.pos.z};
 }
 
+// Walkable regions: (nav level, path-mesh component) of the poly under q (one off the mesh, a tent at a camp's centre,
+// takes the nearest poly); -1 without a nav mesh. A closed gate splits a component (NavMesh::set_blocked).
+int Autopilot::region(Vec3 q) const {
+    const NavWorld* nav = m_.nav();
+    if (!nav) return -1;
+    int poly = nav->find_poly_xy(q.x, q.y, q.z);
+    if (const int lv = nav->level_at(q.x, q.y); poly < 0 && lv >= 0) {
+        const NavLevel& l = nav->levels()[std::size_t(lv)];
+        if (const int n = l.mesh.nearest_poly(q.x - l.ox, q.y - l.oy, q.z); n >= 0) poly = l.base + n;
+    }
+    return poly < 0 ? -1 : nav->level_of_poly(poly) * 100000 + nav->poly(poly).component;
+}
+
+// Regions of different levels meet at the level seams: a poly reaching its level's box edge, and the open poly of the next
+// level just across it at about the same height. Ladders (map item class 11) lead from the region at their foot (60 in
+// front) to the one at their top (60 behind their plane, at the item height: a wall walkway). Rebuilt when a gate changes
+// state (components change with it).
+void Autopilot::build_seams() {
+    const NavWorld* nav = m_.nav();
+    if (!nav || (seam_gates_ == gates_ && seams_built_)) return;
+    seam_gates_ = gates_, seams_built_ = true, seams_.clear(), linked_.clear(), ladders_.clear();
+    const MapObjects& o = m_.objects();
+    for (int r = 1; r <= o.size(); ++r)
+        if (const MapItem* l = o.item(r); l && l->cls == 11)
+            if (const ObjRes* res = o.res(l->res)) {
+                const float fx = std::cos(l->dir), fy = std::sin(l->dir);
+                const Vec3 ft{l->pos.x + fx * 60, l->pos.y + fy * 60, l->pos.z}, top{l->pos.x - fx * 60, l->pos.y - fy * 60, l->pos.z + float(res->height)};
+                ladders_.push_back({r, ft, top, region(ft), region(top)});
+            }
+    const auto& lv = nav->levels();
+    for (int li = 0; lv.size() > 1 && li < int(lv.size()); ++li) {
+        const NavLevel& l = lv[std::size_t(li)];
+        for (int qi = 0; qi < int(l.mesh.polys().size()); ++qi) {
+            const NavPoly& q = l.mesh.polys()[std::size_t(qi)];
+            if (q.state == 1) continue;
+            const float x0 = float(q.bbox[0]) + l.ox, y0 = float(q.bbox[1]) + l.oy, x1 = float(q.bbox[3]) + l.ox, y1 = float(q.bbox[4]) + l.oy;
+            const Vec3 c{float(q.cx) + l.ox, float(q.cy) + l.oy, float(q.cz)};
+            Vec3 across = c, in = c;  // 64 past the box edge in the next level / 64 short of it in this one
+            if (x1 > l.x1 - 64) across.x = l.x1 + 64, in.x = l.x1 - 64;
+            else if (x0 < l.ox + 64) across.x = l.ox - 64, in.x = l.ox + 64;
+            else if (y1 > l.y1 - 64) across.y = l.y1 + 64, in.y = l.y1 - 64;
+            else if (y0 < l.oy + 64) across.y = l.oy - 64, in.y = l.oy + 64;
+            else continue;
+            in.z = nav->poly_height(l.base + qi, in.x, in.y);
+            const int o = nav->find_poly_xy(across.x, across.y, in.z);
+            if (o < 0 || nav->level_of_poly(o) == li || nav->poly(o).state == 1) continue;
+            across.z = nav->poly_height(o, across.x, across.y);
+            if (std::fabs(across.z - in.z) > 100) continue;
+            seams_.push_back({li * 100000 + q.component, nav->level_of_poly(o) * 100000 + nav->poly(o).component, across, in});
+        }
+    }
+}
+
+// Whether the player can walk from region a to region b (unknown regions count as linked).
+bool Autopilot::linked(int a, int b) {
+    if (a == b || a < 0 || b < 0) return true;
+    build_seams();
+    if (const auto it = linked_.find({a, b}); it != linked_.end()) return it->second;
+    std::set<int> seen{a};
+    std::vector<int> todo{a};
+    while (!todo.empty() && !seen.count(b)) {
+        const int cur = todo.back();
+        todo.pop_back();
+        for (const Seam& s : seams_)
+            if (s.a == cur && seen.insert(s.b).second) todo.push_back(s.b);
+    }
+    return linked_[{a, b}] = seen.count(b) > 0;
+}
+
+// region() of a unit, cached for 30 ticks (target selection asks for many units every tick).
+int Autopilot::unit_region(const Unit& u) {
+    auto& [t, r] = unit_region_[u.id];
+    if (t <= 0 || tick_ - t > 30) t = tick_, r = region(u.pos);
+    return r;
+}
+
+// A foe the player could not get at is left alone for 60 s, twice as long each further time (up to 8 min).
+void Autopilot::give_up(int id) {
+    auto& [until, times] = unreach_[id];
+    until = tick_ + (1800 << std::min(times++, 3));
+}
+bool Autopilot::unreached(const Unit& u) const {
+    const auto it = unreach_.find(u.id);
+    return it != unreach_.end() && tick_ < it->second.first;
+}
+
+// The centre of the first enabled, unfinished WIN objective's territory (the minimap shows the towns / camps); `index` its
+// end-condition index. False if none.
+bool Autopilot::open_territory(Vec3& g, int* index) const {
+    for (std::size_t i = 0; i < m_.state().end.size(); ++i) {
+        const EndCondition& c = m_.state().end[i];
+        if (!c.has_des || !c.enabled || c.type != EndCondition::Win || c.finish == 1 || c.territory_link.empty()) continue;
+        if (const Territory* t = m_.places().territory(m_.places().territory_by_name(c.territory_link))) {
+            g = {float(t->center_x), float(t->center_y), g.z};
+            if (index) *index = int(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Multi-level worlds (one nav mesh per level, scenarios 2-8): the engine's planner stays on the start level's mesh when
+// the goal lies on it, so a region of that level cut off by a closed gate (mission 3: the plateau before the shut front
+// gate of camp du beau vallon, whose way round is the road below through the next level) only gets a path to the gate.
+// The bot routes like a player who knows the map: over regions linked at the level seams, Dijkstra by straight-line
+// distance, and returns the first seam crossing on the way (null when no detour applies).
+const Autopilot::Seam* Autopilot::detour(const Unit& p, Vec3 g) {
+    const int from = region(p.pos), to = region(g);
+    if (from < 0 || to < 0 || from == to) return nullptr;
+    build_seams();
+    // Dijkstra over regions; a region's position is where the route first entered it.
+    std::map<int, float> cost{{from, 0.0f}};
+    std::map<int, std::pair<Vec3, int>> at;  // region -> (entry point, first seam of the route to it)
+    at[from] = {p.pos, -1};
+    std::set<int> done;
+    for (;;) {
+        int cur = -1;
+        for (const auto& [n, c] : cost)
+            if (!done.count(n) && (cur < 0 || c < cost[cur])) cur = n;
+        if (cur < 0) {  // every way left runs through a crossing that failed: try them all again
+            if (bad_vias_.empty()) return nullptr;
+            bad_vias_.clear();
+            return detour(p, g);
+        }
+        if (cur == to) return at[cur].second < 0 ? nullptr : &seams_[std::size_t(at[cur].second)];
+        done.insert(cur);
+        for (std::size_t i = 0; i < seams_.size(); ++i)
+            if (const Seam& s = seams_[i]; s.a == cur && !done.count(s.b) &&
+                                           std::none_of(bad_vias_.begin(), bad_vias_.end(), [&](Vec3 v) { return d2(v, s.at) < 300; })) {
+                const float c = cost[cur] + d2(at[cur].first, s.at);
+                if (!cost.count(s.b) || c < cost[s.b]) cost[s.b] = c, at[s.b] = {s.at, cur == from ? int(i) : at[cur].second};
+            }
+    }
+}
+
 // Walk to g. The path mesh shuts a closed gate's passage, so a path ending well short of g, or one leaving it by a
 // step no one walks (mission 2: up the wall stairs and off the wall top onto the coarse world-mesh leg outside, a
 // 520 drop), with a closed interactable gate near that point is blocked by that gate: walk up to it and open it
@@ -121,6 +256,26 @@ void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
         if (d2(p.pos, it->pos) > 100) steer(f, p, it->pos, false);
         return;
     }
+    // A region no walk reaches (a wall walkway, or the ground from one): by a ladder.
+    if (const int to = region(g); !linked(region(p.pos), to) && use_ladder(f, p, to)) return;
+    // A cross-level detour under way (detour()): walk to its seam on this level (the engine plans a goal on another level
+    // over the coarse world mesh: mission 3 walked away from a crossing 150 off), then straight across. A seam not reached
+    // in 90 s or not crossed in 10 s is not tried again.
+    if (via_tick_ >= 0 && d2(via_goal_, g) < 1500 && d2(p.pos, via_) > 60) {
+        if (!via_cross_ && d2(p.pos, via_in_) <= 60) via_cross_ = true, via_tick_ = tick_;
+        if (tick_ - via_tick_ < (via_cross_ ? 300 : 2700)) {
+            goal += " detour " + at(via_);
+            if (!via_cross_) {
+                steer(f, p, via_in_, false);
+            } else {
+                f.camera_yaw_deg = std::atan2(via_.y - p.pos.y, via_.x - p.pos.x) / kDeg;
+                f.held.set(IN_FORWARD);
+            }
+            return;
+        }
+        bad_vias_.push_back(via_), detour_tick_ = -1000;
+    }
+    via_tick_ = -1;
     open_gate_ = 0;
     steer(f, p, g, false);
     Vec3 stop = path_.back();
@@ -128,9 +283,13 @@ void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
     for (std::size_t i = 0; !blocked && i + 1 < path_.size(); ++i)
         if (std::fabs(path_[i + 1].z - path_[i].z) > 200) stop = path_[i], blocked = true;
     if (!blocked) return;
+    // Only a gate the interact opens for the player (FUN_0041af80: a foreign gate from its back side only, and only with HP
+    // left: mission 3's English camp gates have none) and one needing no key (mission 3's prison gate).
     float best = 1000;
     for (int r = 1; r <= o.size(); ++r)
-        if (const MapItem* it = o.item(r); it && it->cls == 1 && it->state == 0 && it->interact == 0x200 && !it->need_key && d2(it->pos, stop) < best)
+        if (const MapItem* it = o.item(r); it && it->cls == 1 && it->state == 0 && it->interact == 0x200 && !it->need_key &&
+                                           (it->nation == 0 || it->nation == p.nation || (it->hp > 0 && gate_depth(*it, p.pos) > 0)) &&
+                                           d2(it->pos, stop) < best)
             best = d2(it->pos, stop), open_gate_ = r, open_goal_ = g;
     // A gate held shut against a host outside (8+ within 2500: mission 2 stage 5, where opening it sends the second
     // wave at the town hall) is not opened from inside.
@@ -139,6 +298,10 @@ void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
         for (const Unit& u : m_.world().units())
             out += alive(m_.world(), u) && m_.world().hostile_to_player(u) && d2(u.pos, it->pos) < 2500 && gate_depth(*it, u.pos) < 0;
         if (out >= 8) open_gate_ = 0;
+    }
+    if (!open_gate_ && tick_ - detour_tick_ > 300) {
+        detour_tick_ = tick_;
+        if (const Seam* s = detour(p, g)) via_ = s->at, via_in_ = s->in, via_goal_ = g, via_tick_ = tick_, via_cross_ = false;
     }
 }
 
@@ -276,9 +439,13 @@ void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
         else f.held.set(IN_DEFEND);
         return;
     }
-    if (d > 85) {  // close in; a foe the path mesh cannot bring the player to (behind mission 3's locked prison gate) is left
+    // Close in. A foe the path mesh cannot bring the player to (behind mission 3's locked prison gate), or one chased for 30 s
+    // in all without getting within 150 (mission 3: the G Defend Place hill guards above the dock road), is left for 60 s.
+    if (d <= 150) chase_.erase(foe.id);
+    if (d > 85) {
         steer(f, p, foe.pos, false);
-        if ((d2(path_.back(), foe.pos) > 150 && d2(p.pos, path_.back()) < 100) || stuck_count_ >= 3) unreach_[foe.id] = tick_;
+        if ((d2(path_.back(), foe.pos) > 150 && d2(p.pos, path_.back()) < 100) || ++chase_[foe.id] > 900)
+            give_up(foe.id), chase_.erase(foe.id);
         return;
     }
     f.mouse_dx = w.rel_angle(p, foe.pos) / 0.18f;
@@ -471,6 +638,12 @@ InputFrame Autopilot::decide() {
             }
     if (hp_pct < 30 && !food) retreat_ = true;
     if (hp_pct >= 70 || food) retreat_ = false;
+    // On a ladder (climb() mounted it, or R at an item indicator in passing): up the rungs to the walkway.
+    if (p.m.climb) {
+        goal = "climb";
+        f.held.set(climb_up_ ? IN_FORWARD : IN_BACKWARD);
+        return f;
+    }
     const Unit* ally = nullptr;
     for (const Unit& u : w.units())
         if (u.id != p.id && alive(w, u) && u.nation == p.nation && u.rank >= 4 && u.retreat != -1 &&
@@ -485,9 +658,10 @@ InputFrame Autopilot::decide() {
     const int prompt_item = prompt_kind_ == "item" ? m_.objects().modify_item(prompt_id_) : 0;
     const MapItem* pit = m_.objects().item(prompt_item);
     const bool gate_prompt = pit && pit->cls == 1;
+    const bool ladder_prompt = pit && pit->cls == 11;  // only on purpose (the hunt's climb): R at its top took the player back down
     const bool open_it = gate_prompt && prompt_item == open_gate_ && pit->state == 0 && tick_ - travel_tick_ <= 1;
     const bool close_it = gate_prompt && prompt_item == opened_gate_ && pit->state == 1 && tick_ - shut_tick_ <= 1;
-    if (prompt_ && fresh_talk && tick_ - last_interact_ > 20 && prompt_kind_ != "mount" && prompt_kind_ != "bribe" &&
+    if (prompt_ && !ladder_prompt && fresh_talk && tick_ - last_interact_ > 20 && prompt_kind_ != "mount" && prompt_kind_ != "bribe" &&
         (!gate_prompt || prompt_item == gate_ || open_it || close_it) && prompt_kind_ != "recruit_screen" && prompt_kind_ != "workshop") {
         goal = "interact " + prompt_kind_;
         if (tick_ - prompt_tick_ < 3) return f;
@@ -551,7 +725,12 @@ InputFrame Autopilot::decide() {
     const bool fresh = hp_pct >= 70;
     const Unit* foe = nullptr;
     const Unit* lurker = nullptr;  // nearest unaware enemy within 600
-    const auto reachable = [&](const Unit& u) { const auto it = unreach_.find(u.id); return it == unreach_.end() || tick_ - it->second > 1800; };
+    // Reachable: not given up on (a foe the path mesh did not bring the player to, or one chased too long). A component test
+    // (same nav level, other path-mesh component) dropped every mission 2 attacker (kills 0, the Bastard lost); the hunt
+    // below ranks by regions instead.
+    const bool bow = p.inv.ranged.item && p.inv.ammo.item && p.inv.ammo.quantity > 0;
+    const int here = region(p.pos);
+    const auto reachable = [&](const Unit& u) { return !unreached(u); };
     if (const Unit* t = w.unit(fight_target_);
         t && alive(w, *t) && t->m.active && w.hostile_to_player(*t) && d2(p.pos, t->pos) < 700 && reachable(*t))
         foe = t;
@@ -584,10 +763,12 @@ InputFrame Autopilot::decide() {
                 m_.ai().toggle_hold(u, true), held_.insert(u.id);
     if (!foe || foe->target != p.id) {  // archers close by first, then whoever targets the player, then the nearest
         float best = 1e30f;
-        const float reach = wp ? 450.0f : 3000.0f;  // beyond: "hunt" walks there
-        const bool bow = p.inv.ranged.item && p.inv.ammo.item && p.inv.ammo.quantity > 0;
+        // On the way to the open objective's territory (more than 2000 off) only foes within 800 are taken on: mission 3
+        // Normal timed out chasing every patrol within 3000 between the two camps.
+        Vec3 obj{};
+        const float reach = wp ? 450.0f : open_territory(obj) && d2(p.pos, obj) > 2000 ? 800.0f : 3000.0f;  // beyond: "hunt" walks there
         for (const Unit& u : w.units()) {
-            if (!alive(w, u) || !u.m.active || !w.hostile_to_player(u) || u.no_react || !reachable(u)) continue;
+            if (!alive(w, u) || !u.m.active || !w.hostile_to_player(u) || u.no_react) continue;
             float d = d2(p.pos, u.pos);
             // Same level, or another (a wall top, the ground below one) within bow range.
             if (const float dz = std::fabs(u.pos.z - p.pos.z); dz > 150 && !(bow && dz < 700 && d < 800)) continue;
@@ -606,7 +787,7 @@ InputFrame Autopilot::decide() {
             const bool on_ward = near_hold(u.pos) ||
                                  std::any_of(wards.begin(), wards.end(), [&](const Unit* h) { return u.target == h->id || d2(u.pos, h->pos) < 400; });
             if (on_ward) d *= 0.3f;
-            if (d < (on_ward ? 4000.0f : reach) && d < best) best = d, foe = &u;
+            if (d < (on_ward ? 4000.0f : reach) && d < best && reachable(u)) best = d, foe = &u;
         }
     }
     if (retreat_) {
@@ -694,11 +875,13 @@ InputFrame Autopilot::decide() {
     // (a friend dropping a MISSION item: the mission 1 guards only open to him) are waited for, standing: walking back
     // turned a follower around too (mission 1: Joan and Jean walked back and forth for minutes). 30 s per wait at most.
     const Unit* busy = ally ? w.unit(ally->target) : nullptr;
-    const Unit* lag = follows && !(busy && alive(w, *busy) && w.hostile_to_player(*busy)) && d2(p.pos, ally->pos) > 700 &&
-                              d2(p.pos, ally->pos) < 3000 ? ally : nullptr;
+    // A follower the wait did not bring back within its 30 s (mission 3: Jean below a cliff) is not waited for again for 2 min.
+    const Unit* lag = follows && tick_ >= no_wait_until_ && !(busy && alive(w, *busy) && w.hostile_to_player(*busy)) &&
+                              d2(p.pos, ally->pos) > 700 && d2(p.pos, ally->pos) < 3000 ? ally : nullptr;
     if (const Unit* b = bearer(); b && d2(p.pos, b->pos) > 700 && d2(p.pos, b->pos) < 4000) lag = b;
     if (!lag) wait_tick_ = -1;
     else if (wait_tick_ < 0) wait_tick_ = tick_;
+    if (lag == ally && lag && tick_ - wait_tick_ >= 900) no_wait_until_ = tick_ + 3600;
     if (lag && tick_ - wait_tick_ < 900) {
         goal = "wait for #" + std::to_string(lag->id);
         return f;
@@ -731,38 +914,87 @@ InputFrame Autopilot::decide() {
         if (d2(p.pos, *wp) > 80) travel(f, p, *wp);
         return f;
     }
-    for (const EndCondition& c : m_.state().end) {
-        if (!c.has_des || !c.enabled || c.type != EndCondition::Win || c.finish == 1 || c.territory_link.empty()) continue;
-        const Territory* t = m_.places().territory(m_.places().territory_by_name(c.territory_link));
-        if (!t) continue;
-        const Vec3 g{float(t->center_x), float(t->center_y), p.pos.z};
-        if (d2(p.pos, g) < 300) break;
-        goal = "territory " + c.territory_link + " " + at(g);
-        travel(f, p, g);
-        return f;
+    // The open WIN objective's territory (the minimap shows the towns / camps), once per 100 s: reached, the hunt below
+    // clears it (mission 3: camp du beau vallon is taken once no English is left inside it).
+    Vec3 h = home();
+    if (int i = 0; open_territory(h, &i)) {
+        h.z = p.pos.z;
+        if (d2(p.pos, h) < 300) territory_seen_[i] = tick_;
+        if (const auto s = territory_seen_.find(i); s == territory_seen_.end() || tick_ - s->second >= 3000) {
+            goal = "territory " + m_.state().end[std::size_t(i)].territory_link + " " + at(h);
+            travel(f, p, h);
+            return f;
+        }
     }
-    // Hunt the enemy left nearest to the player and to her people (home(): the town under attack before the
-    // garrisons of the next ones), those on the player's level (not a wall top above / the ground below) first.
+    // Hunt the enemy left nearest to the player and to the open objective's territory (else her people, home(): the town
+    // under attack before the garrisons of the next ones), those on the player's level (not a wall top above / the ground
+    // below) and those a walk (or a ladder) leads to first.
+    // While an objective territory is open the target is kept for 30 s while it lives (scores flip as the player walks:
+    // mission 3 went back and forth between the camp's wall archers and a far tower for minutes). Not otherwise: mission 2's
+    // town defence lost the Bastard in 3/3 seeds with the hunt stuck on one far attacker.
     const Unit* far = nullptr;
     float far_d = 0;
-    const Vec3 h = home();
+    Vec3 foot{};
+    bool up = true;
+    if (const Unit* t = w.unit(hunt_target_);
+        t && tick_ - hunt_tick_ < 900 && open_territory(foot) && alive(w, *t) && w.hostile_to_player(*t) && !unreached(*t))
+        far = t;
     for (const Unit& u : w.units())
         if (const auto& c = w.data().units[std::size_t(u.cls)];
-            alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react && c.unit_class != 8 && c.special != 2 && reachable(u)) {  // not cannons / horses
-            const float d = d2(p.pos, u.pos) + d2(h, u.pos) + (std::fabs(u.pos.z - p.pos.z) > 150 ? 5000.0f : 0.0f);
-            if (!far || d < far_d) far = &u, far_d = d;
+            !far && alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react && c.unit_class != 8 && c.special != 2 &&
+            !unreached(u)) {  // not cannons / horses
+            const int r = unit_region(u);
+            const float d = d2(p.pos, u.pos) + d2(h, u.pos) + (std::fabs(u.pos.z - p.pos.z) > 150 ? 5000.0f : 0.0f) +
+                            (here == r || here < 0 || r < 0 ? 0.0f : ladder_to(here, r, foot, up) ? 2000.0f : linked(here, r) ? 10000.0f : 20000.0f);
+            if (!far_d || d < far_d) far_d = d, hunt_target_ = u.id, hunt_tick_ = tick_;
         }
+    if (!far) far = far_d ? w.unit(hunt_target_) : nullptr;
     if (far) {
         goal = "hunt #" + std::to_string(far->id) + " " + at(far->pos);
+        // A wall top (mission 3: the archers on camp du beau vallon's walls) is reached by its ladder (travel()).
         travel(f, p, far->pos);
         if (!open_gate_ && !path_.empty() && d2(path_goal_, far->pos) < 250 && d2(path_.back(), far->pos) > 150 && d2(p.pos, path_.back()) < 100)
-            unreach_[far->id] = tick_;
+            give_up(far->id);
         return f;
     }
     // Nothing left: everything lying around, else stand.
     if (loot(f, p, 4000)) return f;
     goal = "idle";
     return f;
+}
+
+// A ladder (map item class 11, ends cached by build_seams()) between region `from` and region `to`: up from its foot or down
+// from its top. `end` = the end to walk to, `up` = the direction; nearest end to the player, null if none.
+const MapItem* Autopilot::ladder_to(int from, int to, Vec3& end, bool& up) {
+    build_seams();
+    const Unit* p = m_.world().unit(m_.world().player_id());
+    const MapItem* best = nullptr;
+    for (const Ladder& l : ladders_)
+        for (const bool u : {true, false}) {
+            const Vec3 e = u ? l.foot : l.top;
+            if (p && linked(from, u ? l.foot_region : l.top_region) && linked(u ? l.top_region : l.foot_region, to) &&
+                (!best || d2(p->pos, e) < d2(p->pos, end)))
+                best = m_.objects().item(l.item), end = e, up = u;
+        }
+    return best;
+}
+
+// Up or down a ladder towards region `to` when no walk leads there. At the end, facing the ladder (foot) or away from it
+// over the edge (top), R mounts it (ladder_input: within 100 of that end; foot: in front, facing it; top: behind its
+// plane, facing out); decide() then holds W / S on the rungs. False when no ladder joins the two regions.
+bool Autopilot::use_ladder(InputFrame& f, const Unit& p, int to) {
+    Vec3 end{};
+    bool up = true;
+    const MapItem* l = ladder_to(region(p.pos), to, end, up);
+    if (!l) return false;
+    goal += (up ? " ladder up " : " ladder down ") + at(l->pos);
+    climb_up_ = up;
+    const float fx = std::cos(l->dir), fy = std::sin(l->dir);
+    const Vec3 look = up ? l->pos : Vec3{l->pos.x + fx * 200, l->pos.y + fy * 200, l->pos.z};
+    if (d2(p.pos, end) > 40) steer(f, p, end, false);
+    else if (const float a = m_.world().rel_angle(p, look); std::fabs(a) > 30) f.mouse_dx = a / 0.18f;
+    else if (tick_ % 10 == 0) f.press(IN_INTERACT);
+    return true;
 }
 
 bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {

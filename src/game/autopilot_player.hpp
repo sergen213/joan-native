@@ -32,9 +32,20 @@ public:
     int trace = 0;                 // diagnostic: print a status line every `trace` ticks (env JOA_BOT_TRACE)
 
 private:
+    struct Seam { int a, b; Vec3 at, in; };  // (level, component) region a meets region b: `at` just inside b, `in` just inside a
     InputFrame decide();
     void steer(InputFrame& f, const Unit& p, Vec3 goal, bool replan);
     void travel(InputFrame& f, const Unit& p, Vec3 goal);  // steer, opening a closed gate that shuts the way
+    const Seam* detour(const Unit& p, Vec3 g);             // first level-seam crossing of a route to g over cut-off regions
+    int region(Vec3 q) const;                              // (nav level, path-mesh component) under q, -1 none
+    void build_seams();                                    // seams_ for the current gate states
+    void give_up(int id);                                  // leave a foe the player could not get at alone for a while
+    bool unreached(const Unit& u) const;                   // given up on and still left alone
+    bool open_territory(Vec3& g, int* index = nullptr) const;  // centre of the first open WIN objective's territory
+    bool linked(int a, int b);                             // region b walkable from region a
+    int unit_region(const Unit& u);                        // region() of u, cached 30 ticks
+    const MapItem* ladder_to(int from, int to, Vec3& end, bool& up);  // ladder between two regions, the end to walk to
+    bool use_ladder(InputFrame& f, const Unit& p, int to);  // walk to / mount a ladder towards region `to`
     const Unit* bearer() const;
     int hero_key(const Unit& u) const;                     // switch_hero key 1..4, 0 not a hero                            // friend in the player's team dropping a MISSION item
     Vec3 home() const;                                     // centroid of the units not hostile to the player
@@ -64,6 +75,22 @@ private:
     int opened_gate_ = 0;            // last gate the bot opened itself (closed again once nobody is left outside)
     int shut_tick_ = -1;             // last tick travel() walked to close opened_gate_ behind the player
     bool go_home_ = false;           // a message asked the player back behind the gate she opened
+    std::vector<Seam> seams_;
+    unsigned seam_gates_ = 0;        // gate states seams_ was built with
+    bool seams_built_ = false;
+    std::map<std::pair<int, int>, bool> linked_;  // linked() cache for seams_
+    std::map<int, std::pair<int, int>> unit_region_;  // unit -> (tick, region)
+    Vec3 via_{}, via_in_{}, via_goal_{};  // detour seam crossing (next level / this level) on the way to via_goal_
+    bool via_cross_ = false;         // reached via_in_: straight across to via_
+    std::vector<Vec3> bad_vias_;     // detour crossings not reached in time (skipped by detour())
+    std::map<int, int> chase_;       // foe -> ticks spent closing in on it since last within 150
+    int via_tick_ = -1, detour_tick_ = -1000;
+    int no_wait_until_ = 0;          // no wait for a lagging follower before this tick
+    std::map<int, int> territory_seen_;  // WIN objective -> tick the player last stood at its territory
+    struct Ladder { int item; Vec3 foot, top; int foot_region, top_region; };
+    std::vector<Ladder> ladders_;    // built with seams_
+    bool climb_up_ = true;           // direction of the ladder use_ladder() mounted
+    int hunt_target_ = 0, hunt_tick_ = -1000;  // enemy hunted, since
     unsigned gates_ = 0;             // gate states the current path was planned with
     std::map<int, int> talked_;      // unit -> tick the player last talked to it (or gave up)
     int talk_key_ = 0, talk_tick_ = 0, talk_seen_ = -1000;  // NPC walked up to, since, last tick of that approach
@@ -79,7 +106,7 @@ private:
     Vec3 check_pos_{};
     int check_tick_ = 0, unstick_until_ = 0, unstick_dir_ = 0, stuck_count_ = 0;
     int fight_target_ = 0;
-    std::map<int, int> unreach_;     // foe -> tick the path mesh could not bring the player to it (skipped for 60 s)
+    std::map<int, std::pair<int, int>> unreach_;  // foe -> (left alone until tick, times given up on)
     bool shot_ = false;              // shoot() ran this tick (range mode is left otherwise)
     std::uint32_t shop_ms_ = ~0u;    // buy screen opening already shopped at
     bool retreat_ = false;           // HP < 30 % and F3 had no effect: guard near an ally until 70 %

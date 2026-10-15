@@ -281,17 +281,19 @@ the ally hero's task and target) plus hits taken / dealt, hits on friendly heroe
 (killer team), spawns, interact prompts and the player's shots / projectile hits; `JOA_BOT_DBG=T` prints 200
 ticks of per-frame inputs and nearby enemies from tick T.
 
-`game.campaign_legit` runs the chain from a new game (Normal, 90000 ticks per attempt, 2 retries) twice,
-checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (2).
-`joa-campaign --autopilot --continue --difficulty D` (seed 1, 90000 ticks, 2 retries, `work/cb7/chain.sh`):
+`game.campaign_legit` runs the chain from a new game (Normal, 150000 ticks per attempt, 2 retries) twice,
+checks determinism and no script errors / unimplemented builtins, and asserts `kExpectedWins` (3; ~510 s, most of it
+mission 4 timing out twice). Its report (seed 1, Normal) and `work/cb8/chain.sh` (120000 ticks) on Easy:
 
-| mission | difficulty | result | ticks | attempts | kills | HP dealt / taken | cause |
-|---|---|---|---|---|---|---|---|
-| 1 S1L1 | 0 Easy | WON | 46311 | 1 | 50 | 3278 / 225 | — |
-| 1 S1L1 | 1 Normal | WON | 30187 | 1 | 49 | 3273 / 366 | — |
-| 2 S3L1 | 0 Easy | WON | 60490 | 2 | 117 | 15882 / 762 | attempt 1 lost |
-| 2 S3L1 | 1 Normal | WON | 102618 | 3 | 192 | 27144 / 2654 | attempt 3 (seed 3) won at t81190 |
-| 3 S2L1 | 0 / 1 | timeout | 90000 | 1 | 42 / 191 | — | "Capture Camp du pied fragile" not reached |
+| mission | difficulty | result | ticks | attempts | kills | cause |
+|---|---|---|---|---|---|---|
+| 1 S1L1 | 0 Easy | WON | 20902 | 1 | 35 | — |
+| 1 S1L1 | 1 Normal | WON | 20571 | 1 | 44 | — |
+| 2 S3L1 | 0 Easy | WON | 65199 | 1 | 117 | — |
+| 2 S3L1 | 1 Normal | WON | 85167 | 1 | 126 | — |
+| 3 S2L1 | 0 Easy | WON | 68057 | 1 | 191 | — |
+| 3 S2L1 | 1 Normal | WON | 125351 | 1 | 282 | needs > 120000 ticks on seed 1 |
+| 4 S4L1 | 0 / 1 | timeout | 120000 / 150000 | 1 | 125 / 121 | "Capture Tourelles" not reached (bot stays near (7000,16300), last progress t40258) |
 
 Seed sweeps (one attempt each, 90000 ticks): mission 1 **Easy 10/12** (seed 11 dies in the first tutorial fight,
 seed 3 times out), **Normal 12/12**. Mission 2 from the chain checkpoints (`work/cb7/eval.sh`, RETRY seeds 1–12):
@@ -299,6 +301,26 @@ seed 3 times out), **Normal 12/12**. Mission 2 from the chain checkpoints (`work
 (seeds 3, 11), 8 lost on citizens, 2 the Bastard. A win takes 50000–81000 ticks (stage 4: the de Bourges / de
 Blois garrisons; stage 5: William de la Pole, 580 HP). Holding Jean beside the Bastard took Normal from 0/12 to
 1–2/12; buying explosive arrows before the armour from 0/12 stage-3 survivors to 1/12.
+
+**Mission 3 (S2L1, from `S2L1_tactic.sce`).** A camp is captured (`set_place_captured`) once no unit of the camp's
+nation (trigger mask 0x2443) and at least one hostile to it stands inside the place (`search_for_unit_in_place` "F" /
+"E"); it is lost again the same way, and objectives 1 / 2 go back to NORMAL with it. Camp du pied fragile was captured
+in every run (~t9000); the timeouts were the bot's: it walked off, and the three English waves sent after the capture
+(dock teams 100–102, 120, 121, two minutes apart) retook the empty camp; it then chased foes it could not reach (the
+prison archers behind the locked gate, which needs `KeyS2_01` or Jean, guards on the G hill) or stood at the closed
+front gate of camp du beau vallon (English, 0 HP: the interact never opens a foreign gate without HP, FUN_0041af80),
+whose way in is the back gate through the next nav level. No port bug was found on this mission. Bot changes:
+**holds** (a finished WIN territory: enemies within 1500 count as on a ward, 4+ there call the bot back), **regions**
+((nav level, path-mesh component) per point; level seams link regions of adjacent levels, ladders link a wall walkway to
+the ground; `detour()` routes over them by Dijkstra and walks to the seam on its own level, then straight across, since
+the engine plans a goal on another level over the coarse world mesh), ladders climbed / descended on purpose (R at the
+foot facing it or at the top facing out, W / S on the rungs; never R at a ladder indicator in passing), gates the
+player cannot open (foreign without HP, needing a key) never chosen, foes the path does not reach or chased 30 s in
+all given up on for 60 s (doubling), the hunt ranked by distance to the open objective's territory (not `home()`) plus
+region penalties (ladder +2000, other region +10000, unlinked +20000) and, while a territory objective is open, kept
+30 s; on the way to that territory (> 2000 off) only foes within 800 are engaged; a follower not back within a 30 s
+wait is not waited for again for 2 min. Seed sweeps from the chain checkpoints (`work/cb8/ev.sh`, 120000 ticks, RETRY
+seeds 1–8): **Easy 8/8**, **Normal 4–6/8** (losses: Joan killed; timeouts: wandering between the camps).
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
 0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
