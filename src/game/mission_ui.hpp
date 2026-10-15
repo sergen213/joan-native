@@ -15,10 +15,12 @@
 #include <vector>
 
 #include "formats/vfs_bytes.hpp"
+#include "game/mission_places.hpp"
 #include "game/savegame_container.hpp"
 
 namespace joa::game {
 
+class GameData;
 class Mission;
 
 class MissionUi {
@@ -196,14 +198,24 @@ private:
     template <class F> void visit(F& f);
 };
 
-// Buy-interface stock copy (i_buy.cpp FUN_006c3230) of shop facility `facility`: item/sellitem.res record
-// Facility::sell_list, lines "ITEM : ? : quantity (-1 no limit) : level (-1 = MinLevel)", unknown items skipped;
-// `selling_ratio` = the record's SellingRatio (0.5 when absent). A purchase (FUN_006c5a00) is World::give_item(item,
-// level, ItemDef::quantity) and gold -= ItemDef::price (HYPOTHESIS on the price expression); the engine buy screen
-// and the campaign bot both read this list.
-struct ShopStock {
-    int item = 0, level = 0, quantity = 0;
-};
-std::vector<ShopStock> shop_stock(Mission& m, int facility, float* selling_ratio = nullptr);
+// Shop facility stock (f_shop.cpp, Facility::stock: set by shop_set_sell_item_list, restocked hourly, saved with the
+// facility). The engine buy screen (i_buy.cpp) and the campaign bot both buy and sell through these, so a sale is
+// seen by every later visit. An entry at quantity 0 is sold out (not shown, FUN_006c3230 places quantity != 0 only).
+using ShopStock = Facility::Stock;
+std::vector<ShopStock> shop_stock(Mission& m, int facility);   // copy of the facility's live stock (empty: no shop)
+// 0x6c5ac6: trunc(Price x price factor x (level - MinLevel + 1)).
+int shop_price(const GameData& gd, const ShopStock& s);
+// FUN_006c5a00 / FUN_006c5f10: buy one entry matching s.item / s.level with quantity != 0 for `u`: gold short -> 8
+// (BUY 8), no room in the personal grid (World::buy_item) -> 9 (BUY 9), not stocked -> -1, else 0: the bag gets the
+// item's Quantity, MissionState::gold drops by shop_price, a limited entry loses one and a ShowArmoryInterface item
+// joins item_hints_b (FUN_00472a90 / FUN_004729c0, no armory window).
+int shop_buy(Mission& m, int facility, const ShopStock& s, Unit& u);
+// FUN_006c6550 sale: -1 = refused (BUY 10): CanSell 0, or red / blue food (types 0x15 / 0x17 / 0x19) to a non-POTION
+// shop, anything else to a non-WEAPON one. Else, for the whole stack, trunc(Price x SellingRatio x quantity / per x
+// (level - MinLevel + 1)): a stack dragged into the seller's grid (0x6c7319) has per = the item's Quantity; a
+// double-clicked one (0x6c7860) per = its own quantity, i.e. one Quantity's worth whatever the stack holds.
+int shop_sell_value(Mission& m, int facility, const ItemInstance& it, bool double_click = false);
+// Sells u's bag stack `bag_index` (removed whole, gold += shop_sell_value); false when refused. Nothing is restocked.
+bool shop_sell(Mission& m, int facility, Unit& u, int bag_index, bool double_click = false);
 
 }  // namespace joa::game

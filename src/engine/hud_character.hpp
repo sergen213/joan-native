@@ -43,7 +43,7 @@ private:
         glm::vec2 at{0.0f};
         bool dragging = false;
     };
-    struct Stock { int item = 0, level = 0, quantity = -1; Cell cell; };   // quantity -1 = no limit
+    struct Stock { std::size_t entry = 0; Cell cell; };   // Facility::stock index and its seller-grid cell
 
     void left_panel(Ui&, game::Mission&, game::Unit&);
     void inventory(Ui&, game::Mission&, game::Unit&);
@@ -53,7 +53,6 @@ private:
     bool drop(game::Mission&, game::Unit&, glm::vec2 p);
     void shop(Ui&, game::Mission&);
     void armory(Ui&, game::Mission&, HudModel&);
-    float sell_ratio_ = 0.5f;   // sellitem.res SellingRatio of the open shop
     void tip(std::string title, std::string body) { tip_title_ = std::move(title), tip_body_ = std::move(body); }
     void draw_tip(Ui&);   // help box FUN_006b8db0 at the pointer
 
@@ -68,11 +67,14 @@ private:
     std::string tip_title_, tip_body_;     // tooltip of this frame, drawn last
     glm::vec2 tip_at_{-1.0f};              // PadWindows: its top-left with the pad (-1: below the focused rect)
     // Shop: the original edits copies (gold +0x57, bag, stock +0x5b, FUN_006c3230) and commits them on every close
-    // (Esc / the button, FUN_006c3540), so buying straight into the World is equivalent.
+    // (Esc / the button, FUN_006c3540), so buying straight into the World and Facility::stock (game::shop_buy) is
+    // equivalent. The grid is laid out once per opening from the entries in stock, as FUN_006c3230.
     int shop_facility_ = 0;
     std::vector<Stock> stock_;
-    std::map<int, std::vector<int>> stock_left_;   // facility recno -> quantities left (window lifetime)
     std::string shop_msg_;                         // BUY 8 / BUY 9 message box
+    int shop_held_ = -1;                           // bag index on the pointer (+0x245), -1 none
+    float shop_press_t_ = 1e9f;                    // seconds since the last left press (double-click clock)
+    glm::vec2 shop_press_at_{-100.0f};             // where it was
 };
 
 // Shared with hud_shop.cpp.

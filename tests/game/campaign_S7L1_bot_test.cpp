@@ -1,16 +1,16 @@
 // Mission 7 (S7L1, La Charité) played by the campaign bot (game/autopilot_player + autopilot_plan_S7L1).
 //
-// Start: the legitimate chain only reaches mission 4, so mission 7 starts from the chain's mission-4 start
-// (campaign_checkpoints/bot-S4L1.jsav, written by the game.campaign_legit fixture) with missions 4-6 won through
-// Mission::finish_objectives() (the end-condition awards, as a real win gives) and CONTINUE: Joan level 12.
-// The whole mission takes the bot ~1 M ticks, longer than a test may take, so it is cut at a self-generated
+// Start: the legitimate chain wins missions 1-4, so mission 7 starts from its mission-5 start
+// (campaign_checkpoints/bot-S5L1.jsav, written by the game.campaign_legit fixture) with missions 5-6 won through
+// Mission::finish_objectives() (the end-condition awards, as a real win gives) and CONTINUE: Joan level 18.
+// The whole mission takes the bot ~470000 ticks (~500 s), longer than a test may take, so it is cut at a self-generated
 // checkpoint: the bot plays the mission start up to La Charité's gates opening (event bit 2:26, the trebuchet's first
 // stone on "wall2"; Saint-Pierre, Varzy, the gold, the Goughs and Begley done on the way, the Gate Guard bribed without
 // the alarm) and saves campaign_checkpoints/bot-S7L1-charite.jsav (game.campaign_S7L1_charite, fixture). The test proper
 // plays on from there and must win: La Charité captured (objective 2), Gressart (5) and Hudleg (26) dead.
 //
 //   game_campaign_S7L1_bot_test [CHARITE.jsav] [TICKS]                    the bot from the La Charité checkpoint: must win
-//   game_campaign_S7L1_bot_test --charite OUT [FROM_S4L1.jsav] [D]        play the mission start to the gates, save OUT
+//   game_campaign_S7L1_bot_test --charite OUT [FROM_S5L1.jsav] [D]        play the mission start to the gates, save OUT
 //   game_campaign_S7L1_bot_test --checkpoint OUT [D] [FROM.jsav]          write the mission-7 start (default: forced from a
 //                                                                         new game) and exit; iterate with
 //                                                                         joa-campaign --load OUT --autopilot
@@ -27,8 +27,8 @@ using namespace joa::game;
 
 namespace {
 
-constexpr int kTicks = 700000;          // to the win from the checkpoint (Normal, seed 1: see SAVES_AND_CAMPAIGN.md §8.1)
-constexpr int kChariteTicks = 700000;   // mission start to the gates
+constexpr int kTicks = 500000;          // to the win from the checkpoint (Normal, seed 1: 269068, see SAVES_AND_CAMPAIGN.md §8.1)
+constexpr int kChariteTicks = 400000;   // mission start to the gates (197129)
 constexpr const char* kCharite = "campaign_checkpoints/bot-S7L1-charite.jsav";
 
 bool forced_to_7(CampaignRunner& run, int difficulty, const char* from, std::string& err) {
@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
     std::string err;
     const std::string mode = argc > 1 ? argv[1] : "";
     const bool checkpoint = argc > 2 && mode == "--checkpoint", charite = argc > 2 && mode == "--charite";
-    const char* from = charite ? (argc > 3 ? argv[3] : "campaign_checkpoints/bot-S4L1.jsav") : checkpoint && argc > 4 ? argv[4] : nullptr;
+    const char* from = charite ? (argc > 3 ? argv[3] : "campaign_checkpoints/bot-S5L1.jsav") : checkpoint && argc > 4 ? argv[4] : nullptr;
     const char* start = checkpoint || charite ? nullptr : argc > 1 ? argv[1] : kCharite;
     if (const char* need = from ? from : start; need && !read_file(need))
         return std::printf("skip: no %s (game.campaign_legit / game.campaign_S7L1_charite write it)\n", need), 77;

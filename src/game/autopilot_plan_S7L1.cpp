@@ -53,7 +53,7 @@ public:
             return resupply_ = false;
         resupply_ |= n < 8;
         if (!resupply_ || dist(p.pos, s->pos) < 600) return false;
-        if (trip_stuck(ap, p, *s)) return resupply_ = false;
+        if (trip_stuck(ap, p, s->id, s->pos)) return ap.give_up(s->id), resupply_ = false;
         ap.goal = "resupply at " + s->name;
         ap.travel(f, p, s->pos);
         return true;
@@ -151,12 +151,13 @@ public:
                                   ? named(m, "Wardley Orfroisier")
                                   : nullptr;
             if (s && !ap.unreached(*s)) {
-                if (!trip_stuck(ap, p, *s)) {
+                if (!trip_stuck(ap, p, s->id, s->pos)) {
                     ap.goal = "to the shop of " + s->name;
                     ap.plan_talk = s->id;
                     ap.travel(f, p, s->pos);
                     return true;
                 }
+                ap.give_up(s->id);
             }
         }
         // Capture objectives, each place's fightable enemies hunted down: Saint-Pierre (1, once Gough is dead; stragglers
@@ -199,6 +200,7 @@ public:
         if (!fac) return false;
         ap.goal = "recruit at " + pl.facility(fac)->name;
         if (find_recruit_facility(m, p) != fac) {
+            if (trip_stuck(ap, p, -fac, pl.facility(fac)->pos)) return recruit_tick_ = ap.tick() + 30000, false;
             ap.travel(f, p, pl.facility(fac)->pos);
             return true;
         }
@@ -345,7 +347,6 @@ public:
         Mission& m = ap.mission();
         if (shop_ms_ == m.ui().interface_ms) return;
         shop_ms_ = m.ui().interface_ms;
-        World& w = m.world();
         const GameData& gd = m.data();
         int& gold = m.state().gold;
         ap.make_room(p);
@@ -358,12 +359,11 @@ public:
             if (d.type >= 0xd && d.type <= 0x12) bolt_tick_ = ap.tick();
             if (heal(s)) food_tick_ = ap.tick();
             if (d.type == 0xb && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > best &&
-                gold - d.price >= ap.shop_gold_keep && w.buy_item(p, s.item, s.level, 1))
-                gold -= d.price, best = d.base_damage(s.level), best_launcher(m, p), ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code);
-            for (int n = 0; heal(s) && (s.quantity < 0 || n < s.quantity) && gold - d.price >= ap.shop_gold_keep &&
-                            w.buy_item(p, s.item, s.level, std::max(1, d.quantity));
-                 ++n)
-                gold -= d.price;
+                gold - shop_price(gd, s) >= ap.shop_gold_keep && shop_buy(m, m.ui().buy_shop, s, p) == 0)
+                best = d.base_damage(s.level), best_launcher(m, p), ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code);
+            for (int n = 0; heal(s) && (s.quantity < 0 || n < s.quantity) && gold - shop_price(gd, s) >= ap.shop_gold_keep &&
+                            shop_buy(m, m.ui().buy_shop, s, p) == 0;
+                 ++n) {}
         }
     }
 
@@ -523,7 +523,9 @@ private:
     // ran. A gate takes melee only from La Hire (x3, Gate_take_melee 0x48c8c0) or a ram, and the AI attacks nothing but boxes
     // on an RTS attack-item (is_item_box in every RTS_ATTACK_ITEM routine), so, as the walkthrough's "switch to La Hire and
     // beat down the wooden gate": with the gate's surroundings clear and Joan near, switch to La Hire (key 3), walk him
-    // to the gate, swing at it until it falls, switch back to Joan (key 1). True when this tick's input is set.
+    // to the gate, swing at it until it falls, switch back to Joan (key 1). True when this tick's input is set. Also with
+    // Joan shut in behind it once the Goughs are dead (she killed them on the hill side and stood 1.3 M ticks there, trying
+    // for the start camp's barracks).
     bool gate_job(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
         World& w = m.world();
@@ -533,8 +535,9 @@ private:
         const Unit* lahire = hero(m, "LAHIRE");
         const int gate = m.objects().find_by_name("StPierre gate 2");
         const MapItem* g = m.objects().item(gate);
-        const bool need = e && e->enabled && e->finish != 1 && gough && joan && lahire && g && g->state == 0 && g->hp > 0 &&
-                          gate_spent_ < 9000 && !ap.linked(ap.region(joan->pos), ap.unit_region(*gough));
+        const auto cut_off = [&](const Unit* u) { return u && !ap.linked(ap.region(joan->pos), ap.unit_region(*u)); };
+        const bool need = joan && lahire && g && g->state == 0 && g->hp > 0 && gate_spent_ < 9000 &&
+                          ((e && e->enabled && e->finish != 1 && cut_off(gough)) || (dist(joan->pos, g->pos) < 4000 && cut_off(lahire)));
         gate_at_ = need ? g->pos : Vec3{}, gate_dir_ = g ? g->dir : 0;
         if (is(m, p, "LAHIRE")) {
             if (!need) return m.switch_hero(1);
@@ -570,16 +573,16 @@ private:
     static constexpr Vec3 kWorkshopScene{23280, 7300, 0};  // place "workshop cutscene"
     int siege_tick_ = 0, recruit_tick_ = 0;  // next workshop order / trebuchet RTS order; next recruit visit
     int bolt_tick_ = 0, food_tick_ = 0;      // last weapon shop screen (ammo for sale) / potion shop screen
-    int trip_id_ = 0, trip_tick_ = 0, trip_seen_ = 0;  // shop being walked to; tick of the last 200 gained; last tick walked
+    int trip_id_ = 0, trip_tick_ = 0, trip_seen_ = 0;  // trip (shop unit id, -barracks) under way; tick of the last 200 gained; last tick walked
     float trip_best_ = 0;
-    // A shop trip gaining less than 200 in 3000 ticks of walking is given up on (Autopilot::give_up). A trip interrupted
-    // (a rest, a fight) starts its clock again: 12000 ticks of rest 700 from Alfonse counted as no headway.
-    bool trip_stuck(Autopilot& ap, const Unit& p, const Unit& s) {
-        const float d = dist(p.pos, s.pos);
-        if (s.id != trip_id_ || d < trip_best_ - 200 || ap.tick() - trip_seen_ > 30) trip_id_ = s.id, trip_best_ = d, trip_tick_ = ap.tick();
+    // A shop or barracks trip gaining less than 200 in 3000 ticks of walking is stuck (the caller leaves it for a while).
+    // A trip interrupted (a rest, a fight) starts its clock again: 12000 ticks of rest 700 from Alfonse counted as no headway.
+    bool trip_stuck(Autopilot& ap, const Unit& p, int key, Vec3 at) {
+        const float d = dist(p.pos, at);
+        if (key != trip_id_ || d < trip_best_ - 200 || ap.tick() - trip_seen_ > 30) trip_id_ = key, trip_best_ = d, trip_tick_ = ap.tick();
         trip_seen_ = ap.tick();
         if (ap.tick() - trip_tick_ <= 3000) return false;
-        ap.give_up(s.id), trip_id_ = 0;
+        trip_id_ = 0;
         return true;
     }
     bool crew_short_ = false;                 // the trebuchet lacks crew Joan's troop could give: recruit light infantry

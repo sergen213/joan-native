@@ -134,9 +134,10 @@ int main() {
     game::Facility shop;
     shop.recno = int(m.places().facilities().size()) + 1;
     shop.kind = game::Facility::Shop;
-    shop.sell_list = m.objects().sell_list("S3L1_POTION");
-    CHECK(shop.sell_list > 0);
+    const int potion_list = m.objects().sell_list("S3L1_POTION");
+    CHECK(potion_list > 0);
     m.places().facilities().push_back(shop);
+    m.places().set_sell_list(shop.recno, potion_list);
     m.ui().auto_advance = false;
     m.ui().buy_open = true, m.ui().buy_shop = shop.recno, m.ui().buy_seller = joan.id;
     CHECK(flow.paused());
@@ -146,10 +147,35 @@ int main() {
     click({112 + 0x100 + 20, 84 + 0x38 + 20});   // first stock item: fd_bread_S, price 100
     std::fprintf(stderr, "gold %d -> %d, bag %zu -> %zu\n", gold, m.state().gold, bag, joan.inv.bag.size());
     CHECK(m.state().gold < gold && joan.inv.bag.size() == bag + 1);
+    // The purchase came off the facility's stock (game::shop_stock: what the campaign bot reads), 10 -> 9 loaves.
+    CHECK(game::shop_stock(m, shop.recno).at(0).quantity == 9);
     const int after = m.state().gold;
+    auto wait = [&] { for (int i = 0; i < 20; ++i) frame({10, 10}); };   // past the 0.5 s double-click time
+    wait();
     click({112 + 0x100 + 20, 84 + 0x38 + 20});   // not enough gold -> BUY 8 box
     CHECK(m.state().gold == after && joan.inv.bag.size() == bag + 1);
     frame({10, 10}, false, false, false, SDL_SCANCODE_RETURN);   // OK
+    // Selling (FUN_006c6550): a press picks the loaf up, a press in the seller's grid sells it there (Price x 0.5).
+    const int loaf = w.data().item_index("fd_bread_s");
+    auto bag_at = [&](int item) {
+        for (std::size_t i = joan.inv.bag.size(); i-- > 0;)
+            if (joan.inv.bag[i].item == item && win.cells()[i].grid == 0)
+                return glm::vec2(112 + 0x210 + win.cells()[i].col * 40 + 20, 84 + 0x38 + win.cells()[i].row * 40 + 20);
+        return glm::vec2(-1.0f);
+    };
+    const glm::vec2 seller_free{112 + 0x100 + 100, 84 + 0x38 + 480};
+    wait(), click(bag_at(loaf)), wait(), click(seller_free);
+    CHECK(m.state().gold == after + 50 && joan.inv.bag.size() == bag);
+    // Double click: on a resting stack it only picks it up (the first press takes it, the second is no single click);
+    // put down and clicked again it sells at once for one Quantity's worth (3 loaves: 50, a drag would pay 150).
+    joan.inv.bag.push_back({loaf, 3, 1});
+    wait();
+    const glm::vec2 stack = bag_at(loaf);
+    click(stack), click(stack);
+    CHECK(m.state().gold == after + 50 && joan.inv.bag.size() == bag + 1);
+    wait(), click(stack), click(stack);   // down where it was, then the double click
+    std::fprintf(stderr, "double-click sale: gold %d -> %d\n", after + 50, m.state().gold);
+    CHECK(m.state().gold == after + 100 && joan.inv.bag.size() == bag);
     frame({10, 10}, false, false, false, SDL_SCANCODE_ESCAPE);   // close = commit (FUN_006c3540)
     CHECK(!m.ui().buy_open && !flow.paused());
 

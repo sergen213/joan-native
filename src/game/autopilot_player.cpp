@@ -562,9 +562,9 @@ void Autopilot::shoot_at(InputFrame& f, Unit& p, Vec3 at, bool release) {
         f.press(IN_ATTACK_A);
 }
 
-// Buy screen open (start_buy_interface): the click handler's purchase (FUN_006c5a00 -> World::give_item of the item's
-// Quantity at the stock level, gold -= Price), once per opening. A heavier armour than the one worn is bought and
-// worn first (inventory right-click, World::use_item); with a bow, explosive arrows up to 20, then plain arrows.
+// Buy screen open (start_buy_interface): the click handler's purchase (shop_buy: FUN_006c5a00 on the facility's stock,
+// the item's Quantity at the stock level, gold -= shop_price), once per opening. A heavier armour than the one worn is
+// bought and worn first (inventory right-click, World::use_item); with a bow, explosive arrows up to 20, then plain.
 void Autopilot::shop(Unit& p) {
     if (shop_ms_ == m_.ui().interface_ms) return;
     shop_ms_ = m_.ui().interface_ms;
@@ -574,8 +574,7 @@ void Autopilot::shop(Unit& p) {
     const std::vector<ShopStock> stock = shop_stock(m_, m_.ui().buy_shop);
     auto buy = [&](const ShopStock& s) {
         const ItemDef& d = gd.items[std::size_t(s.item)];
-        if (s.quantity == 0 || gold - d.price < shop_gold_keep || !w.buy_item(p, s.item, s.level, std::max(1, d.quantity))) return false;
-        gold -= d.price;
+        if (gold - shop_price(gd, s) < shop_gold_keep || shop_buy(m_, m_.ui().buy_shop, s, p) != 0) return false;
         log.push_back(std::to_string(m_.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
         return true;
     };
@@ -1169,13 +1168,12 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     float best_d = radius;
     bool box = false;
     // Floor items only when the pickup would take them (Unit_auto_pickup 0x49da30): gold, MISSION items, red food that
-    // fits the HP missing, else what the bag has room for (World::give_item 0x495f40, tried on a copy). With a full bag
-    // the bot walked over items it could not take (S5L1: 45000 ticks beside dropped apples).
+    // fits the HP missing, else what the bag has room for (World::can_give: give_item 0x495f40 without the change). With a
+    // full bag the bot walked over items it could not take (S5L1: 45000 ticks beside dropped apples).
     const auto takes = [&](int item, int level, int quantity) {
         const ItemDef& d = gd.items[std::size_t(item)];
         if (d.item_class == "GOLD" || d.item_class == "MISSION" || (d.type == 0x15 && d.damage < w.max_hp(p) - p.hp)) return true;
-        Unit u = p;
-        return w.give_item(u, d.code, level, quantity) > 0;
+        return w.can_give(p, d.code, level, quantity) > 0;
     };
     // `far`: a MISSION item (mission 1's Imperial Scroll, dropped by the messenger when he falls: "You must retrieve
     // the letter from the stricken French archer") is fetched from anywhere, before anything else lying around.

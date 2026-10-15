@@ -289,6 +289,14 @@ int store(const GameData& gd, Inventory& b, int cls, ItemInstance it, bool troop
 }
 }  // namespace
 
+int World::can_give(const Unit& u, std::string_view code, int level, int quantity) const {
+    const int id = gd_.item_index(code);
+    if (!id || quantity < 1) return 0;
+    Inventory b = u.inv;
+    b.layout(gd_);
+    return quantity - store(gd_, b, u.cls, {id, quantity, level ? level : gd_.items[size_t(id)].min_level}, false);
+}
+
 int World::give_item(Unit& u, std::string_view code, int level, int quantity, bool troop) {
     const int id = gd_.item_index(code);
     if (!id || quantity < 1) return 0;
@@ -298,6 +306,7 @@ int World::give_item(Unit& u, std::string_view code, int level, int quantity, bo
     if (left == quantity) return 0;
     weapon_mode(b);
     u.inv = std::move(b);
+    if (gd_.items[size_t(id)].unique && unique_obtained) unique_obtained(id);
     return quantity - left;
 }
 
@@ -415,6 +424,7 @@ bool World::transfer_item(Unit& from, int src, int bag_index, Unit& to, float vi
     weapon_mode(a), weapon_mode(b);
     from.inv = std::move(a);
     if (!self) to.inv = std::move(b);
+    if (gd_.items[size_t(it.item)].unique && unique_obtained) unique_obtained(it.item);
     return true;
 }
 

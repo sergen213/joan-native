@@ -233,10 +233,10 @@ struct PlanS5L1 final : MissionPlan {
         std::stable_sort(stock.begin(), stock.end(), [&](const ShopStock& a, const ShopStock& b) { return heal(a) > heal(b); });
         for (const ShopStock& s : stock) {  // heal food, the best first, as many as the shop lists and the bag takes
             const ItemDef& d = m.data().items[std::size_t(s.item)];
-            for (int n = 0; heal(s) && n < s.quantity && gold - d.price >= ap.shop_gold_keep &&
-                            m.world().buy_item(p, s.item, s.level, std::max(1, d.quantity));
+            for (int n = 0; heal(s) && n < s.quantity && gold - shop_price(m.data(), s) >= ap.shop_gold_keep &&
+                            shop_buy(m, m.ui().buy_shop, s, p) == 0;
                  ++n)
-                gold -= d.price, ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
+                ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
         }
     }
     std::uint32_t food_ms = ~0u;

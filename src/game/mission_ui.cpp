@@ -7,8 +7,6 @@
 #include <type_traits>
 
 #include "game/mission.hpp"
-#include "formats/res_archive.hpp"
-#include "formats/world_text.hpp"
 
 namespace joa::game {
 
@@ -559,29 +557,53 @@ void MissionUi::tick(Mission& m) {
     tick_messages(m);
 }
 
-std::vector<ShopStock> shop_stock(Mission& m, int facility, float* selling_ratio) {
-    std::vector<ShopStock> out;
-    if (selling_ratio) *selling_ratio = 0.5f;
+std::vector<ShopStock> shop_stock(Mission& m, int facility) {
     const Facility* f = m.places().facility(facility);
-    const auto path = f ? m.vfs().resolve("item/sellitem.res") : std::nullopt;
-    auto a = path ? formats::ResArchive::open(*path) : std::nullopt;
-    if (!a || f->sell_list < 1 || f->sell_list > int(a->entries().size())) return out;
+    return f && f->kind == Facility::Shop ? f->stock : std::vector<ShopStock>{};
+}
+
+int shop_price(const GameData& gd, const ShopStock& s) {
+    const ItemDef& d = gd.items[std::size_t(s.item)];
+    return int(double(d.price) * double(s.price) * double(s.level - d.min_level + 1));
+}
+
+int shop_buy(Mission& m, int facility, const ShopStock& s, Unit& u) {
+    Facility* f = m.places().facility(facility);
+    if (!f || f->kind != Facility::Shop) return -1;
+    const auto e = std::find_if(f->stock.begin(), f->stock.end(),
+                                [&](const ShopStock& x) { return x.item == s.item && x.level == s.level && x.quantity != 0; });
+    if (e == f->stock.end()) return -1;
     const GameData& gd = m.data();
-    for (const auto& l : formats::parse_kv_text(a->text(a->entries()[std::size_t(f->sell_list - 1)].name).value_or(""))) {
-        std::string key = l.key;
-        std::erase_if(key, [](unsigned char c) { return std::isspace(c); });
-        if (selling_ratio && formats::iequals(key, "SellingRatio")) *selling_ratio = float(std::atof(l.value.c_str()));
-        const int id = gd.item_index(key);
-        if (!id) continue;
-        int col[3] = {1, -1, -1}, n = 0;
-        for (std::size_t a0 = 0; a0 <= l.value.size() && n < 3; ++n) {
-            const std::size_t e = std::min(l.value.find(':', a0), l.value.size());
-            col[n] = std::atoi(l.value.substr(a0, e - a0).c_str());
-            a0 = e + 1;
-        }
-        out.push_back({id, col[2] < 0 ? gd.items[std::size_t(id)].min_level : col[2], col[1]});
-    }
-    return out;
+    const ItemDef& d = gd.items[std::size_t(e->item)];
+    int& gold = m.state().gold;
+    const int price = shop_price(gd, *e);
+    if (gold < price) return 8;
+    if (!m.world().buy_item(u, e->item, e->level, std::max(1, d.quantity))) return 9;
+    gold -= price;
+    if (e->quantity > 0) --e->quantity;
+    auto& hints = m.state().item_hints_b;
+    if (d.show_armory && std::find(hints.begin(), hints.end(), std::uint16_t(e->item)) == hints.end()) hints.push_back(std::uint16_t(e->item));
+    return 0;
+}
+
+int shop_sell_value(Mission& m, int facility, const ItemInstance& it, bool double_click) {
+    const Facility* f = m.places().facility(facility);
+    if (!f || f->kind != Facility::Shop || it.item <= 0 || it.item >= int(m.data().items.size())) return -1;
+    const ItemDef& d = m.data().items[std::size_t(it.item)];
+    const bool food = d.type == 0x15 || d.type == 0x17 || d.type == 0x19;
+    if (!d.can_sell || f->shop_type != (food ? 0 : 1)) return -1;
+    const int per = double_click ? it.quantity : d.quantity;
+    return int(double(d.price) * double(f->selling_ratio) * (double(it.quantity) / double(std::max(1, per))) *
+               double(it.level - d.min_level + 1));
+}
+
+bool shop_sell(Mission& m, int facility, Unit& u, int bag_index, bool double_click) {
+    if (bag_index < 0 || bag_index >= int(u.inv.bag.size())) return false;
+    const int value = shop_sell_value(m, facility, u.inv.bag[std::size_t(bag_index)], double_click);
+    if (value < 0) return false;
+    m.state().gold += value;
+    u.inv.bag.erase(u.inv.bag.begin() + bag_index);
+    return true;
 }
 
 }  // namespace joa::game

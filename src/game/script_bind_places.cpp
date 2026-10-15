@@ -344,7 +344,7 @@ Value f196(Mission& m, const BuiltinCall& c) {
 // Return 1 for a valid facility recno, 0 otherwise.
 Value f197(Mission& m, const BuiltinCall& c) {
     Facility* f = m.places().facility(std::int16_t(c.i(0)));
-    if (f && f->kind == Facility::Shop) f->sell_list = c.i(1);
+    if (f && f->kind == Facility::Shop) m.places().set_sell_list(f->recno, c.i(1));
     return I(f != nullptr);
 }
 Value f198(Mission& m, const BuiltinCall& c) {

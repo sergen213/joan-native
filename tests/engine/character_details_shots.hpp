@@ -95,8 +95,8 @@ inline int run(RendererKind kind) {
         joa::game::Facility f;
         f.recno = int(m.places().facilities().size()) + 1;
         f.kind = joa::game::Facility::Shop;
-        f.sell_list = m.objects().sell_list("S3L1_WEAPON");
         m.places().facilities().push_back(f);
+        m.places().set_sell_list(f.recno, m.objects().sell_list("S3L1_WEAPON"));
         m.ui().buy_open = true, m.ui().buy_shop = f.recno;
         shot("shop", "", {}, 0);
     }

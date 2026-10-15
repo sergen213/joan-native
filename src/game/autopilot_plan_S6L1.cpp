@@ -98,16 +98,34 @@ struct PlanS6L1 final : MissionPlan {
         // that sends the 15-min assassin squads at the king (tactic l.1893), until Troyes falls. That clock (count_time[0],
         // restarted at Auxerre's and Troyes' fall and after each squad) only matters past 900 s: from 840 s on she never
         // strays 11400 from him (get_unit_dist 0x653150 is 3-D; at 10000 Auxerre's last two wall archers, 11300 from the
-        // park, were out of reach). They stay parked meanwhile: following her they were led into the hill fights, could
+        // park, were out of reach), 10000 on the road north (at 11400 a fight carried her past the line and a squad
+        // killed the king). They stay parked meanwhile: following her they were led into the hill fights, could
         // not climb to the trebuchets and pulled her off them ("back to the king").
-        const bool chase = ((m.vm().state().bits[0] >> 23) & 1u) && m.vm().state().count_time[0] > 840000;   // chase_count_time_flag
+        const bool chase = PlanS6L1::chase(m);
         if (auxerre_open && !owned(m, p, "Troyes")) {
-            south_ |= p.pos.y < 19000;
+            south_ |= p.pos.y < 19000 || event(m, 11);   // past the gate road, or the six joined (a resumed save)
             trap = true, park = south_ ? kSouthPark : kAuxerrePark;
         }
         feed_wards(ap, p);
         Unit* charles = hero(w, "CHARLIE7");
         if (charles && (charles->pos.y < 19000 || south_)) wards_south_ |= d2(charles->pos, kSouthPark) < 1500;
+        // The escorted walks (road_park): towards the hill camp (the king 5000 short of it: the hill fights, the trebuchets
+        // and the crew's road all within the chase line, which kSouthPark is not: Joan oscillated on the line by the
+        // hill's east side), back to kSouthPark once the wall is down (Troyes' hunt stays within 11400 of it), the road north.
+        Vec3 goal{};
+        float short_by = 5000;
+        bool road = false;
+        if (charles && is(m, p, "JOAN_OF_ARC")) {
+            const MapItem* wall = m.objects().item(m.objects().find_by_name("S6L1_3_Wall3"));
+            if (done(m, 2) && !done(m, 7)) {
+                road = true, goal = road_goal(m);
+            } else if (auxerre_open && !owned(m, p, "Troyes") && event(m, 11) && wards_south_ && wall) {
+                if (wall->hp > 0) road = true, goal = kHillCamp;
+                else if (d2(charles->pos, kSouthPark) > 1500) road = true, goal = kSouthPark, short_by = 0;
+            }
+        }
+        escort_ = road;
+        if (road) trap = true, park = road_park(ap, *charles, goal, short_by);
         if (ap.tick() >= next_) {
             next_ = ap.tick() + 30;
             // Joan's light infantry, the only crew class (cannons, trebuchets), join the king's troop (the guide's "assign
@@ -129,6 +147,12 @@ struct PlanS6L1 final : MissionPlan {
                 const bool ward = h->retreat == 0;
                 const Unit* lead = ward && charles && h != charles ? charles : &p;
                 if (ward && trap) {
+                    // On the road a ward with a threat by him stops where he is (Joan fights it below).
+                    if (road && std::any_of(w.units().begin(), w.units().end(), [&](const Unit& u) { return threat(m, u, *h); })) {
+                        if (m.ai().curr_task(*h) == task::RTS_MOVE_TO && std::abs(m.ai().curr_task_para(*h, 1) - int(park.x)) <= 50)
+                            rts(m, p, [&](AiSystem& ai) { ai.rts_move(squad(m, ai, h->id), h->pos, false); });
+                        continue;
+                    }
                     if (d2(h->pos, park) > 400 &&
                         (m.ai().curr_task(*h) != task::RTS_MOVE_TO || std::abs(m.ai().curr_task_para(*h, 1) - int(park.x)) > 50))
                         rts(m, p, [&](AiSystem& ai) { ai.rts_move(squad(m, ai, h->id), park, false); });
@@ -147,7 +171,7 @@ struct PlanS6L1 final : MissionPlan {
                 if (ap.trace) std::printf("[plan %d] %s follows %s\n", ap.tick(), h->name.c_str(), lead->name.c_str());
             }
         }
-        if (chase && charles && std::hypot(d2(p.pos, charles->pos), p.pos.z - charles->pos.z) > 11400) {
+        if (chase && charles && std::hypot(d2(p.pos, charles->pos), p.pos.z - charles->pos.z) > (trap && !road ? 11400 : 10000)) {
             ap.goal = "back to the king (assassins)";
             ap.travel(f, p, charles->pos);
             return true;
@@ -158,7 +182,7 @@ struct PlanS6L1 final : MissionPlan {
         // the spot between him and her leg for good). A ward (the king, the duke) with a threat by him waits (above): she
         // fights those foes first, the nearest to her one after another (leaving after the first kill, a squad killed the
         // duke).
-        if (!charles || trap) return false;
+        if (!charles || (trap && !road)) return false;
         const bool coming = follows(m, *charles, p);
         const Unit* duke = hero(w, "ALENCON");
         const auto holds = [&](const Unit& u) { return !ap.unreached(u) && (threat(m, u, *charles) || (duke && threat(m, u, *duke))); };
@@ -176,6 +200,7 @@ struct PlanS6L1 final : MissionPlan {
             engage(ap, f, p, *g);
             return true;
         }
+        if (road) return !(done(m, 2) && done(m, 4)) && road_escort(ap, f, p, *charles);   // the king to the gate: road_stage
         if (foe_near(w, p.pos, 1000)) return false;
         const float d = d2(p.pos, charles->pos);
         fetch_ = d > 8000 || (fetch_ && d > 5000);
@@ -207,7 +232,7 @@ struct PlanS6L1 final : MissionPlan {
         if (owned(m, p, "Auxerres") && !owned(m, p, "Troyes") && d2(u.pos, p.pos) > 400 &&
             m.places().inside(m.places().place_by_name("S6L1_3_Capture_Troyes_Place"), u.pos))
             if (const MapItem* wall = m.objects().item(m.objects().find_by_name("S6L1_3_Wall3")); wall && wall->hp > 0) return 0.0f;
-        return stranded(ap, p, u) ? 0.0f : MissionPlan::foe_weight(ap, p, u);
+        return stranded(ap, p, u) || beyond_line(ap, u) ? 0.0f : MissionPlan::foe_weight(ap, p, u);
     }
     // The talk errand to Troyes' potion seller led her in through the gate while it was English.
     bool use_talker(Autopilot& ap, const Unit& u) override {
@@ -406,10 +431,23 @@ struct PlanS6L1 final : MissionPlan {
         if (!tower) return false;
         // The crew walk with the cannon through the gate: while anyone hostile is within 2200 of it (the gate-tower archers,
         // TOWER_ATTACK 2000; the trap's spawns) it stays parked (arm), or the crew die there and nothing moves the gun again
-        // (light infantry are the only crew and none are recruited before Auxerre falls).
-        if (const MapItem* g = m.objects().item(m.objects().find_by_name("S6L1_2_Entrance_Gate")))
+        // (light infantry are the only crew and none are recruited before Auxerre falls). One the walk reaches she fights
+        // there (a Burgundian archer idle in the yard, beyond the generic fight's 3000, held the guns for good).
+        if (const MapItem* g = m.objects().item(m.objects().find_by_name("S6L1_2_Entrance_Gate"))) {
+            const Unit* foe = nullptr;
+            bool held = false;
             for (const Unit& u : m.world().units())
-                if (alive(m.world(), u) && m.world().hostile_to_player(u) && d2(u.pos, g->pos) < 2200) return false;
+                if (alive(m.world(), u) && m.world().hostile_to_player(u) && d2(u.pos, g->pos) < 2200) {
+                    held = true;
+                    if (!ap.unreached(u) && !stranded(ap, p, u) && (!foe || d2(u.pos, p.pos) < d2(foe->pos, p.pos))) foe = &u;
+                }
+            if (foe) {
+                ap.goal = "hunt #" + std::to_string(foe->id) + " by the gate";
+                engage(ap, f, p, *foe);
+                return true;
+            }
+            if (held) return false;
+        }
         siege_seen_ = ap.tick();
         if (ap.tick() >= siege_tick_) {
             siege_tick_ = ap.tick() + 300;
@@ -469,8 +507,9 @@ struct PlanS6L1 final : MissionPlan {
         if (cs.empty()) {
             const Facility* fc = m.places().facility(m.places().facility_by_name("S6L1_2_Iron_Workshop"));
             const Unit* duke = hero(w, "ALENCON");
-            if (!fc || fc->resource < 1500 || !fc->builds.empty() || !duke || d2(p.pos, fc->pos) > 3000 || foe_near(w, duke->pos, 1800) ||
-                foe_near(w, p.pos, 1500) || !m.switch_hero(4))
+            // Joan by the hut, or the duke parked near it (she passed the hut in a fight and went on into Auxerre).
+            if (!fc || fc->resource < 1500 || !fc->builds.empty() || !duke || (d2(p.pos, fc->pos) > 3000 && d2(duke->pos, fc->pos) > 3000) ||
+                foe_near(w, duke->pos, 1800) || foe_near(w, p.pos, 1500) || !m.switch_hero(4))
                 return false;
             if (ap.trace) std::printf("[plan %d] to the duke: cannons\n", ap.tick());
             return true;
@@ -678,9 +717,8 @@ struct PlanS6L1 final : MissionPlan {
             const bool want = (d.usable_unit < 0 || d.usable_unit == p.cls) &&
                               ((d.type == 9 && dmg > sword) || (d.type == 0xb && p.inv.ranged.item && gd.items[std::size_t(p.inv.ranged.item)].type == 0xb && dmg > bow));
             for (int n = 0; s.quantity != 0 && (want ? n < 1 : d.item_class == "POTION" && n < (s.quantity < 0 ? 5 : s.quantity)) &&
-                            gold - d.price >= kRecruitKeep && w.buy_item(p, s.item, s.level, 1);
+                            gold - shop_price(gd, s) >= kRecruitKeep && shop_buy(m, m.ui().buy_shop, s, p) == 0;
                  ++n) {
-                gold -= d.price;
                 ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
                 if (d.type == 9) sword = dmg;
                 if (d.type == 0xb) {
@@ -869,17 +907,21 @@ struct PlanS6L1 final : MissionPlan {
         {"S6L1_7_Check_Enemy_Place", 1, 6, 5, true},     // Chalons (chalons_capture_flag)
         {"S6L1_8_Village_Place", 0, 22, 3, false},       // Sept Saulx (capture_8_town_flag)
     };
+    // The legs still wanted: those not taken, the optional ones only while the reputation falls short.
+    void wanted(Mission& m, bool (&want)[std::size(kRoad)]) {
+        const auto taken = [&](const Leg& l) { return (m.vm().state().bits[std::size_t(l.word)] >> (l.bit - 1)) & 1u; };
+        int missing = 80 - m.state().reputation - (done(m, 4) ? 0 : 3);   // William's +3 still to come
+        for (std::size_t i = 0; i < std::size(kRoad); ++i)
+            if ((want[i] = !kRoad[i].optional && !taken(kRoad[i]) && !leg_skip_[i])) missing -= kRoad[i].rep;
+        for (std::size_t i = 0; i < std::size(kRoad); ++i)
+            if (kRoad[i].optional && !taken(kRoad[i]) && !leg_skip_[i] && missing > 0) missing -= kRoad[i].rep, want[i] = true;
+    }
     bool road_stage(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
         World& w = m.world();
         if (!is(m, p, "JOAN_OF_ARC") || !done(m, 2)) return false;
-        const auto taken = [&](const Leg& l) { return (m.vm().state().bits[std::size_t(l.word)] >> (l.bit - 1)) & 1u; };
-        int missing = 80 - m.state().reputation - (done(m, 4) ? 0 : 3);   // William's +3 still to come
         bool want[std::size(kRoad)] = {};
-        for (std::size_t i = 0; i < std::size(kRoad); ++i)
-            if (!kRoad[i].optional && !taken(kRoad[i]) && !leg_skip_[i]) missing -= kRoad[i].rep, want[i] = true;
-        for (std::size_t i = 0; i < std::size(kRoad); ++i)
-            if (kRoad[i].optional && !taken(kRoad[i]) && !leg_skip_[i] && missing > 0) missing -= kRoad[i].rep, want[i] = true;
+        wanted(m, want);
         for (std::size_t i = 0; i < std::size(kRoad); ++i) {
             const Leg& l = kRoad[i];
             if (!want[i]) continue;
@@ -923,6 +965,102 @@ struct PlanS6L1 final : MissionPlan {
     }
     bool leg_skip_[std::size(kRoad)] = {};
     int leg_idle_ = -1, next_gate_ = 0;
+
+    // The road north's escort. Following Joan the wards walked into the camps' squads (a squad killed the king by camp
+    // par le lac) and, held back while she fought, left her the choice between the chase line (10000) and her leg. They
+    // wait at a park instead, 5000 short of the road's next goal (the next wanted leg's place, then Reims' English spawn
+    // place, then the gate) along the king's walk, so the whole leg lies within the line. They get there in steps of at
+    // most 4000: before each, Joan clears everyone awake within 2000 of the step's end or 1500 of the walk there (all
+    // within the line); she then walks beside the king. A step he gets no 200 nearer the end of in 60 s ends where he is.
+    Vec3 road_goal(Mission& m) {
+        bool want[std::size(kRoad)] = {};
+        wanted(m, want);
+        const char* name = !done(m, 4) ? "S6L1_8_English_Spawn_Place" : "S6L1_8_Gate_Place";
+        for (std::size_t i = std::size(kRoad); i-- > 0;)
+            if (want[i]) name = kRoad[i].place;
+        const Place* pl = m.places().place(m.places().place_by_name(name));
+        return pl ? pl->pos : Vec3{};
+    }
+    Vec3 road_park(Autopilot& ap, const Unit& charles, Vec3 goal, float short_by) {
+        Mission& m = ap.mission();
+        const float d = d2(charles.pos, rpark_);
+        if (rclear_ && d < rbest_ - 200) rbest_ = d, rtick_ = ap.tick();
+        const bool arrived = d < 600 || (rclear_ && ap.tick() - rtick_ > 1800);
+        if (!kwalk_.empty() && d2(goal, road_to_) < 100 && (!arrived || rlast_)) return rclear_ ? rpark_ : rhold_;
+        road_to_ = goal, rhold_ = charles.pos, rclear_ = false, rbest_ = 1e30f, rtick_ = ap.tick();
+        kwalk_.assign(1, charles.pos);
+        PathQuery q;
+        q.from = {charles.pos.x, charles.pos.y, charles.pos.z}, q.to = {goal.x, goal.y, goal.z}, q.max_expand = 20000;
+        for (const NavPt& n : m.nav()->find_path(q).points) kwalk_.push_back({n.x, n.y, n.z});
+        if (kwalk_.size() < 2 || d2(kwalk_.back(), goal) > 1000) kwalk_ = {charles.pos, goal};   // no walk found: the straight line
+        float left = 0;
+        for (std::size_t i = 1; i < kwalk_.size(); ++i) left += d2(kwalk_[i - 1], kwalk_[i]);
+        const float step = std::min(4000.0f, left - short_by);   // nothing when he stands within short_by of the goal
+        rlast_ = left - short_by <= 4000;
+        rpark_ = charles.pos;
+        float run = 0;
+        for (std::size_t i = 1; step > 0 && i < kwalk_.size(); ++i) {
+            const float seg = d2(kwalk_[i - 1], kwalk_[i]);
+            if (run + seg < step) {
+                run += seg;
+                continue;
+            }
+            const float t = (step - run) / std::max(seg, 1.0f);
+            rpark_ = {kwalk_[i - 1].x + (kwalk_[i].x - kwalk_[i - 1].x) * t, kwalk_[i - 1].y + (kwalk_[i].y - kwalk_[i - 1].y) * t,
+                      kwalk_[i - 1].z + (kwalk_[i].z - kwalk_[i - 1].z) * t};
+            kwalk_.resize(i);
+            kwalk_.push_back(rpark_);
+            break;
+        }
+        if (step <= 0) kwalk_.resize(1);
+        ap.log.push_back(std::to_string(m.ticks()) + " road park (" + std::to_string(int(rpark_.x)) + "," + std::to_string(int(rpark_.y)) + ")" +
+                         (rlast_ ? " last" : ""));
+        return rhold_;
+    }
+    // The nearest one awake within 2000 of the step's end or 1500 of the walk there the player's walk reaches.
+    const Unit* park_foe(Autopilot& ap, const Unit& p) {
+        World& w = ap.mission().world();
+        const int here = ap.unit_region(p);
+        const Unit* best = nullptr;
+        for (const Unit& u : w.units()) {
+            if (!alive(w, u) || !u.m.active || u.no_react || !w.hostile_to_player(u) || ap.unreached(u) || !ap.linked(here, ap.unit_region(u)))
+                continue;
+            bool near = d2(u.pos, rpark_) < 2000;
+            for (const Vec3& q : kwalk_) near |= d2(u.pos, q) < 1500;
+            if (near && (!best || d2(u.pos, p.pos) < d2(best->pos, p.pos))) best = &u;
+        }
+        return best;
+    }
+    bool road_escort(Autopilot& ap, InputFrame& f, Unit& p, const Unit& charles) {
+        if (!rclear_) {
+            if (const Unit* u = park_foe(ap, p)) {
+                ap.goal = "hunt #" + std::to_string(u->id) + " by the king's park";
+                engage(ap, f, p, *u);
+                return true;
+            }
+            rclear_ = true, rtick_ = ap.tick();
+        }
+        if (d2(charles.pos, rpark_) < 600 || ap.tick() - rtick_ > 1800) return false;   // there, or stuck (road_park)
+        ap.goal = "with the king to his park";
+        if (d2(p.pos, charles.pos) > 1200) ap.travel(f, p, charles.pos);
+        return true;
+    }
+    // A foe beyond 9500 (3-D) of the king while the chase clock runs on the road: left alone (the line is 10000).
+    bool beyond_line(Autopilot& ap, const Unit& u) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        const Unit* p = w.unit(w.player_id());
+        const Unit* charles = hero(w, "CHARLIE7");
+        return p && charles && escort_ && chase(m) &&
+               std::hypot(d2(u.pos, charles->pos), u.pos.z - charles->pos.z) > 9500;
+    }
+    static bool chase(Mission& m) { return ((m.vm().state().bits[0] >> 23) & 1u) && m.vm().state().count_time[0] > 840000; }   // chase_count_time_flag
+    std::vector<Vec3> kwalk_;   // the king's walk to rpark_
+    Vec3 road_to_{}, rpark_{}, rhold_{};
+    bool rclear_ = false, rlast_ = false;   // the way cleared; the step ends at the park short of the goal
+    bool escort_ = false;                    // an escorted walk on (first())
+    float rbest_ = 1e30f;                    // the king's nearest to the step's end
+    int rtick_ = 0;                          // ... since
 
     // The wards eat in danger (AI heroes' auto-eat) only what they carry, and Charles starts with an empty bag: every
     // 10 s each with fewer than 3 food items gets Joan's (the character window's hand-over, World::transfer_item).
@@ -982,7 +1120,7 @@ struct PlanS6L1 final : MissionPlan {
         const Unit* best = nullptr;
         float best_d = 1e30f;
         for (const Unit& u : w.units()) {
-            if (!alive(w, u) || !w.hostile_to_player(u) || ap.unreached(u) || !m.places().inside(pr, u.pos)) continue;
+            if (!alive(w, u) || !w.hostile_to_player(u) || ap.unreached(u) || !m.places().inside(pr, u.pos) || beyond_line(ap, u)) continue;
             const UnitClass& c = m.data().units[std::size_t(u.cls)];
             if (c.unit_class == 0 || c.unit_class == 8 || c.unit_class == 9 || c.special == 2 || c.special == 3 || c.special == 7) continue;
             const float d = d2(p.pos, u.pos) + std::fabs(u.pos.z - p.pos.z) * 2;
@@ -1002,19 +1140,24 @@ struct PlanS6L1 final : MissionPlan {
     }
 
     // A fight / hunt target the player's blows and arrows never reach (a wall archer behind a merlon): 30 s on it without
-    // its HP going down, it is given up on (Autopilot::give_up), as in the S7L1 plan.
+    // its HP going down or her getting 100 (3-D) nearer, it is given up on (Autopilot::give_up), as in the S7L1 plan. The
+    // walk counts: Troyes' last two wall-crossbow crews, 3 min off from the hill, were given up on the way, again and again.
     void after_tick(Autopilot& ap) override {
         int id = 0;
         for (const char* k : {"fight #", "hunt #", "boss #", "volley at #"})
             if (ap.goal.rfind(k, 0) == 0) id = std::atoi(ap.goal.c_str() + std::strlen(k));
-        const Unit* u = ap.mission().world().unit(id);
-        if (!u || id != stall_id_ || u->hp < stall_hp_) {
-            stall_id_ = id, stall_hp_ = u ? u->hp : 0, stall_tick_ = ap.tick();
+        const World& w = ap.mission().world();
+        const Unit* u = w.unit(id);
+        const Unit* p = w.unit(w.player_id());
+        const float d = u && p ? std::hypot(d2(u->pos, p->pos), u->pos.z - p->pos.z) : 0;
+        if (!u || id != stall_id_ || u->hp < stall_hp_ || d < stall_d_ - 100) {
+            stall_id_ = id, stall_hp_ = u ? u->hp : 0, stall_tick_ = ap.tick(), stall_d_ = d;
             return;
         }
         if (ap.tick() - stall_tick_ > 900) ap.give_up(id), stall_id_ = 0;
     }
     int stall_id_ = 0, stall_hp_ = 0, stall_tick_ = 0;
+    float stall_d_ = 0;
     int tower_foe_ = 0, spot_tick_ = -1, seen_tick_ = -1;
     Vec3 spot_{};
     std::vector<Vec3> tried_;

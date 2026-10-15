@@ -79,9 +79,19 @@ struct Facility {
     Vec3 box_min, box_max;          // +0x39 spawn rect (always unrotated)
     std::vector<Vec3> entrances;    // +0x51/+0x55, max 2
     SpawnBarrack barrack;           // kind 1
-    // shop (kind 2, f_shop.cpp): +0x89 sell list id, +0x81 can regen. The stock itself (and its
-    // hourly restock, FUN_00469710) is buy-interface data and not modelled.
-    int sell_list = 0, can_regen = 0;
+    // shop (kind 2, f_shop.cpp; the 0x15 bytes +0x79..+0x8d and every stock entry are saved, FUN_00480410 /
+    // FUN_004804f0): +0x89 sell list id, +0x81 can regen (set_can_regen_sell_item), +0x79 stock (0xe-byte entries:
+    // item, price factor, quantity (-1 no limit), level), +0x7d SellingRatio, +0x85 restock clock (ms), +0x8d record
+    // Type (0 POTION / none, 1 WEAPON). Bought from by the buy screen and the campaign bot (mission_ui shop_*).
+    struct Stock {
+        int item = 0;
+        float price = 1;      // sellitem.res 2nd column: Price multiplier (shop_price)
+        int quantity = 0, level = 0;
+        template <class V> void visit(V& v) { v(item), v(price), v(quantity), v(level); }
+    };
+    std::vector<Stock> stock;
+    float selling_ratio = 0;
+    int sell_list = 0, can_regen = 0, regen_ms = 0, shop_type = 0;
     // recruit (kind 3): +0x81/+0x85 RECRUIT.RES lists, +0x91 spawn barrack, +0x93 available,
     // +0x97 can recruit, +0x98 level
     int list1 = 0, list2 = 0, spawn_barrack = 0, available = 0, can_recruit = 1, recruit_level = 1;
@@ -225,6 +235,10 @@ public:
     // (as the original, silently) without a live player, an unknown product, too few builders or 20 queued.
     bool build_siege(Mission& m, int facility, int type);
     void set_workshop_list(int facility, int list);   // Workshop_set_recruit_list 0x46b730
+    // shop_set_sell_item_list 0x654e30 -> f_shop FUN_004697c0: fresh stock = SELLITEM.RES record `list`, quantities as
+    // listed, UniqueItem entries already obtained (MissionState::item_hints_a, FUN_00472740) left out. An unknown
+    // list leaves the shop empty.
+    void set_sell_list(int facility, int list);
 
 private:
     void sync_ai(Mission& m) const;                      // places / zones / tracks hooks of AiSystem
@@ -232,6 +246,7 @@ private:
     void tick_recruit(Mission& m, Facility& f);          // RecruitWorkshop: RecruitFacility_process 0x468600
     void tick_workshop(Mission& m, Facility& f);         // RecruitWorkshop: workshop process 0x46a040
     void tick_territories(Mission& m);
+    void restock(Facility& f, bool fresh);               // f_shop FUN_004697c0 (fresh) / FUN_004699f0 (hourly)
 
     Mission* m_ = nullptr;
     std::vector<Place> places_;
@@ -239,6 +254,10 @@ private:
     std::vector<Territory> territories_;
     std::vector<Track> tracks_;
     std::vector<RecruitRec> recruit_;
+    // SELLITEM.RES (sitemres.cpp FUN_004ce420 / FUN_004ce630, 0x1c-byte records of table 0xa501e0), record id =
+    // 1-based entry order: SellingRatio +0x17, Type +0x1b, stock template +0x13.
+    struct SellRec { float ratio = 0; int type = 0; std::vector<Facility::Stock> entries; };
+    std::vector<SellRec> sell_;
     std::vector<Relation> relations_;  // [a][b] flattened, nations 1..n
     int nations_ = 0;
     int territory_msg_ms_ = 0;         // territory array +0x21

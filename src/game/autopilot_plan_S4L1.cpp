@@ -168,8 +168,7 @@ struct PlanS4L1 final : MissionPlan {
         for (const ShopStock& s : stock) {
             const ItemDef& d = w.data().items[std::size_t(s.item)];
             auto buy = [&] {
-                if (gold < d.price || !w.buy_item(p, s.item, s.level, std::max(1, d.quantity))) return false;
-                gold -= d.price;
+                if (shop_buy(m, m.ui().buy_shop, s, p) != 0) return false;
                 ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
                 return true;
             };

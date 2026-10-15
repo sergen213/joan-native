@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <type_traits>
+#include <utility>
 
 #include "formats/res_archive.hpp"
 #include "formats/world_text.hpp"
@@ -131,6 +132,31 @@ bool Places::load(Mission& m, const formats::Vfs& vfs, const std::string& map_di
                     }
                 }
                 recruit_.push_back(std::move(rec));
+            }
+    // SELLITEM.RES lines "ITEM : price factor : quantity (-1 no limit) : level (-1 = MinLevel)"; unknown items are
+    // skipped (ItemRes_find_by_name 0 would index ItemRes 0).
+    if (auto bytes = vfs.read("ITEM\\SELLITEM.RES"))
+        if (auto res = formats::ResArchive::parse(std::move(*bytes)))
+            for (const auto& e : res->entries()) {
+                const auto d = res->data(e);
+                SellRec rec;
+                for (const auto& kv : formats::parse_kv_text(std::string_view(reinterpret_cast<const char*>(d.data()), d.size()))) {
+                    if (ieq(kv.key, "Type")) rec.type = ieq(kv.value, "WEAPON") ? 1 : 0;
+                    else if (ieq(kv.key, "SellingRatio")) rec.ratio = atof_(kv.value);
+                    else if (const int id = gd.item_index(kv.key)) {
+                        Facility::Stock s{id};
+                        int n = 0;
+                        for (size_t a = 0; a <= kv.value.size() && n < 3; ++n) {
+                            const size_t z = std::min(kv.value.find(':', a), kv.value.size());
+                            const std::string col = kv.value.substr(a, z - a);
+                            n == 0 ? void(s.price = atof_(col)) : n == 1 ? void(s.quantity = atoi_(col)) : void(s.level = atoi_(col));
+                            a = z + 1;
+                        }
+                        if (n < 3 || s.level == -1) s.level = gd.items[size_t(id)].min_level;
+                        rec.entries.push_back(s);
+                    }
+                }
+                sell_.push_back(std::move(rec));
             }
 
     // World nodes (Battle::load_world): every node's .pla / .trk, in .wor order, shifted by
@@ -429,9 +455,46 @@ void Places::tick(Mission& m) {
         if (f.kind == Facility::Barrack) tick_barrack(m, f);
         else if (f.kind == Facility::Recruit) tick_recruit(m, f);   // RecruitWorkshop: RecruitFacility_process 0x468600
         else if (f.kind == Facility::Workshop) tick_workshop(m, f); // RecruitWorkshop: build queue 0x46a040
-        // SHOP 0x469710 (hourly restock of the buy-interface stock) only acts on interface data.
+        // SHOP FUN_00469710: a can-regen or POTION-type shop restocks every hour of game time (the clock runs with
+        // no list set too; +0x89 > 0 gates the restock itself).
+        else if (f.kind == Facility::Shop && (f.can_regen || f.shop_type == 0) && (f.regen_ms += dt) >= 3600000) {
+            if (f.sell_list > 0 && f.sell_list <= int(sell_.size())) restock(f, false);
+            f.regen_ms -= 3600000;
+        }
     }
     tick_territories(m);
+}
+
+// f_shop FUN_004697c0: a fresh copy of the record (quantities as listed). Both it and the restock leave a template entry
+// out while it is a UniqueItem already obtained (item +0x25b && FUN_00472740 on Game+0x71c).
+void Places::set_sell_list(int facility, int list) {
+    Facility* f = this->facility(facility);
+    if (!f) return;
+    f->stock.clear();
+    if (list < 1 || list > int(sell_.size())) return;
+    f->sell_list = list;
+    restock(*f, true);
+}
+
+// FUN_004699f0: restocked quantity = round(listed / 2) (Misc_round 0x590a20, half up) + what the first entry of the
+// same item had left, at most the listed quantity; unlimited (-1) entries stay unlimited. Sold-out items (no entry or
+// 0 left) come back at round(listed / 2). The record's Type and SellingRatio are copied again.
+void Places::restock(Facility& f, bool fresh) {
+    const SellRec& rec = sell_[size_t(f.sell_list - 1)];
+    const GameData& gd = m_->data();
+    const auto& owned = m_->state().item_hints_a;
+    const std::vector<Facility::Stock> old = std::exchange(f.stock, {});
+    for (const Facility::Stock& t : rec.entries) {
+        if (gd.items[size_t(t.item)].unique && std::find(owned.begin(), owned.end(), std::uint16_t(t.item)) != owned.end()) continue;
+        Facility::Stock s = t;
+        if (!fresh && t.quantity != -1) {
+            s.quantity = (t.quantity + 1) / 2;
+            const auto o = std::find_if(old.begin(), old.end(), [&](const Facility::Stock& e) { return e.item == t.item; });
+            if (o != old.end()) s.quantity = std::min(s.quantity + o->quantity, t.quantity);
+        }
+        f.stock.push_back(s);
+    }
+    f.shop_type = rec.type, f.selling_ratio = rec.ratio;
 }
 
 // SpawnBarrack_process 0x467590: at most one unit per tick.
@@ -622,6 +685,8 @@ void Places::save(ByteWriter& w) const {
         std::vector<int> occ = a ? a->occupant : std::vector<int>{};
         o(occ);
     }
+    // Shop stock (FUN_00480410 saves it with the facility), appended so saves without it still load.
+    for (Facility& f : self.facilities_) o(f.stock), o(f.selling_ratio), o(f.regen_ms), o(f.shop_type);
 }
 
 bool Places::load_state(formats::ByteReader& r) {
@@ -639,6 +704,13 @@ bool Places::load_state(formats::ByteReader& r) {
             a.occupant = dyn[i].second;
             a.occupant.resize(a.slots.size(), 0);
         }
+    }
+    if (r.remaining() > 0) {
+        for (Facility& f : facilities_) in(f.stock), in(f.selling_ratio), in(f.regen_ms), in(f.shop_type);
+        if (!r.ok()) return false;
+    } else if (m_) {   // a save from before the shop stock: the listed stock, as those builds sold it
+        for (Facility& f : facilities_)
+            if (f.kind == Facility::Shop && f.sell_list >= 1 && f.sell_list <= int(sell_.size())) restock(f, true);
     }
     return true;
 }

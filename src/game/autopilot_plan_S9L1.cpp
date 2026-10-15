@@ -35,6 +35,7 @@ constexpr Cap kCaps[] = {
 class PlanS9L1 final : public MissionPlan {
 public:
     bool first(Autopilot& ap, InputFrame& f, Unit& p) override {
+        const bool shopping = ap.plan_talk != 0 || ap.mission().ui().buy_open;  // a trip led last tick, or the buy screen
         ap.plan_talk = 0;  // set again by supplies() each tick it leads to a seller
         // Buy screen: explosive arrows for the towns' bombards (siege weapons take only stone / explosive hits: unit.res
         // TriggerType 0x6040), plain ones for the archers on walls and towers no path reaches, 1500 kept for food (buy_food
@@ -47,9 +48,18 @@ public:
         guard_ = b && ap.mission().ai().rts_selectable(*b) ? std::optional<Vec3>(b->pos) : std::nullopt;
         bastard_id_ = b ? b->id : 0;
         army(ap, p), pick(ap, p);
+        // Food in the troop grid feeds her squad (is_in_danger: a member eats only from his leader's troop supply), and
+        // make_room puts it there for bag room: in Meung's brawl her men ate 28 of her 32 (2159 HP taken by Joan) and she
+        // starved. Back into her own grid while it has room, but not on a shop trip: the buy screen then found the personal
+        // grid full of food and sold no arrows (Easy went without explosives for the towns' bombards).
+        if (!shopping)
+            for (ItemInstance& it : p.inv.bag)
+                if (const int t = ap.mission().data().items[std::size_t(it.item)].type; it.bag == 2 && (t == 0x15 || t == 0x19))
+                    if (ItemInstance n = it; p.inv.place(ap.mission().data(), n, 1)) it = n;
         // Out of food: to the seller even mid-fight (the hunt's supplies() runs only between fights; the Normal start's Joan
-        // fought Chateaudun's garrison down from 23 food to none and was killed, LOSE 5).
-        return food(ap.mission().world(), p) < kFoodLow / 2 && supplies(ap, f, p) && trip_d_ > 150;  // near: the generic talk
+        // fought Chateaudun's garrison down from 23 food to none and was killed, LOSE 5). Only near empty: the garrisons left
+        // behind chase her the whole way (Blois' 15 from 8 food to Orleans, 18000 off, where they killed her).
+        return food(ap.mission().world(), p) < 3 && supplies(ap, f, p) && trip_d_ > 150;  // near: the generic talk
     }
     std::optional<Vec3> guard_;  // the Bastard once he is the player's (his attackers are fought first)
     int bastard_id_ = 0;
@@ -112,8 +122,11 @@ public:
             return true;
         }
         pick(ap, p);
+        // getReinforcement first once Meung is taken: Beaugency's capture needs the bosses it brings (reinforce()); hunting
+        // its 129 behind shut gates first walked Joan between Meung and Beaugency for 120000 ticks.
+        if (reinforce(ap, f, p)) return true;
         const Place* pl = m.places().place(target_);
-        if (!pl) return meung(ap, f, p) || reinforce(ap, f, p);
+        if (!pl) return meung(ap, f, p);
         // An enemy still holding the place: hunt the nearest the bot can get at; the generic fight takes over in reach.
         // Siege weapons and the foes no path reaches (archers on walls and towers) are shot (shoot_foe).
         const Unit* foe = nullptr;
@@ -406,17 +419,18 @@ private:
     // opens the gates, every trip to Meung's sellers stood at the shut south gate); talking opens the buy screen (Autopilot::shop
     // + shop()). `stock_up` (before Meung: its walls hold ~40 archers and crossbowmen, its shops open only once it is
     // taken) asks for half the stock. A seller visited or walked no closer to for 100 s is left for 5 min. A seller with 4+
-    // English within 2000 is no seller (Normal: out of food Joan walked into Orleans' Luxembourg host and was killed); out of
-    // food (< kFoodLow / 3) one twice as far is worth the walk.
+    // English within 2000 is no seller (Normal: out of food Joan walked into Orleans' Luxembourg host and was killed).
     bool supplies(Autopilot& ap, InputFrame& f, const Unit& p, bool stock_up = false) {
         Mission& m = ap.mission();
         World& w = m.world();
         if (!is_joan(m, p) || m.state().gold < 400) return false;
         const int arrows = stock_up ? kPlain / 2 : kArrowsLow, bombs = stock_up ? kExplosive / 2 : kArrowsLow;
         const bool ammo = p.inv.ranged.item && (ap.arrows(p, false) < arrows || ap.arrows(p, true) < bombs);
-        const bool eat = food(w, p) < (stock_up ? kFood / 2 : kFoodLow);
+        const bool eat = food(w, p) < kFoodLow;
         if (!ammo && !eat) return false;
-        const float range = food(w, p) < kFoodLow / 3 ? 2 * kTripMax : kTripMax;
+        // Starving: twice as far, and food sellers only (Normal walked to Orleans' weapon seller with 4 food and died).
+        const bool starving = food(w, p) < kFoodLow / 2;
+        const float range = starving ? 2 * kTripMax : kTripMax;
         const auto crowded = [&](const Unit& s) {
             int n = 0;
             for (const Unit& u : w.units()) n += !u.deleted && !w.dead(u) && w.hostile_to_player(u) && d2(u.pos, s.pos) < 2000;
@@ -426,7 +440,7 @@ private:
         for (const Unit& u : w.units()) {
             const std::string& code = m.data().units[std::size_t(u.cls)].code;
             const bool weapons = code.starts_with("WEAPON_SHOPKEEPER"), potions = code.starts_with("POTION_SHOPKEEPER");
-            if ((weapons && ammo) || (potions && eat))
+            if ((weapons && ammo && !starving) || (potions && eat))
                 if (!u.deleted && u.m.can_interact && u.nation == p.nation && ap.tick() >= trip_skip_[u.id] && d2(p.pos, u.pos) < range &&
                     ap.linked(ap.unit_region(p), ap.unit_region(u)) && (!s || d2(p.pos, u.pos) < d2(p.pos, s->pos)) && !crowded(u))
                     s = &u;
@@ -456,7 +470,9 @@ private:
         walk(ap, f, p, s->pos);
         return true;
     }
-    static constexpr int kFoodLow = 12, kFood = 30, kArrowsLow = 8, kExplosive = 40, kPlain = 300, kExplosiveKeep = 12;
+    // kFoodLow 20: at 12 (mid-fight trips below 4, then 6) Easy and Normal both walked to a seller with 5 food left, a
+    // garrison at their heels, and were killed on the way.
+    static constexpr int kFoodLow = 20, kFood = 30, kArrowsLow = 8, kExplosive = 40, kPlain = 300, kExplosiveKeep = 12;
     static constexpr float kTripMax = 20000;  // farther sellers (Jargeau's, Chateauneuf's from Beaugency: 55000) cost more than the stock
     int trip_id_ = 0, trip_tick_ = 0;
     float trip_best_ = 0, trip_d_ = 0;  // trip_d_: distance to the seller supplies() last walked to
@@ -473,9 +489,9 @@ private:
             if (const ItemDef& d = w.data().items[std::size_t(it.item)]; d.type == 9) best = std::max(best, d.base_damage(it.level));
         for (const ShopStock& s : shop_stock(m, m.ui().buy_shop)) {
             const ItemDef& d = w.data().items[std::size_t(s.item)];
-            if (d.type == 9 && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > best && s.quantity != 0 &&
-                m.state().gold >= d.price && w.buy_item(p, s.item, s.level, 1)) {
-                m.state().gold -= d.price, best = d.base_damage(s.level);
+            if (d.type == 9 && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > best &&
+                shop_buy(m, m.ui().buy_shop, s, p) == 0) {
+                best = d.base_damage(s.level);
                 ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(m.state().gold));
             }
         }
@@ -674,7 +690,9 @@ private:
         return n;
     }
     // Buy screen open (a shop the generic bot talks to): food (types 0x15 / 0x19) up to kFood
-    // (the click handler's purchase, as Autopilot::shop makes it). Only Joan goes shopping (supplies()): the award-only
+    // (the click handler's purchase, as Autopilot::shop makes it), the most HP per gold first, at most the listed quantity of
+    // each: F3 eats below half HP, where meat (full heal, 400) gives 3.6x bread's HP per gold and per bag cell (one cell per
+    // item). Bread first (stock order) left Easy and Normal starving in the long brawls. Only Joan goes shopping (supplies()): the award-only
     // heroes' food trips (Jean to Jargeau's shop across the English villages, to Orleans' that left him on its wall walkway
     // with no way down for 55000 ticks) cost the run.
     void buy_food(Autopilot& ap, Unit& p) {
@@ -683,12 +701,15 @@ private:
         food_ms_ = m.ui().interface_ms;
         World& w = m.world();
         int& gold = m.state().gold;
-        for (const ShopStock& s : shop_stock(m, m.ui().buy_shop)) {
-            const ItemDef& d = w.data().items[std::size_t(s.item)];
-            if (d.type != 0x15 && d.type != 0x19) continue;
-            while (s.quantity != 0 && food(w, p) < kFood && gold >= d.price && w.buy_item(p, s.item, s.level, std::max(1, d.quantity)))
-                gold -= d.price, ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
-        }
+        std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
+        std::erase_if(stock, [&](const ShopStock& s) { const int t = w.data().items[std::size_t(s.item)].type; return t != 0x15 && t != 0x19; });
+        const auto value = [&](const ShopStock& s) {
+            return float(std::min(w.data().items[std::size_t(s.item)].damage, w.max_hp(p))) / float(std::max(1, shop_price(w.data(), s)));
+        };
+        std::stable_sort(stock.begin(), stock.end(), [&](const ShopStock& a, const ShopStock& b) { return value(a) > value(b); });
+        for (const ShopStock& s : stock)
+            while (food(w, p) < kFood && shop_buy(m, m.ui().buy_shop, s, p) == 0)
+                ap.log.push_back(std::to_string(m.ticks()) + " buy " + w.data().items[std::size_t(s.item)].code + " gold " + std::to_string(gold));
         if (ap.trace) std::printf("[plan %d] shop: food %d gold %d\n", ap.tick(), food(w, p), gold);
     }
     std::uint32_t food_ms_ = ~0u;

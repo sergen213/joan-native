@@ -235,6 +235,9 @@ public:
     // Unit_is_in_danger 0x4fd980(1), which Unit_onMessage 0x75d540 calls after every hit before the death check: a
     // non-player hero below INDANGER eats from his bag, a soldier from his leader's (mission layer: script_bind_units.cpp).
     std::function<void(Unit&)> hit_danger;
+    // FUN_00472620 (Game+0x71c) after Unit_add_item 0x495f40 stored a UniqueItem (+0x25b): give_item / transfer_item
+    // (mission layer: MissionState::item_hints_a, which the shops' UniqueItem filter reads).
+    std::function<void(int item)> unique_obtained;
     // Physics_sweep_structures 0x693750 mesh test (mission layer: MapObjects::structure_ray). item == 0:
     // nearest map item on from->to (world units); item > 0: that item's event data (.item 0 if gone).
     std::function<StructureHit(int item, Vec3 from, Vec3 to)> structure_ray;
@@ -327,6 +330,7 @@ public:
     // room; returns the pieces stored (0 = refused: no free slot / cell / stack room). `troop`: stacking items into
     // the troop grid only (give_item_to_unit_troop).
     int give_item(Unit& u, std::string_view code, int level, int quantity, bool troop = false);
+    int can_give(const Unit& u, std::string_view code, int level, int quantity) const;   // give_item's count, no change
     // Shop purchase FUN_006c5a00: personal grid only, no equipping: a free cell for the footprint (FUN_006c9d20,
     // column by column) or room in same-item stacks (FUN_006c9f10); stacks fill from the last one (0x457ba0), the
     // rest takes the cell. False = no room (BUY 9).

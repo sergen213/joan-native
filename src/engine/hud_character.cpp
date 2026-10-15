@@ -633,8 +633,8 @@ void CharacterWindow::draw_tip(Ui& ui) {
 // ---------------------------------------------------------------- shop (i_buy.cpp)
 // 800x600 BUY "main" centred: seller grid 6x13 at (+0x100, +0x38), the player's personal bag 6x8 at (+0x210, +0x38),
 // coins (+0x10, +0x1d0) + gold right-aligned at (+0xc9, +0x1d4), titles BUY 1 / BUY 2 in (+300, +0x10)-(+0x1c4, +0x38) /
-// (+0x23c, +0x10)-(+0x2d4, +0x38), close button c_* (+0x67, +0x218). Stock = item/sellitem.res record
-// Facility::sell_list ("item : ? : quantity (-1 no limit) : level (-1 = MinLevel)").
+// (+0x23c, +0x10)-(+0x2d4, +0x38), close button c_* (+0x67, +0x218). Stock = the facility's live stock
+// (Facility::stock, game::shop_buy / shop_sell: the same state the campaign bot trades with).
 void CharacterWindow::shop(Ui& ui, game::Mission& m) {
     game::MissionUi& mu = m.ui();
     World& w = m.world();
@@ -645,20 +645,17 @@ void CharacterWindow::shop(Ui& ui, game::Mission& m) {
         return;
     }
     const GameData& gd = m.data();
-    if (shop_facility_ != f->recno) {   // FUN_006c3230: stock copy
-        shop_facility_ = f->recno, stock_.clear(), shop_msg_.clear();
+    if (shop_facility_ != f->recno) {   // FUN_006c3230: cells for the entries in stock
+        shop_facility_ = f->recno, stock_.clear(), shop_msg_.clear(), shop_held_ = -1;
         std::vector<Cell> placed;
-        for (const game::ShopStock& g : game::shop_stock(m, f->recno, &sell_ratio_)) {
-            Stock s{g.item, g.level, g.quantity, Cell{g.item}};
-            s.cell.level = s.level;
-            if (!place_first_fit(gd, placed, 3, s.cell)) continue;
+        for (std::size_t i = 0; i < f->stock.size(); ++i) {
+            const game::ShopStock& g = f->stock[i];
+            Stock s{i, Cell{g.item}};
+            s.cell.level = g.level;
+            if (g.quantity == 0 || !place_first_fit(gd, placed, 3, s.cell)) continue;
             placed.push_back(s.cell);
             stock_.push_back(s);
         }
-        auto& left = stock_left_[f->recno];
-        if (left.size() != stock_.size()) left.clear();
-        for (std::size_t i = 0; i < left.size(); ++i) stock_[i].quantity = left[i];
-        left.resize(stock_.size());
     }
     layout(gd, *u);
     if (cells_unit_ != u->id) return;
@@ -681,57 +678,83 @@ void CharacterWindow::shop(Ui& ui, game::Mission& m) {
         return s;
     };
     const bool modal = !shop_msg_.empty();
+    // Clicks (FUN_006c6550 with Mouse_single_click_in_rect / Mouse_double_click_in_rect): a press within 0.5 s and
+    // 4 px of the previous one is a double click (the Windows defaults) and no single-click action fires on it.
+    const UiInput& in = ui.input();
+    const bool pad_press = ui.pad_focus() && in.mouse_released;   // PadWindows: South
+    const bool dbl = in.mouse_pressed && shop_press_t_ <= 0.5f && glm::distance(mouse, shop_press_at_) <= 4.0f;
+    shop_press_t_ += ui.dt();
+    if (in.mouse_pressed) shop_press_t_ = dbl ? 1e9f : 0.0f, shop_press_at_ = mouse;
+    const bool press = !modal && !dbl && (in.mouse_pressed || pad_press);
     int buy = -1;
     for (std::size_t i = 0; i < stock_.size(); ++i) {
-        const Stock& s = stock_[i];
+        if (stock_[i].entry >= f->stock.size()) continue;
+        const game::ShopStock& s = f->stock[stock_[i].entry];
+        const Cell& c = stock_[i].cell;
         if (s.quantity == 0) continue;
         const ItemDef& d = gd.items[std::size_t(s.item)];
-        const glm::vec4 r{o.x + 0x100 + float(s.cell.col * 40), o.y + 0x38 + float(s.cell.row * 40), float(d.width * 40), float(d.height * 40)};
+        const glm::vec4 r{o.x + 0x100 + float(c.col * 40), o.y + 0x38 + float(c.row * 40), float(d.width * 40), float(d.height * 40)};
         const bool hot = !modal && ui.hover(r);
         icon(ui, d, {r.x, r.y}, hot);
         if (s.quantity >= 2 && s.quantity <= 999) ui.text(ui.font(kSmallFont), std::to_string(s.quantity), {r.x, r.y}, kUiWhite);
         else if (is_class(d, "ENHANCER")) item_count(ui, d, {s.item, 1, s.level}, {r.x, r.y});
-        if (!hot) continue;
+        if (!hot || shop_held_ >= 0) continue;
         std::string body = d.description.empty() ? std::string() : item_description(d, s.level) + "\n";
-        body += line(3, d.price) + "\n" + (s.quantity < 0 ? std::string(ui.text("BUY", 4)) : line(5, s.quantity));
+        body += line(3, game::shop_price(gd, s)) + "\n" + (s.quantity < 0 ? std::string(ui.text("BUY", 4)) : line(5, s.quantity));
         tip(d.name, body);
-        if (ui.input().mouse_pressed || (ui.pad_focus() && ui.input().mouse_released)) buy = int(i);   // PadWindows: South
+        if (press) buy = int(stock_[i].entry);
     }
-    int sell = -1;
+    if (shop_held_ >= int(u->inv.bag.size())) shop_held_ = -1;
+    int under = -1;
     for (std::size_t i = 0; i < cells_.size() && i < u->inv.bag.size(); ++i) {
-        if (cells_[i].grid != 0) continue;
+        if (cells_[i].grid != 0 || int(i) == shop_held_) continue;
         const game::ItemInstance& it = u->inv.bag[i];
         const ItemDef& d = gd.items[std::size_t(it.item)];
         const glm::vec4 r{o.x + 0x210 + float(cells_[i].col * 40), o.y + 0x38 + float(cells_[i].row * 40), float(d.width * 40),
                           float(d.height * 40)};
         const bool hot = !modal && ui.hover(r);
-        icon(ui, d, {r.x, r.y}, hot);
+        icon(ui, d, {r.x, r.y}, hot && shop_held_ < 0);
         item_count(ui, d, it, {r.x, r.y});
         if (!hot) continue;
-        const int value = is_class(d, "MISSION") ? 0 : int(float(d.price) * sell_ratio_);   // SellingRatio
+        under = int(i);
+        if (shop_held_ >= 0) continue;
+        const int value = game::shop_sell_value(m, f->recno, it);
         tip(d.name, (d.description.empty() ? std::string() : item_description(d, it.level) + "\n") +
-                        (value > 0 ? line(6, value) : std::string(ui.text("BUY", 10))));
-        if (value > 0 && (ui.input().mouse_pressed || (ui.pad_focus() && ui.input().mouse_released))) sell = int(i);
+                        (value >= 0 ? line(6, value) : std::string(ui.text("BUY", 10))));
     }
-    // Selling (drag into the seller's grid in the original; one click here): gold += Price x SellingRatio, one piece.
-    if (sell >= 0) {
-        game::ItemInstance& it = u->inv.bag[std::size_t(sell)];
-        gold += int(float(gd.items[std::size_t(it.item)].price) * sell_ratio_);
-        if (--it.quantity < 1) u->inv.bag.erase(u->inv.bag.begin() + sell), cells_.erase(cells_.begin() + sell);
+    // Selling: a press on a bag stack picks it up (+0x245), a press in the seller's grid sells it (drag sale; refused
+    // = it stays held), a press in the bag puts it down there, the right button puts it back. A double click with
+    // nothing held sells the stack under the pointer at once (shop_sell_value's double-click value), so double-clicking
+    // a resting stack only picks it up, while putting one down and clicking it again sells it.
+    const glm::vec4 seller{o.x + 0x100, o.y + 0x38, 0xf0, 0x208}, mine_area{o.x + 0x210, o.y + 0x38, 0xf0, 0x140};
+    auto sold = [&](int i) { cells_.erase(cells_.begin() + i), shop_held_ = -1; };
+    if (!modal && dbl && shop_held_ < 0 && under >= 0) {
+        if (game::shop_sell(m, f->recno, *u, under, true)) sold(under);
+    } else if (press && shop_held_ >= 0 && inside(mouse, seller)) {
+        if (game::shop_sell(m, f->recno, *u, shop_held_)) sold(shop_held_);
+    } else if (press && shop_held_ >= 0 && inside(mouse, mine_area)) {
+        const game::ItemInstance& it = u->inv.bag[std::size_t(shop_held_)];
+        const ItemDef& d = gd.items[std::size_t(it.item)];
+        const Cell c{it.item, it.level, 0, int(std::lround((mouse.x - mine_area.x - d.width * 20.0f) / 40.0f)),
+                     int(std::lround((mouse.y - mine_area.y - d.height * 20.0f) / 40.0f))};
+        if (fits(gd, cells_, c, shop_held_)) cells_[std::size_t(shop_held_)] = c, store_cell(u->inv.bag[std::size_t(shop_held_)], c), shop_held_ = -1;
+    } else if (press && shop_held_ < 0 && under >= 0) {
+        shop_held_ = under;
+    } else if (!modal && in.right_pressed) {
+        shop_held_ = -1;
+    }
+    if (shop_held_ >= 0) {   // on the pointer
+        const ItemDef& d = gd.items[std::size_t(u->inv.bag[std::size_t(shop_held_)].item)];
+        const std::string name = item_icon(d);
+        const glm::ivec2 sz = ui.texture_size(name);
+        if (TextureHandle t = ui.texture(name))
+            ui.image(t, {mouse.x - d.width * 20.0f - 8, mouse.y - d.height * 20.0f - 8, float(sz.x), float(sz.y)});
     }
     // FUN_006c5a00: price check (BUY 8), room check (BUY 9: World::buy_item, personal grid only), then gold drops.
-    // Cost = Price (HYPOTHESIS: the exe's FPU expression is not recovered); one purchase = the item's Quantity.
     if (buy >= 0) {
-        Stock& s = stock_[std::size_t(buy)];
-        const ItemDef& d = gd.items[std::size_t(s.item)];
-        if (gold < d.price) shop_msg_ = ui.text("BUY", 8);
-        else if (!w.buy_item(*u, s.item, s.level, std::max(1, d.quantity))) shop_msg_ = ui.text("BUY", 9);
-        else {
-            layout(gd, *u);
-            gold -= d.price;
-            if (s.quantity > 0) --s.quantity;
-            stock_left_[shop_facility_][std::size_t(buy)] = s.quantity;
-        }
+        const game::ShopStock s = f->stock[std::size_t(buy)];
+        if (const int r = game::shop_buy(m, f->recno, s, *u); r > 0) shop_msg_ = ui.text("BUY", r);
+        else if (r == 0) layout(gd, *u);
     }
     const glm::vec4 close{o.x + 0x67, o.y + 0x218, 104, 32};
     if (modal) {
@@ -751,7 +774,7 @@ void CharacterWindow::on_world_events(const std::vector<game::GameEvent>& events
     for (const game::GameEvent& e : events) {
         if (e.type != game::Ev::Effect || e.name != "PICKUP" || e.unit != w.player_id()) continue;
         if (e.value <= 0 || e.value >= int(w.data().items.size()) || !w.data().items[std::size_t(e.value)].show_armory) continue;
-        auto& hints = m.state().item_hints_a;   // 0x472a90 seen? / 0x4729c0 add
+        auto& hints = m.state().item_hints_b;   // Game+0x728: 0x472a90 seen? / 0x4729c0 add
         if (std::find(hints.begin(), hints.end(), std::uint16_t(e.value)) != hints.end()) continue;
         hints.push_back(std::uint16_t(e.value));
         hud.armory_item = e.value, hud.armory_level = w.data().items[std::size_t(e.value)].min_level;

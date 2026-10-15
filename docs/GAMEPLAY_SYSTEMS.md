@@ -124,9 +124,17 @@ gravity). Recruitment: `recruit.res` lists `UNIT_CODE : level : cost` per barrac
   = restore amounts — HYPOTHESIS), food items `fd_*` (bread, apple, fish, meat, chicken).
 - Drops: `DropItemList` → `dropitem.res` (`ITEM : percent`); per-class drop chance GAMEPLAY.RES
   `LINF_DI 10, HINF_DI 12, ARC_DI 8, CRO_DI 8, POLE_DI 10, MACE_DI 8`, captains 100.
-- Shops: `sellitem.res` per mission shop (`S3L1_POTION`, `S5L1_WEAPON`, …):
-  `item : qty : price? : ?` with `SellingRatio 0.5` (sell-back ratio) — field roles beyond the
-  ratio HYPOTHESIS.
+- Shops (CONFIRMED decomp, f_shop.cpp / sitemres.cpp / i_buy.cpp): `sellitem.res` records (`S3L1_POTION`, …) =
+  `Type POTION|WEAPON`, `SellingRatio`, lines `ITEM : price factor : quantity (-1 unlimited) : level (-1 MinLevel)`.
+  `shop_set_sell_item_list` copies a record onto the shop facility, leaving out UniqueItem entries already obtained
+  (Game+0x71c, filled by Unit_add_item 0x495f40 → FUN_00472620 whenever a pickup, script gift or hand-over stores a
+  UniqueItem; shop purchases do not add to it). The stock is the facility's, kept between visits and saved with it.
+  Price = Price × factor × (level − MinLevel + 1).
+  A POTION-type or `set_can_regen_sell_item` shop restocks every game hour: round(listed / 2) + left, capped at the
+  listed quantity. Sale (whole stack, CanSell items; food only to POTION shops, the rest only to WEAPON ones):
+  Price × SellingRatio × quantity / Quantity × level factor when dragged to the seller, Price × SellingRatio × level
+  factor (whatever the stack holds) when double-clicked (UI_SYSTEM.md Shop); sold items are not restocked.
+  Native: `Facility::stock`, `game::shop_buy` / `shop_sell` (engine buy screen and campaign bot).
 
 ## Experience, levels, combos
 

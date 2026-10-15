@@ -1,5 +1,6 @@
 #include "game/mission.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "formats/pfd_mesh.hpp"
@@ -201,6 +202,10 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
     install_interact(*this);
     install_auto_pickup(*this);
     install_hit_danger(*this);
+    world_->unique_obtained = [this](int item) {   // FUN_00472620: Game+0x71c, once per item
+        auto& l = state_.item_hints_a;
+        if (std::find(l.begin(), l.end(), std::uint16_t(item)) == l.end()) l.push_back(std::uint16_t(item));
+    };
     for (const auto& n : nodes) {
         auto uni = read_blocks(vfs_, dir + "\\" + n.name + ".uni");
         if (!uni) continue;

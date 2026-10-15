@@ -959,18 +959,28 @@ Code `src/engine/hud_character.{hpp,cpp}` (class CharacterWindow, owned by the C
   learned) 3 ATT rows (0x15c, 0x1d4+0x28 i), cost ATTCOMB 1 right at 0x2c2, LEARN (0x2d6, 0x1d7+0x28 i) →
   Unit_apply_upgrade 0x4949f0; SBUP/SBDW (0x1c0/0x288, 0x1a4); frame BG (0x158,0x20) drawn last. HIGH.
 - Shop (i_buy.cpp: init FUN_006c2120, open copy FUN_006c3230, draw FUN_006c4070, buy FUN_006c5a00, commit
-  FUN_006c3540): BUY main 800x600 centred; stock = sellitem.res record Facility::sell_list (item : ? : quantity −1
-  unlimited : level −1 MinLevel) in a 6x13 grid (+0x100,+0x38); player bag 6x8 (+0x210,+0x38); coins (+0x10,+0x1d0),
+  FUN_006c3540): BUY main 800x600 centred; stock = the shop facility's stock (f_shop +0x79, see GAMEPLAY_SYSTEMS.md
+  Shops; open copies the entries with quantity ≠ 0, close writes the quantities back and deletes sold-out entries) in
+  a 6x13 grid (+0x100,+0x38); player bag 6x8 (+0x210,+0x38); coins (+0x10,+0x1d0),
   gold (+0xc9,+0x1d4); BUY 1/2 titles; tooltips BUY 3/4/5 (stock), BUY 6/10 (own items); BUY 8 / BUY 9 message box;
   every close (Esc / Enter / c_* button (+0x67,+0x218)) commits, so purchases go straight to MissionState::gold +
-  World::buy_item. Buy (CONFIRMED decomp): gold < price → BUY 8; stock −1 (unless unlimited); a free personal cell
+  World::buy_item + Facility::stock (`game::shop_buy`). Buy (CONFIRMED decomp): price (0x6c5ac6) = trunc(Price ×
+  factor × (level − MinLevel + 1)); gold < price → BUY 8; stock −1 (unless unlimited); a free personal cell
   for the footprint (FUN_006c9d20, column by column) or MaxQuantity room in same-item stacks of the copied personal
   bag (FUN_006c9f10), else stock +1 and BUY 9; FUN_00457ba0 tops up stacks from the last one and puts the rest in
-  the cell (no equipping, no troop grid). Selling: Price × SellingRatio (record key) per piece, MISSION items
-  "Cannot sell" (BUY 10). Sim paused while open (windowed runs).
+  the cell (no equipping, no troop grid); a ShowArmoryInterface item joins hint list +0x728. Selling (FUN_006c6550):
+  a single click on a bag stack picks it up (+0x245); dropped in the seller's grid (0x6c7319) the whole stack sells for
+  trunc(Price × SellingRatio × quantity / Quantity × level factor) if CanSell (+0x25d) and food types 0x15/0x17/0x19 ↔
+  POTION shop, others ↔ WEAPON shop, else "Cannot sell" (BUY 10) and it stays held; a click in the bag puts it down.
+  A double click (Mouse_double_click_in_rect: the second press of a Windows double click, which no single-click test
+  sees) in the bag with nothing held (+0x245 == 0) sells the stack under the pointer at once (0x6c7860) for
+  trunc(Price × SellingRatio × quantity / quantity × level factor), one Quantity's worth whatever the stack holds.
+  So double-clicking a resting stack only picks it up (its first press did); putting a stack down and clicking it again
+  at once sells it at that value. Engine: same clicks (0.5 s / 4 px). Sim paused while open (windowed runs).
 - ARMORY (armory_interface, layout FUN_006b9870; trigger at the end of Unit_auto_pickup 0x49da30: a player pickup of a
   ShowArmoryInterface (+0x1e8) item not yet in the hint list 0x472a90 → add 0x4729c0 → open 0x6bbc90 / 0x6ba4b0):
-  `CharacterWindow::on_world_events` on Ev::Effect "PICKUP", hint list MissionState::item_hints_a, HudModel::armory_item
+  `CharacterWindow::on_world_events` on Ev::Effect "PICKUP", hint list MissionState::item_hints_b (Game+0x728),
+  HudModel::armory_item
   (pauses). bg1 armory_b (a black translucent veil over the world), title + arrows, ARMORY 2 + item name, frame_bg /
   frame (0x1c,0xf8), fancybar DESCRIPTION, item_des/<DetailDescriptionFilename> text, longbar + BACK TO MISSION
   (ARMORY 3; Esc / Enter too). HIGH layout, fonts by font-object table where known (0xa48d48 Goudy_bold_18).
