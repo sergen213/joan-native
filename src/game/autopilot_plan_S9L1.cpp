@@ -44,7 +44,10 @@ public:
         // spends it). The spy (Elya Tinchor's 3000, S9L1_tactic l.4409) is never paid: 3000 kept for him starved the legit
         // chain's Normal Joan (~4500 gold) at Loches.
         ap.shop_explosive_max = kExplosive, ap.shop_plain_max = kPlain, ap.shop_gold_keep = 1500;
-        ap.explosive_reserve = kExplosiveKeep;
+        // Not in volleys while Beaugency's middle gate waits for them (reinforce()): the volley walk went round its castle's
+        // groups behind the shut gates, 1800 ticks each, and spent the gate's arrows.
+        const Place* mp = ap.mission().places().place(ap.mission().places().place_by_name("Castle_Meung"));
+        ap.explosive_reserve = mp && mp->captured && !(ap.mission().vm().state().bits[0] & 1u) ? 1000 : kExplosiveKeep;
         ap.gate_unlinked = true;  // Autopilot::travel: Orleans' shut east gate
         // Rest / avoid unaware foes only below half HP, where F3 eats: with meat (a full heal) in the bag Easy spent 20000
         // ticks of Meung's siege backing away from lurkers at 50-60 % HP.
@@ -53,6 +56,8 @@ public:
         guard_ = b && ap.mission().ai().rts_selectable(*b) ? std::optional<Vec3>(b->pos) : std::nullopt;
         bastard_id_ = b ? b->id : 0;
         army(ap, p), pick(ap, p);
+        leash_ = b && !target_ && !captured(ap.mission(), "Castle_Meung") && !gate_down(ap.mission(), "MeungNorthGate") &&
+                 !gate_down(ap.mission(), "MeungSouthGate");
         // Food in the troop grid feeds her squad (is_in_danger: a member eats only from his leader's troop supply), and
         // make_room puts it there for bag room: in Meung's brawl her men ate 28 of her 32 (2159 HP taken by Joan) and she
         // starved. Back into the bottom half of her own 6x8 grid (rows 4-7), the top half kept for 1x4 arrow stacks (food
@@ -78,10 +83,29 @@ public:
                     return true;
                 }
         }
+        // Regent Bedford (spawned in Meung's barracks once Alexander de la Pole falls, S9L1_tactic l.2672) first while the
+        // Bastard lives, when a walk leads to him: Normal killed de la Pole and left for Montargis and Loches, and Bedford
+        // walked out to the Bastard's camp and killed him (LOSE). In reach the generic fight takes him (he is after her).
+        // A walk 60 s without 300 headway leaves him for 5 min.
+        if (World& w = ap.mission().world(); b && is_joan(ap.mission(), p) && ap.tick() >= bedford_skip_)
+            for (const Unit& u : w.units())
+                if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && ap.mission().data().units[std::size_t(u.cls)].code == "BEDFORD" &&
+                    d2(p.pos, u.pos) > 300 && ap.linked(ap.unit_region(p), ap.unit_region(u)) && !beset(ap.mission(), p)) {
+                    if (const float d = d2(p.pos, u.pos); ap.tick() - bedford_seen_ > 300 || d < bedford_best_ - 300)
+                        bedford_best_ = d, bedford_tick_ = ap.tick();
+                    bedford_seen_ = ap.tick();
+                    if (ap.tick() - bedford_tick_ > 1800) {
+                        bedford_skip_ = ap.tick() + 9000;
+                        break;
+                    }
+                    ap.goal = "Regent Bedford #" + std::to_string(u.id);
+                    walk(ap, f, p, u.pos);
+                    return true;
+                }
         // Meung all that is left: meet the Bastard first (meetOrlean, S9L1_tactic l.2332; the cut scene makes him and his
         // cannons the player's), taking on only who is at the player. Normal stood 5000 ticks 900 short of the box duelling
         // Meung's wall archers, then fought the sorties 9000 west until one killed him unmet in his camp (LOSE).
-        if (b && meet_open(ap.mission()) && d2(p.pos, bastard_home(ap.mission())) < 6000 && !beset(ap.mission(), p)) {
+        if (b && !target_ && meet_open(ap.mission()) && d2(p.pos, bastard_home(ap.mission())) < 6000 && !beset(ap.mission(), p)) {
             ap.goal = "Meung: meet the Bastard first";
             walk(ap, f, p, {bastard_home(ap.mission()).x, bastard_home(ap.mission()).y, p.pos.z});
             return true;
@@ -90,6 +114,9 @@ public:
     }
     std::optional<Vec3> guard_;  // the Bastard once he is the player's (his attackers are fought first)
     int bastard_id_ = 0;
+    bool leash_ = false;  // foe_weight(): Meung all that is left, its gates standing
+    int bedford_tick_ = 0, bedford_seen_ = -1000, bedford_skip_ = 0;  // the walk to Regent Bedford: headway clock, skip until
+    float bedford_best_ = 0;
 
     void shop(Autopilot& ap, Unit& p) override { buy_food(ap, p), buy_sword(ap, p); }
 
@@ -124,9 +151,20 @@ public:
         const bool in = target_ && in_place(m, target_, u);
         if (c.unit_class == 8) return 0;  // siege weapons: shot with explosive arrows (before_hunt), a sword does nothing
         if (!walkable(ap, p, u)) return 0;  // tower tops: shot from a perch (before_hunt), not from wherever the fight is
-        // Meung all that is left: no chase over 3000 from the Bastard (his camp takes Meung's sorties: see meet_open).
-        if (const Unit* b = m.world().unit(bastard_id_); b && !target_ && !captured(m, "Castle_Meung") && d2(u.pos, b->pos) > 3000 &&
-                                                         !(u.target == p.id && d2(p.pos, u.pos) < 400))
+        // Far above (a wall top, z 770 over Beaugency's 290 town): no fight, the bow duel through the parapet did no harm in
+        // 25000 ticks and kept a 6-food Normal Joan from the seller. Place holders up there are shot from perches (shoot_foe).
+        if (u.pos.z - p.pos.z > 300) return 0;
+        // A region no walk or ladder leads to (Beaugency's castle behind its shut middle gates, whose archers shoot over the
+        // wall): Normal walked back and forth below them for 10 segments, 1 kill each.
+        if (const int a = ap.unit_region(p), b = ap.unit_region(u); !ap.linked(a, b)) {
+            Vec3 end;
+            bool up;
+            if (!ap.ladder_to(a, b, end, up)) return 0;
+        }
+        // Meung all that is left, its gates standing (leash_, first()): no chase over 3000 from the Bastard (his camp takes
+        // Meung's sorties: see meet_open). Not once a gate is down: with Meung skipped (its last wall archers out of reach)
+        // Easy idled 10 segments.
+        if (const Unit* b = m.world().unit(bastard_id_); leash_ && b && d2(u.pos, b->pos) > 3000 && !(u.target == p.id && d2(p.pos, u.pos) < 400))
             return 0;
         if (guard_ && d2(u.pos, *guard_) < 1500) return 0.1f;  // the Bastard's attackers first
         // Also before he is met (imperative 36): Easy lost at t245554 to a group that walked into his camp while Joan was
@@ -241,22 +279,32 @@ private:
 
     // Walk to g. The engine plans a goal on another level over the coarse world mesh (from Orleans straight over the
     // Loire) and travel() only detours a path that ends short: without headway for 20 s, by the level-seam route
-    // (Autopilot::detour) to its first crossing, then on.
+    // (Autopilot::detour) to its first crossing's near side (`in`, on the player's level: the engine path to `at` on the
+    // next level stood Normal 18000 ticks at Meung's west wall), then across until in its far region (dropped within 100 of
+    // `at`, still short of the edge, Normal walked back to a dead end east of Beaugency and to the seam again for 10
+    // segments). A crossing walked to 20 s without headway (the bounded path search's nearest point, a pocket west of
+    // Meung, stood Easy 10 segments) is left to travel() for the rest of this walk.
     void walk(Autopilot& ap, InputFrame& f, const Unit& p, Vec3 g) {
-        if (d2(g, walk_goal_) > 500) walk_goal_ = g, walk_best_ = 1e30f, walk_headway_ = ap.tick(), walk_via_ = false;
-        if (const float d = d2(p.pos, g); d < walk_best_ - 300) walk_best_ = d, walk_headway_ = ap.tick();
+        if (d2(g, walk_goal_) > 500) walk_goal_ = g, walk_best_ = 1e30f, walk_headway_ = ap.tick(), walk_via_ = false, bad_vias_.clear();
+        if (walk_via_ && ap.region(p.pos) == via_to_) walk_via_ = false, walk_best_ = 1e30f;
+        if (walk_via_ && !via_cross_ && d2(p.pos, via_in_) < 60) via_cross_ = true, walk_best_ = 1e30f;
+        const Vec3 t = !walk_via_ ? g : via_cross_ ? via_ : via_in_;
+        if (const float d = d2(p.pos, t); d < walk_best_ - 300) walk_best_ = d, walk_headway_ = ap.tick();
         if (ap.tick() - walk_headway_ > 600) {
+            if (walk_via_) bad_vias_.push_back(via_);
             walk_headway_ = ap.tick(), walk_best_ = 1e30f, walk_via_ = false;
-            if (const Autopilot::Seam* s = ap.detour(p, g)) walk_via_ = true, via_ = s->at;
+            if (const Autopilot::Seam* s = ap.detour(p, g);
+                s && std::none_of(bad_vias_.begin(), bad_vias_.end(), [&](Vec3 v) { return d2(v, s->at) < 300; }))
+                walk_via_ = true, via_cross_ = false, via_ = s->at, via_in_ = s->in, via_to_ = s->b;
         }
-        if (walk_via_ && d2(p.pos, via_) < 100) walk_via_ = false;
         if (walk_via_) ap.goal += " via " + std::to_string(int(via_.x)) + "," + std::to_string(int(via_.y));
-        ap.travel(f, p, walk_via_ ? via_ : g);
+        ap.travel(f, p, !walk_via_ ? g : via_cross_ ? via_ : via_in_);
     }
-    Vec3 walk_goal_{}, via_{};
+    Vec3 walk_goal_{}, via_{}, via_in_{};
     float walk_best_ = 1e30f;
-    int walk_headway_ = 0;
-    bool walk_via_ = false;  // walking to the detour crossing via_
+    int walk_headway_ = 0, via_to_ = -1;
+    bool walk_via_ = false, via_cross_ = false;  // walking to the detour crossing via_ / across it
+    std::vector<Vec3> bad_vias_;                  // crossings this walk made no headway to
 
     // Meung's gates (English; north 1500, south 3000 HP) take only La Hire's melee, explosives (~5 per arrow for Joan) and
     // siege shots. The Bastard's four cannons are the player's to command via RTS once Joan meets him in meetOrlean (the
@@ -270,7 +318,9 @@ private:
         const Place* jp = ps.place(ps.place_by_name("Castle_Jargeau"));
         const int gate = m.objects().find_by_name("MeungNorthGate");
         if (!mp || mp->captured || !jp || !jp->captured || gate_down(m, "MeungNorthGate") || gate_down(m, "MeungSouthGate")) return false;
-        if (!((m.vm().state().bits[3] >> 10) & 1u)) {  // event bit_3 11: the Bastard met
+        // Event bits_3 11 (met) or 25 (Meung's south gate attacked first, l.9266: no meeting ever; the script hands him and the
+        // cannons over at once): Normal, with bit 25 set, stood in his box for 40000 ticks.
+        if (meet_open(m)) {
             if (supplies(ap, f, p, true)) return true;
             const Place* meet = ps.place(ps.place_by_name("meetOrlean"));
             if (!meet) return false;
@@ -369,7 +419,8 @@ private:
         const Place* mp = ps.place(ps.place_by_name("Castle_Meung"));
         const Place* r = ps.place(ps.place_by_name("getReinforcement"));
         if (!mp || !mp->captured || !r || (m.vm().state().bits[0] & 1u)) return false;
-        const Vec3 g{(r->box_min.x + r->box_max.x) / 2, (r->box_min.y + r->box_max.y) / 2, p.pos.z};
+        const Vec3 g{(r->box_min.x + r->box_max.x) / 2, (r->box_min.y + r->box_max.y) / 2, 290};  // the castle ground (a path
+        // "there" at the player's height on the level below, east of Beaugency, ends on the wrong storey)
         const int here = ap.unit_region(p);
         if (!ap.linked(here, ap.region({g.x, g.y, 290})) && p.inv.ranged.item) {
             const MapItem* gate = nullptr;
@@ -681,6 +732,19 @@ private:
     static Vec3 bastard_home(Mission& m) {
         const Place* c = m.places().place(m.places().place_by_name("meetOrlean"));
         return c ? Vec3{(c->box_min.x + c->box_max.x) / 2, (c->box_min.y + c->box_max.y) / 2, 0} : Vec3{};
+    }
+    // The Bastard's meeting still to come: Jargeau held, Meung not, event bits_3 11 (met) and 25 (Meung's south gate attacked
+    // first: he storms Meung on his own, S9L1_tactic l.9266) clear.
+    static bool meet_open(Mission& m) {
+        const auto b3 = m.vm().state().bits[3];
+        return captured(m, "Castle_Jargeau") && !captured(m, "Castle_Meung") && !((b3 >> 10) & 1u) && !((b3 >> 24) & 1u);
+    }
+    // A foe within 150 is after the player.
+    static bool beset(Mission& m, const Unit& p) {
+        const World& w = m.world();
+        return std::any_of(w.units().begin(), w.units().end(), [&](const Unit& u) {
+            return !u.deleted && !w.dead(u) && w.hostile_to_player(u) && u.target == p.id && d2(p.pos, u.pos) < 150;
+        });
     }
     // One RTS round trip (Session::toggle_rts in and out) around `orders`, as the S6L1 plan.
     template <class F> static void rts(Mission& m, Unit& p, F&& orders) {

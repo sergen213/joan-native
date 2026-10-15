@@ -105,12 +105,16 @@ struct PlanS6L1 final : MissionPlan {
         // not climb to the trebuchets and pulled her off them ("back to the king").
         const bool chase = PlanS6L1::chase(m);
         if (auxerre_open && !owned(m, p, "Troyes")) {
-            south_ |= p.pos.y < 19000 || event(m, 11);   // past the gate road, or the six joined (a resumed save)
+            // past the gate road (east of Auxerre: the food trip to the start camp dips below y 19000 too, and the wards
+            // walked to the south park alone into team 220), or the six joined (a resumed save)
+            south_ |= (p.pos.y < 19000 && p.pos.x > 30000) || event(m, 11);
             trap = true, park = south_ ? kSouthPark : kAuxerrePark;
         }
         feed_wards(ap, p);
         Unit* charles = hero(w, "CHARLIE7");
-        if (charles && (charles->pos.y < 19000 || south_)) wards_south_ |= d2(charles->pos, kSouthPark) < 1500;
+        // Within 1500 of kSouthPark, or south of it on the hill road (a fresh plan on the hill save: taken for not yet south,
+        // the king walked back to kSouthPark alone while Joan stood on the hill, whose only walk down runs past the chase line).
+        if (charles && (charles->pos.y < 19000 || south_)) wards_south_ |= d2(charles->pos, kSouthPark) < 1500 || charles->pos.y < 14500;
         // The escorted walks (road_park): towards the hill camp (the king 6500 short of it: the hill fights, the trebuchets
         // and the crew's road all within the chase line, which kSouthPark is not: Joan oscillated on the line by the
         // hill's east side), back to kSouthPark once the wall is down (Troyes' hunt stays within 11400 of it), the road north.
@@ -193,14 +197,21 @@ struct PlanS6L1 final : MissionPlan {
             ap.travel(f, p, charles->pos);
             return true;
         }
-        if (provisions(ap, f, p)) return true;
+        if (elders(ap, f, p) || provisions(ap, f, p)) return true;
         if (seller_) return false;   // at the seller: the generic interact talks to him (the escort below stole the tick)
         // Escort: the king, following, more than 3500 behind is waited for (and fetched when he does not close in within
         // 30 s); more than 8000 off Joan goes back to him whatever he does, until 5000 off (at the 8000 line she turned on
         // the spot between him and her leg for good). A ward (the king, the duke) with a threat by him waits (above): she
         // fights those foes first, the nearest to her one after another (leaving after the first kill, a squad killed the
         // duke).
-        if (!charles || (trap && !road)) return false;
+        // Out of food below 70 % the generic code only guards beside the nearest hero (Autopilot retreat_), i.e. the parked
+        // wards: three archers who followed her from Croncels shot the duke dead there in 18000 ticks while she stood by.
+        // So the foes at the wards are fought in the trap stages too then (archers fall in a few blows).
+        int food = 0;
+        for (const ItemInstance& it : p.inv.bag)
+            if (const int t = m.data().items[std::size_t(it.item)].type; t == 0x15 || t == 0x19) food += it.quantity;
+        const bool starved = !food && p.hp * 10 < w.max_hp(p) * 7;
+        if (!charles || (trap && !road && !starved)) return false;
         const bool coming = follows(m, *charles, p);
         const Unit* duke = hero(w, "ALENCON");
         const auto holds = [&](const Unit& u) { return !ap.unreached(u) && (threat(m, u, *charles) || (duke && threat(m, u, *duke))); };
@@ -218,6 +229,7 @@ struct PlanS6L1 final : MissionPlan {
             engage(ap, f, p, *g);
             return true;
         }
+        if (trap && !road) return false;
         if (road) return !(done(m, 2) && done(m, 4)) && road_escort(ap, f, p, *charles);   // the king to the gate: road_stage
         if (foe_near(w, p.pos, 1000)) return false;
         const float d = d2(p.pos, charles->pos);
@@ -657,11 +669,16 @@ struct PlanS6L1 final : MissionPlan {
     // 16) and JOAN_ARMOR_LV3, Troyes' potion shop food, Bussy's blacksmith JOAN_SWORD_LV9 (90). shop() below buys the
     // weapons and the food, the generic buy armour and arrows down to kShopKeep. Auxerre's barracks (S7L1's recruit_job):
     // light infantry up to three in the troop (the trebuchet's crew class), then crossbowmen and heavy infantry
-    // alternately down to kRecruitKeep. A trip without 200 of headway in 100 s is dropped.
+    // alternately down to kRecruitKeep. A trip without 200 of headway in 100 s is dropped. Once Auxerre falls Joan walks
+    // back to the start camp's potion shop (restocked hourly, 0x469710) for food once more: the Auxerre fights left her
+    // 12 of 33, and with none left on the way to the six (Croncels' squads) she fell back to the wards at 23 %, her
+    // pursuers in tow. That trip goes beyond the 15000 a shop may lie off (well inside the 840 s the chase clock,
+    // restarted at Auxerre's fall, allows).
     static constexpr int kShopKeep = 13000, kRecruitKeep = 13000;
-    struct Errand { const char* who; int stage; };
-    static constexpr Errand kErrands[] = {{"Boniface Natier", 0}, {"Gerard Vintre", 0}, {"Thibaut Fanier", 1}, {"S6L1_2_Recruit", 1},
-                                          {"Foucaud Telier", 2},   {"Aubert Lanier", 2}};
+    struct Errand { const char* who; int stage; float reach; };
+    static constexpr Errand kErrands[] = {{"Boniface Natier", 0, 15000}, {"Gerard Vintre", 0, 15000}, {"Gerard Vintre", 1, 30000},
+                                          {"Thibaut Fanier", 1, 15000},  {"S6L1_2_Recruit", 1, 15000}, {"Foucaud Telier", 2, 15000},
+                                          {"Aubert Lanier", 2, 15000}};
     static int stage(Mission& m, const Unit& p) { return !owned(m, p, "Auxerres") ? 0 : !owned(m, p, "Troyes") ? 1 : 2; }
     bool provisions(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
@@ -708,7 +725,7 @@ struct PlanS6L1 final : MissionPlan {
         // A trip without headway (3000 of its own ticks: fights in between do not count, the Bussy arrows were skipped for
         // them, Joan came to camp du Champagne's tower archers with none), or a shop left far behind (a mid-mission save).
         if (trip_tick_ < 0 || d < trip_best_ - 200) trip_tick_ = 0, trip_best_ = d;
-        if (++trip_tick_ > 3000 || d > 15000) {
+        if (++trip_tick_ > 3000 || d > kErrands[errand_].reach) {
             ++errand_, trip_tick_ = -1, ap.plan_talk = 0;
             return false;
         }
@@ -723,6 +740,42 @@ struct PlanS6L1 final : MissionPlan {
         ap.travel(f, p, to);
         return true;
     }
+
+    // The elders (objective 8, +2 reputation): Glasdale's treasure keyS6_01, in Joan's bag once he falls, opens
+    // S6L1_2_Trap_Gate (tactic l.3570: interacting with the key in the bag; Jean de Metz opens it without). The cell
+    // behind it (z 1169 in the keep) joins the walk only through that gate's poly; a Frenchman inside
+    // S6L1_2_Trap_Children_Place frees them. Once Auxerre is French, between fights; a trip without 200 of headway in
+    // 3000 of its own ticks is dropped.
+    bool elders(Autopilot& ap, InputFrame& f, Unit& p) {
+        Mission& m = ap.mission();
+        if (elders_done_ || !is(m, p, "JOAN_OF_ARC") || stage(m, p) != 1 || foe_near(m.world(), p.pos, 1500)) return false;
+        const MapItem* g = m.objects().item(m.objects().find_by_name("S6L1_2_Trap_Gate"));
+        const int key = m.objects().res_by_code("keyS6_01");
+        const bool held = std::any_of(p.inv.bag.begin(), p.inv.bag.end(), [&](const ItemInstance& i) { return i.item == key; });
+        const Place* cell = m.places().place(m.places().place_by_name("S6L1_2_Trap_Children_Place"));
+        // The key goes with the interact, a tick or so before the gate starts to open. Only by Auxerre (a resumed save on
+        // the hill walked her back past the chase line).
+        if (done(m, 8) || !g || !cell || (g->state == 0 && !held && elders_tick_ < 0)) return elders_done_ = true, false;
+        if (d2(p.pos, g->pos) > 6000) return false;
+        // Outside the gate (it faces +y), on the keep's z-1169 walk east of it, in the interact's reach (200 of the gate,
+        // find_interact_item 0x4d6320); else the cell.
+        const Vec3 to = g->state == 0 ? Vec3{g->pos.x + 140, g->pos.y + 6, g->pos.z}
+                                      : Vec3{(cell->box_min.x + cell->box_max.x) / 2, (cell->box_min.y + cell->box_max.y) / 2, g->pos.z};
+        const float d = std::hypot(d2(p.pos, to), p.pos.z - to.z);
+        if (elders_tick_ < 0 || d < elders_best_ - 200) elders_tick_ = 0, elders_best_ = d;
+        if (++elders_tick_ > 3000) return elders_done_ = true, false;
+        ap.goal = g->state == 0 ? "elders: open the cell" : "elders: into the cell";
+        if (g->state != 0 || d2(p.pos, g->pos) > 180 || std::fabs(p.pos.z - g->pos.z) > 60) {
+            ap.travel(f, p, to);
+        } else {
+            f.mouse_dx = m.world().rel_angle(p, g->pos) / 0.18f;
+            if (ap.tick() % 30 == 0) f.press(IN_INTERACT);
+        }
+        return true;
+    }
+    bool elders_done_ = false;
+    int elders_tick_ = -1;
+    float elders_best_ = 0;
     // The buy screen of the errand's shop: a sharper sword and a stronger bow than any carried (character_screen() puts
     // the sword in hand; the bow is equipped here, both shoot arrows), then food, the biggest first, while the bag has room.
     void shop(Autopilot& ap, Unit& p) override {
@@ -1105,7 +1158,10 @@ struct PlanS6L1 final : MissionPlan {
             }
             // She joins him before he walks: beyond 4000 of her he runs x1.8 (Unit_move's LOD factor) and on his horse he
             // covered four 4000 steps in 600 ticks after camp du Champagne fell, 12000 from her: the assassin squads came.
-            if (done(ap.mission(), 2) && d2(p.pos, charles.pos) > 3000) {
+            // Also on the hill road: he and the duke stepped to the hill park while she was back from a hunt 4000 off, and
+            // the middle ring's squads (teams 424-429) killed the duke there. Beside him (1000): from 2800 east of the hill
+            // park her walk after him to kSouthPark ran round the hill's south side and over the chase line (a squad).
+            if (d2(p.pos, charles.pos) > 1000) {
                 ap.goal = "to the king before his walk";
                 ap.travel(f, p, charles.pos);
                 return true;

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <queue>
 #include <utility>
 
 #include "game/multimap_nav.hpp"
@@ -22,6 +23,75 @@ std::string at(Vec3 p) {
     return b;
 }
 bool alive(const World& w, const Unit& u) { return !u.deleted && !w.dead(u) && u.hp > 0; }
+
+// The engine's A* ends at the first poly that holds the goal in x/y (0066ce30): a goal on another storey of the same walk
+// (an archer in a tower chamber under its roof walk, the ground under Auxerre's gatehouse roof) gets a walk to whichever
+// storey it reaches first and a drop to the goal as its last leg. The bot knows the map: Dijkstra over the polys of the
+// player's level (centroid distances) to the goal's own poly, walked by portal midpoints, legs split to at most 150 of
+// height (travel() reads a bigger step as a drop no one walks). A goal just off the walk (a crewman on his wall crossbow,
+// Troyes: the engine's walk ends on the street below) takes the nearest poly of the player's level within 300 at its
+// height. Empty when the goal is on no walk of the player's component.
+std::vector<Vec3> storey_route(const NavWorld& nav, Vec3 a, Vec3 g) {
+    const int pa = nav.find_poly_xy(a.x, a.y, a.z);
+    if (pa < 0) return {};
+    const int lv = nav.level_of_poly(pa);
+    const NavLevel& L = nav.levels()[std::size_t(lv)];
+    const std::vector<NavPoly>& ps = L.mesh.polys();
+    int pg = nav.find_poly_xy(g.x, g.y, g.z);
+    if (pg < 0 || std::fabs(nav.poly_height(pg, g.x, g.y) - g.z) > 60) {
+        const float x = g.x - L.ox, y = g.y - L.oy;
+        const int n = L.mesh.nearest_poly(x, y, g.z);
+        const int* b = n >= 0 ? ps[std::size_t(n)].bbox : nullptr;
+        pg = b && float(b[2]) - 60 <= g.z && g.z <= float(b[5]) + 60 &&
+                     std::hypot(std::max({float(b[0]) - x, 0.0f, x - float(b[3])}), std::max({float(b[1]) - y, 0.0f, y - float(b[4])})) <= 300
+                 ? L.base + n
+                 : -1;
+    }
+    if (pg < 0 || pa == pg || nav.level_of_poly(pg) != lv) return {};
+    const int s = pa - L.base, t = pg - L.base;
+    if (ps[std::size_t(s)].component < 0 || ps[std::size_t(s)].component != ps[std::size_t(t)].component) return {};
+    std::vector<float> dist(ps.size(), 1e30f);
+    std::vector<int> from(ps.size(), -1);
+    std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, std::greater<>> open;
+    dist[std::size_t(s)] = 0, open.push({0.0f, s});
+    while (!open.empty()) {
+        const auto [d, i] = open.top();
+        open.pop();
+        if (i == t) break;
+        if (d > dist[std::size_t(i)]) continue;
+        const NavPoly& P = ps[std::size_t(i)];
+        for (int n : P.nb) {
+            if (n < 0 || ps[std::size_t(n)].state == 1) continue;
+            const NavPoly& N = ps[std::size_t(n)];
+            const float c = d + std::hypot(float(N.cx - P.cx), float(N.cy - P.cy), float(N.cz - P.cz));
+            if (c < dist[std::size_t(n)]) dist[std::size_t(n)] = c, from[std::size_t(n)] = i, open.push({c, n});
+        }
+    }
+    if (from[std::size_t(t)] < 0) return {};
+    std::vector<Vec3> pts{g};
+    for (int i = t; from[std::size_t(i)] >= 0; i = from[std::size_t(i)]) {
+        const int j = from[std::size_t(i)];
+        const NavPoly& P = ps[std::size_t(j)];
+        for (std::size_t e = 0; e < P.v.size(); ++e)
+            if (P.nb[e] == i) {
+                const formats::PfdPoint &u = L.mesh.pt(j, int(e)), &v = L.mesh.pt(j, int(e) + 1);
+                pts.push_back({(u.x + v.x) / 2.0f + L.ox, (u.y + v.y) / 2.0f + L.oy, (u.z + v.z) / 2.0f});
+                break;
+            }
+    }
+    std::reverse(pts.begin(), pts.end());
+    std::vector<Vec3> r;
+    Vec3 prev = a;
+    for (const Vec3& q : pts) {
+        const int n = int(std::ceil(std::fabs(q.z - prev.z) / 150.0f));
+        for (int k = 1; k < n; ++k) {
+            const float f = float(k) / float(n);
+            r.push_back({prev.x + (q.x - prev.x) * f, prev.y + (q.y - prev.y) * f, prev.z + (q.z - prev.z) * f});
+        }
+        r.push_back(q), prev = q;
+    }
+    return r;
+}
 }  // namespace
 
 // --- decisions ----------------------------------------------------------------------------------
@@ -41,6 +111,12 @@ void Autopilot::steer(InputFrame& f, const Unit& p, Vec3 g, bool replan) {
             q.to = {g.x, g.y, g.z};
             q.max_expand = 4000;
             for (const NavPt& n : nav->find_path(q).points) path_.push_back({n.x, n.y, n.z});
+            // A leg (from where she stands) no one walks, or a walk ending a storey off the goal: the goal reached on
+            // another storey, or no poly under it (the search's best node is the street below a wall crossbow's crew).
+            bool drop = !path_.empty() && std::fabs(path_.back().z - g.z) >= 150;
+            for (std::size_t i = 0; i < path_.size(); ++i) drop |= std::fabs(path_[i].z - (i ? path_[i - 1].z : p.pos.z)) > 200;
+            if (drop)
+                if (std::vector<Vec3> r = storey_route(*nav, p.pos, g); !r.empty()) path_ = std::move(r);
         }
         if (path_.empty()) path_.push_back(g);
     }
@@ -183,10 +259,10 @@ int Autopilot::unit_region(const Unit& u) {
     return r;
 }
 
-// A foe the player could not get at is left alone for 60 s, twice as long each further time (up to 8 min), while it stays
-// within 300 of where it stood: the verdict is about that spot. Mission 6 Normal gave up a squad below Meung's wall walk
-// (Joan on it, the path to them ending short), which then walked 800 to the Bastard's camp and killed him (LOSE) beside
-// a Joan that took none of them on.
+// A foe the player could not get at is left alone for 60 s, twice as long each further time (up to 8 min), unless it has
+// since walked 300 off that spot onto the player's own region: the verdict was about the spot. Mission 6 Normal gave up a
+// squad by Meung's wall (the path to them ending short), which then walked 800 to the Bastard's camp and killed him (LOSE)
+// beside a Joan that took none of them on. Wall archers pacing their walk, or a garrison behind a shut gate, stay left.
 void Autopilot::give_up(int id) {
     Unreach& u = unreach_[id];
     u.until = tick_ + (1800 << std::min(u.times++, 3));
@@ -194,7 +270,9 @@ void Autopilot::give_up(int id) {
 }
 bool Autopilot::unreached(const Unit& u) const {
     const auto it = unreach_.find(u.id);
-    return it != unreach_.end() && tick_ < it->second.until && d2(u.pos, it->second.at) < 300;
+    if (it == unreach_.end() || tick_ >= it->second.until) return false;
+    const Unit* p = m_.world().unit(m_.world().player_id());
+    return d2(u.pos, it->second.at) < 300 || !p || region(u.pos) != region(p->pos);
 }
 
 // The centre of the first enabled, unfinished WIN objective's territory (the minimap shows the towns / camps) not given up on
