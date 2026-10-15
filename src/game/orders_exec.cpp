@@ -200,19 +200,23 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
             break;
         }
         if (expired) { done(); break; }
-        int target = 0;
+        // +0x2db / +0x2dd: the unit or map-item target the launch (0x5133e0) and AI aim (0x50aca0) use.
         bool aim = false;
         float a = 0;
         if (c.p[0] == 1) {
-            if (!unit_dead(c.p[1])) { target = c.p[1]; aim = true; a = w_.rel_angle(u, w_.unit(target)->pos); }
+            u.range_item = 0;
+            u.range_target = unit_dead(c.p[1]) ? 0 : c.p[1];
+            if (u.range_target) aim = true, a = w_.rel_angle(u, w_.unit(u.range_target)->pos);
         } else if (c.p[0] == 2) {
-            if (auto it = item ? item(c.p[1]) : std::nullopt) { aim = true; a = w_.rel_angle(u, it->pos); }
+            u.range_target = 0;
+            const auto it = item ? item(c.p[1]) : std::nullopt;
+            u.range_item = it ? c.p[1] : 0;
+            if (it) aim = true, a = w_.rel_angle(u, it->pos);
         }
         if (aim && (a < -10 || a > 10)) break;  // wait until facing within +-10 deg
         u.combo.clear();
         u.combo_idx = 0;
-        // HYPOTHESIS: item / untargeted shots fire along the current facing (World::ai_shoot needs a unit).
-        if (target) w_.ai_shoot(u, target);
+        if (u.range_target) w_.ai_shoot(u, u.range_target);
         else if (w_.find_move(u, SHTLOAD)) w_.set_action(u, SHTLOAD);
         clear_path(u);
         s.wait_cnt = s.wait_len;

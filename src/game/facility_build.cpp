@@ -2,6 +2,7 @@
 // screens (engine hud_recruit / hud_workshop) only fill these queues; the facilities spawn the units.
 #include <algorithm>
 
+#include "formats/vfs_fs.hpp"
 #include "game/mission.hpp"
 
 namespace joa::game {
@@ -160,6 +161,134 @@ void Places::tick_workshop(Mission& m, Facility& f) {
     f.current = -1;
     m.emit(MissionEvent::Kind::Ui, b.type, 0, "sms_siege_built");   // FUN_006e5700(WORKSHOP 17)
     m.emit(MissionEvent::Kind::Sound, 0, 0, "RTS_SIEGE_009");
+}
+
+// ---------------------------------------------------------------- screen copy (FacilityOrder)
+
+namespace {
+// BarrUI_count_troop 0x6bd4b0: UnitClass unit_class 1..6 -> slot (pole 3 -> +0x4e, mace 4 -> +0x4a).
+int slot_of_class(int unit_class) {
+    static constexpr int k[7] = {-1, 0, 1, 3, 2, 4, 5};
+    return unit_class >= 0 && unit_class <= 6 ? k[unit_class] : -1;
+}
+int slot_of_type(const GameData& gd, int type) {
+    if (type < 1 || type > int(gd.units.size())) return -1;
+    for (int s = 0; s < 6; ++s)
+        if (formats::iequals(gd.units[size_t(type - 1)].code, FacilityOrder::kRecruitCodes[s])) return s;   // 0x5270b0
+    return -1;   // ponytail: the original keeps the previous row's slot for other classes (none in shipped lists)
+}
+}  // namespace
+
+// BarrUI_open 0x6bda00: gold, able citizens = clamp(pop - 0.95 pop_max, 0, 20) of the owner place, the recruiting
+// unit's troop by class (BarrUI_count_troop: members, the spawn barrack's pending groups and this facility's queue for
+// its troop id).
+FacilityOrder FacilityOrder::barracks(Mission& m, int fac, int who) {
+    FacilityOrder o;
+    Places& pl = m.places();
+    const Facility* f = pl.facility(fac);
+    if (!f || f->kind != Facility::Recruit) return o;
+    o.facility = fac, o.recruiter = who, o.money = m.state().gold;
+    if (const Place* own = pl.place(f->place)) o.citizens = std::clamp(int(double(own->pop) - 0.95 * double(own->pop_max)), 0, 20);
+    World& w = m.world();
+    Unit* p = w.unit(who);
+    if (!p || p->deleted) return o;
+    o.max_troop = m.ai().max_troop_size(*p);
+    const GameData& gd = m.data();
+    for (int id : p->members)
+        if (const Unit* u = w.unit(id); u && !u->deleted)
+            if (const int s = slot_of_class(gd.units[size_t(u->cls)].unit_class); s >= 0) ++o.have[size_t(s)];
+    if (const Facility* b = pl.facility(f->spawn_barrack); b && b->kind == Facility::Barrack)
+        for (int g = 0; g < b->barrack.groups && b->barrack.team == p->team; ++g)
+            if (const int t = b->barrack.type[size_t(g)]; t >= 1 && t <= int(gd.units.size()))
+                if (const int s = slot_of_class(gd.units[size_t(t - 1)].unit_class); s >= 0) o.have[size_t(s)] += b->barrack.count[size_t(g)];
+    for (const auto& q : f->queue) {
+        if (q.team != p->team) break;
+        if (q.type >= 1 && q.type <= int(gd.units.size()))
+            if (const int s = slot_of_class(gd.units[size_t(q.type - 1)].unit_class); s >= 0) o.have[size_t(s)] += q.count;
+    }
+    for (int n : o.have) o.total += n;
+    return o;
+}
+
+// FUN_006ea020: built counts (+0xdc) per product, money = gold (NORMAL) or the facility's resource (IRON / WOOD).
+FacilityOrder FacilityOrder::siege_workshop(Mission& m, int fac) {
+    FacilityOrder o;
+    const Facility* f = m.places().facility(fac);
+    if (!f || f->kind != Facility::Workshop) return o;
+    o.facility = fac, o.workshop = true;
+    for (size_t i = 0; i < f->products.size() && i < 4; ++i) o.have[i] = f->products[i].built, o.total += o.have[i];
+    o.money = f->workshop_type == 0 ? m.state().gold : f->resource;
+    return o;
+}
+
+int FacilityOrder::row_type(Mission& m, int row) const {
+    const Facility* f = m.places().facility(facility);
+    if (!f || row < 0) return 0;
+    if (workshop) return row < 4 && row < int(f->products.size()) ? f->products[size_t(row)].type : 0;
+    const Places::RecruitRec* rec = m.places().recruit_rec(f->list1);
+    return rec && row < 6 && row < int(rec->entries.size()) ? rec->entries[size_t(row)].type : 0;
+}
+
+int FacilityOrder::row_price(Mission& m, int row) const {
+    const int t = row_type(m, row);
+    if (t < 1 || t > int(m.data().units.size())) return 0;
+    const UnitClass& uc = m.data().units[size_t(t - 1)];
+    const Facility* f = m.places().facility(facility);
+    return workshop && f && f->workshop_type != 0 ? uc.resource : uc.gold;
+}
+
+int FacilityOrder::slot(Mission& m, int row) const {
+    if (workshop) return row_type(m, row) ? row : -1;
+    return slot_of_type(m.data(), row_type(m, row));
+}
+
+bool FacilityOrder::more(Mission& m, int row) {
+    const int s = slot(m, row), c = row_price(m, row);
+    const Facility* f = m.places().facility(facility);
+    if (s < 0 || !f) return false;
+    if (workshop) {   // FUN_006ec480: while built + new < capacity (+0x7d) and the money covers it
+        if (f->capacity <= total || money < cost + c) return false;
+    } else {          // BarrUI_handle_input: troop max, citizens, gold
+        const Unit* p = m.world().unit(recruiter);
+        if ((p && !p->deleted && max_troop <= total) || citizens < 1 || money < cost + c) return false;
+        --citizens, ++recruited;
+    }
+    cost += c, ++total, ++add[size_t(s)];
+    return true;
+}
+
+bool FacilityOrder::less(Mission& m, int row) {
+    const int s = slot(m, row);
+    if (s < 0 || add[size_t(s)] < 1) return false;
+    if (!workshop) ++citizens, --recruited;
+    cost -= row_price(m, row), --total, --add[size_t(s)];
+    return true;
+}
+
+// BarrUI_confirm 0x6bdc00: one queue order per class with new recruits (the recruiting unit's troop id, 9999 without
+// one), gold -= cost, owner population -= recruited. FUN_006ea1a0: one queue entry per new weapon (0x46ab40, team
+// 9999), then the money copy is written back (gold, or the IRON / WOOD facility's resource).
+void FacilityOrder::commit(Mission& m) {
+    Places& pl = m.places();
+    Facility* f = pl.facility(facility);
+    if (!f) return;
+    if (workshop) {
+        const std::vector<Facility::Product> products = f->products;
+        for (size_t i = 0; i < products.size() && i < 4; ++i)
+            for (int k = 0; k < add[i]; ++k) pl.build_siege(m, facility, products[i].type);
+        money -= cost;
+        if (f->workshop_type == 0) m.state().gold = money;
+        else f->resource = money;
+    } else {
+        const Unit* p = m.world().unit(recruiter);
+        const bool player = p && !p->deleted;
+        for (int s = 0; s < 6; ++s)
+            if (add[size_t(s)] != 0) pl.recruit(facility, m.data().unit_index(kRecruitCodes[s]) + 1, player ? p->team : 9999, add[size_t(s)]);
+        money -= cost;
+        m.state().gold = money;
+        if (Place* o = pl.place(f->place)) o->pop -= recruited;
+    }
+    recruited = cost = 0, add = {};
 }
 
 }  // namespace joa::game

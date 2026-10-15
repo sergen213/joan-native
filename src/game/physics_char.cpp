@@ -22,6 +22,14 @@ float CharPhysics::ground(const World& w, float x, float y, float z) const {  //
     return w.terrain() ? w.terrain()->height(x, y) : 0.0f;
 }
 
+bool CharPhysics::floor(const World& w, float x, float y, float z, float& out) const {
+    if (!nav_) return w.terrain() ? (out = w.terrain()->height(x, y), true) : false;
+    const int p = nav_->find_poly_xy(x, y, z);
+    if (p < 0) return false;
+    out = nav_->poly_height(p, x, y);
+    return true;
+}
+
 bool CharPhysics::walkable(const World& w, float x, float y, float z) const {
     if (nav_) return nav_->find_poly_xy(x, y, z) >= 0;
     return !w.terrain() || w.terrain()->walkable(x, y);

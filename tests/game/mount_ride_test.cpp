@@ -44,7 +44,7 @@ static std::uint64_t run(GameData& gd, bool verbose) {
     w.tick(r);
     if (verbose) std::printf("horse %s: mount %d action %s\n", gd.units[size_t(horse_cls)].code.c_str(), J->mount, action_name(J->action));
     CHECK(J->mount == horse && (J->action == H_MNT_L || J->action == H_MNT_R), "R mounts the horse");
-    for (int i = 0; i < 120 && !J->ride_ready; ++i) w.tick(none);
+    for (int i = 0; i < 120 && J->action != H_IDLE; ++i) w.tick(none);
     CHECK(J->ride_ready && J->action == H_IDLE, "seated, H_IDLE");
     const Vec3 p0 = w.unit(horse)->pos;
     InputFrame fw{};

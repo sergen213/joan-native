@@ -55,13 +55,9 @@ bool delete_unit(Mission& m, int recno) {
     Unit* u = unit(m, recno);
     if (!u) return false;
     m.ai().clear_task(*u);
-    if (u->mount > 0 && unit(m, u->mount)) {
-        m.world().delete_unit(u->mount);
-        m.ai().on_unit_removed(u->mount);
-    }
+    if (u->mount > 0 && unit(m, u->mount)) m.world().delete_unit(u->mount);
     if (u->rank > 3) drop_keys(m, *u);
     m.world().delete_unit(recno);
-    m.ai().on_unit_removed(recno);
     return true;
 }
 

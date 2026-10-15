@@ -149,7 +149,7 @@ void siege_after_physics(World& w) {
                 if (!m) continue;
                 const auto& p = pts[i];
                 m->pos = {p.x * cs - p.y * sn + v.pos.x, p.x * sn + p.y * cs + v.pos.y, v.pos.z + p.z};
-                if (w.terrain()) m->pos.z = w.terrain()->height(m->pos.x, m->pos.y) + p.z;
+                m->pos.z = w.attach_z(m->pos, p.z);
                 w.set_yaw_now(*m, v.yaw_deg + p.dir);
                 m->vel = {};
             }

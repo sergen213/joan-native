@@ -21,31 +21,15 @@ const char* suffix(const game::UnitClass& c) {
     return iequals(c.code, "CANNON") ? "cn" : iequals(c.code, "FAUCONNEAU") ? "fc" : iequals(c.code, "BATTERRAM") ? "br"
          : iequals(c.code, "TREBUCHET") ? "tb" : nullptr;
 }
-int price(const game::UnitClass& c, int type) { return type == 0 ? c.gold : c.resource; }   // +0x161 gold, +0x165 resource
 
 }  // namespace
 
-// FUN_006ea020: built counts (+0xdc) per product, money = gold (NORMAL) or the facility's resource (IRON / WOOD).
 void FacilityWindow::open_workshop(game::Mission& m, int fac) {
     const game::Facility* f = m.places().facility(fac);
     if (!f || f->kind != game::Facility::Workshop) return;
     *this = FacilityWindow{};
-    facility = fac, workshop = true, row_count_ = 4, state_ = Opening;
-    for (size_t i = 0; i < f->products.size() && i < 4; ++i) have[i] = f->products[i].built, total += have[i];
-    money = f->workshop_type == 0 ? m.state().gold : f->resource;
-}
-
-// FUN_006ea1a0: one queue entry per new weapon (0x46ab40, team 9999), then the money copy is written back.
-void FacilityWindow::commit_workshop(game::Mission& m) {
-    game::Facility* f = m.places().facility(facility);
-    if (!f) return;
-    const std::vector<game::Facility::Product> products = f->products;
-    for (size_t i = 0; i < products.size() && i < 4; ++i)
-        for (int k = 0; k < add[i]; ++k) m.places().build_siege(m, facility, products[i].type);
-    money -= cost;
-    if (f->workshop_type == 0) m.state().gold = money;
-    else f->resource = money;
-    cost = 0, add = {};
+    static_cast<game::FacilityOrder&>(*this) = game::FacilityOrder::siege_workshop(m, fac);
+    row_count_ = 4, state_ = Opening;
 }
 
 void FacilityWindow::workshop_screen(Ui& ui, game::Mission& m, HudModel&) {
@@ -67,7 +51,7 @@ void FacilityWindow::workshop_screen(Ui& ui, game::Mission& m, HudModel&) {
         const int t = f->products[size_t(i)].type;
         if (t < 1 || t > int(gd.units.size())) continue;
         const game::UnitClass& uc = gd.units[size_t(t - 1)];
-        const int c = price(uc, type);
+        const int c = row_price(m, i);
         const glm::vec2 p = row_pos(i);
         const bool hot = live && ui.hover({p.x, p.y, 0x200 + 0x4c, 100});
         const float off = panel(ui, i, p, hot);
@@ -89,13 +73,8 @@ void FacilityWindow::workshop_screen(Ui& ui, game::Mission& m, HudModel&) {
         // FUN_006ec480: aw_r adds while built + new < capacity (+0x7d) and money covers it, aw_l removes.
         if (!live) continue;
         const int dx = hot ? ui.nav_adjust() : 0;
-        if (ui.clicked(plus) || dx > 0) {
-            if (f->capacity <= total || money < cost + c) continue;
-            cost += c, ++add[size_t(i)], ++total;
-        } else if (ui.clicked(minus) || dx < 0) {
-            if (add[size_t(i)] < 1) continue;
-            cost -= c, --add[size_t(i)], --total;
-        }
+        if (ui.clicked(plus) || dx > 0) more(m, i);
+        else if (ui.clicked(minus) || dx < 0) less(m, i);
     }
 
     // Info frame (FUN_006ee790 + FUN_006ea310 tail): LOCATION, TOTAL SIEGE WEAPONS grid (built N_*, new R_*, empty
@@ -156,7 +135,7 @@ void FacilityWindow::workshop_screen(Ui& ui, game::Mission& m, HudModel&) {
         std::erase(help_text_, '\r');
         help_ = true;
     } else if (ok || ui.key(SDL_SCANCODE_RETURN)) {
-        commit_workshop(m), close();
+        commit(m), close();
     } else if (cancel || ui.key(SDL_SCANCODE_ESCAPE)) {
         close();
     }

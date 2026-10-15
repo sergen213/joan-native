@@ -84,7 +84,9 @@ int ride_horse(World& w, Unit& r, int horse) {
         w.set_action(r, H_MNT_L);
     }
     r.vel = {};
-    r.ride_ready = false;
+    // +0x1ea = 0xff (asm 0x4fcbce): "mounted" before the H_MNT clip ends (its end writes 1); every reader but
+    // ViewCtrl_after_load (0x42dabf, -1 -> 1) only tests nonzero, so a mount cut short by Unit_stop still rides.
+    r.ride_ready = true;
     r.mount = horse;
     return 1;
 }

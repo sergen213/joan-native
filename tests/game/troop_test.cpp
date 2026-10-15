@@ -100,6 +100,14 @@ int main() {
         CHECK(ai.recruit_nearby(*w.unit(L)) == r && w.unit(r)->leader == L, "recruit in front");
         CHECK(w.unit(behind)->leader == 0, "unit behind not recruited");
     }
+    // A deleted member (corpse removal 0x51e280 / scripts: World::delete_unit) leaves its leader's team (remove_member,
+    // Unit_deinit 0x461f10 leave_team): the leader never keeps a deleted recno among its members.
+    {
+        const int dead = mem[0];
+        w.delete_unit(dead);
+        const auto& ms = w.unit(L)->members;
+        CHECK(std::find(ms.begin(), ms.end(), dead) == ms.end(), "deleted member left the team");
+    }
     // Persistence round trip.
     std::vector<std::uint8_t> blob;
     ai.serialize(blob);

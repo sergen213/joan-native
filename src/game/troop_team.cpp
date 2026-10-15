@@ -86,10 +86,12 @@ int AiSystem::max_troop_size(Unit& l) {  // 0x448080
 
 void AiSystem::auto_join(Unit& L) {  // 0x4655a0
     if (!is_leader(L) || w_.dead(L) || L.retreat != 0) return;
+    const int cap = max_troop_size(L);  // constant over the loop: max(base, members) only grows to base by the joins
     for (auto& o : w_.units()) {
-        if (int(L.members.size()) >= max_troop_size(L)) return;
-        if (o.deleted || o.id == L.id || o.retreat != 0 || w_.dead(o) || o.leader || is_leader(o)) continue;
-        if (o.nation != L.nation || o.team != 9999 || st(o).orphan) continue;
+        if (int(L.members.size()) >= cap) return;
+        // Cheap compares first (most units are teamed): the map lookups of is_leader dominated S9L1's tick (~200 leaders).
+        if (o.team != 9999 || o.deleted || o.id == L.id || o.retreat != 0 || o.leader || o.nation != L.nation) continue;
+        if (w_.dead(o) || is_leader(o) || st(o).orphan) continue;
         const auto& t = w_.data().units[std::size_t(o.cls)];
         if (t.special > 1 || t.unit_class == 0 || t.unit_class == 8 || t.unit_class == 9) continue;
         if (d2_3(o.pos, L.pos) > float(kAbsorbRadius) * kAbsorbRadius) continue;

@@ -97,6 +97,9 @@ int main() {
         put_front(t, 70.0f);
         m.tick();   // Trigger_process delivers TRIGGER_INTERACT; the receiver writes the sender's +0x2e3
         check(p.m.interact_unit == talker, "talk: player +0x2e3 = talker");
+        park(t);
+        m.tick();   // Unit_process 0x52c490 phase 0: +0x2e3 / +0x2e5 cleared, the script sees the talk once
+        check(p.m.interact_unit == 0 && p.m.interact_item == 0, "next tick clears +0x2e3 / +0x2e5");
         t.m.can_interact = 0;
         park(t);
     } else {

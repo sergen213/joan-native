@@ -164,7 +164,7 @@ struct Unit {
     int invuln_ms = 0;          // +0x1dd
     bool down_attacked = false; // +0x1e1
     int mount = 0;              // +0x1e2 ridden horse recno
-    bool ride_ready = false;    // +0x1ea seated: mount animation finished (horse follows rider yaw)
+    bool ride_ready = false;    // +0x1ea mounted (0xff at Ride_horse, 1 at the H_MNT end, 0 off): horse follows rider yaw
     int gear_ts = 0;            // +0x1f1 run-gear start (0x466d50: 10 m/s after 1000 ms)
     float gear_speed = 0;       // horse body +0x2a4 speed cap m/s (0x6b1d80), 0 = class speeds
     int ts_state = 0;           // +0x20f time current state began (CanAct)
@@ -194,6 +194,7 @@ struct Unit {
     bool airborne = false;
     bool shot_spawned = false;  // fire state: projectile already released this shot
     int range_target = 0;       // +0x2db locked ranged target
+    int range_item = 0;         // +0x2dd ranged map-item target (SHOOT order on an item, 0x4bd090)
     std::vector<PendingCue> cues;
     UnitMission m;
     bool deleted = false;
@@ -215,7 +216,7 @@ struct Unit {
             v(item_using), v(special), v(combo), v(combo_idx), v(idle_variant), v(follow_queued), v(win_open),
             v(win_close), v(combo_lock), v(gravity_scale), v(think_ts), v(target), v(threat), v(no_react),
             v(takeoff_ts), v(aim_dir), v(upgrade_ts), v(anim_start), v(vel), v(root_vel), v(airborne), v(shot_spawned),
-            v(range_target), v(cues), v(m), v(deleted);
+            v(range_target), v(range_item), v(cues), v(m), v(deleted);
     }
 };
 

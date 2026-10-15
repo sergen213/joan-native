@@ -227,7 +227,11 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         }
     if (auto t = table(set, "UPGRADE"))
         for (size_t r = 0; r < t->record_count(); ++r) {
-            auto& list = gd->upgrade_lists[upper(cell(*t, r, "CODE"))];
+            // UpgradeRes_find_by_code 0x531df0: the first row whose CODE matches (stricmp) wins; later rows
+            // with the same code are never reached (ENGLISH_CROSSBOW_MAN's list has two).
+            auto [slot, fresh] = gd->upgrade_lists.try_emplace(upper(cell(*t, r, "CODE")));
+            if (!fresh) continue;
+            auto& list = slot->second;
             if (auto ut = table(set, cell(*t, r, "DBFNAME")))
                 for (size_t k = 0; k < ut->record_count(); ++k) {
                     const std::string code = cell(*ut, k, "CODE");
@@ -256,6 +260,8 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         it.inc_damage = kv.i("IncDamage");
         it.min_level = kv.i("MinLevel", 0);
         it.max_level = kv.i("MaxLevel", 0);
+        it.model = kv.str("Model");
+        it.attach_bone = kv.str("AttachBoneName");
         it.quantity = kv.i("Quantity", 1);
         it.max_quantity = kv.i("MaxQuantity", 1);
         it.primary_effect = effect_from_name(kv.str("DamageType"));
@@ -351,7 +357,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         u.lock_picking = kv.i("LockPicking"); u.mountain = kv.i("Mountain");
         u.level = kv.i("Level", 1); u.loyalty = kv.i("Loyalty"); u.morale = kv.i("Morale"); u.reputation = kv.i("Reputation");
         u.behavior = kv.i("Behavior"); u.falling = kv.i("Falling", 20); u.kingdom = kv.i("KingdomId");
-        u.cyl_radius = kv.f("CylinderRadius", 15); u.cyl_height = kv.f("CylinderHeight", 80);
+        u.cyl_radius = kv.f("CylinderRadius", 15); u.cyl_height = kv.f("CylinderHeight", 80); u.cyl_center_z = kv.f("CylinderCenterZ", 40);
         for (const auto& l : kv.lines) {   // coordinates go through atoi then (float) (CONFIRMED loader order)
             const std::string k = upper(trim(l.key));
             auto& ap = u.attach_points;
@@ -399,6 +405,42 @@ int GameData::load_clip(const std::string& file, const std::string& name) {
         }
     clip_index_[key] = idx;
     return idx;
+}
+
+const std::array<float, 4>& GameData::item_sphere(int item) {
+    auto [it, fresh] = item_sphere_.try_emplace(item, std::array<float, 4>{0, 0, 0, 10});
+    if (!fresh || item <= 0 || item >= int(items.size())) return it->second;
+    const ItemDef& d = items[size_t(item)];
+    if (d.type >= 13 && d.type <= 18) return it->second;   // 0x41e850: arrows / bolts, sphere at the origin, r 10.0
+    const auto dot = d.model.rfind('.');
+    formats::Mesh m;
+    std::string e;
+    if (const auto bytes = vfs_.read("item/" + d.model);
+        bytes && formats::parse_mesh(*bytes, dot != std::string::npos && formats::iequals(d.model.substr(dot), ".am1"), m, e))
+        it->second = {m.sphere[0], m.sphere[1], m.sphere[2], m.sphere[3]};
+    return it->second;
+}
+
+bool GameData::bone_origin(const MoveRecord& r, const std::string& bone, float t, std::array<float, 3>& out) {
+    const auto a = am2_.find(r.upper_file);
+    if (a == am2_.end() || !a->second || bone.empty()) return false;
+    auto& sk = am3_[r.upper_file];
+    if (!sk) {
+        sk = std::make_shared<formats::Skeleton>();
+        std::string e;
+        const auto bytes = vfs_.read("anim/" + r.upper_file + ".am3");
+        if (!bytes || !formats::parse_skeleton(*bytes, *sk, e)) sk->nodes.clear();
+    }
+    size_t b = 0;
+    while (b < sk->nodes.size() && !(sk->nodes[b].present && formats::iequals(sk->nodes[b].name, bone))) ++b;
+    const formats::Animation& anim = *a->second;
+    const formats::AnimClip* c = nullptr;
+    for (const auto& x : anim.clips)
+        if (formats::iequals(x.name, r.upper_name)) { c = &x; break; }
+    if (!c || b >= anim.tracks.size() || anim.tracks[b].empty()) return false;
+    const formats::Mat3x4 m = formats::sample_pose(anim, std::min(c->start + t, c->end))[b];
+    out = {m[3], m[7], m[11]};
+    return true;
 }
 
 bool root_motion_action(int a) {

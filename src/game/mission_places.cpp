@@ -538,34 +538,36 @@ void Places::tick_barrack(Mission& m, Facility& f) {
     --b.count[0];
 }
 
+// Territory area test (rectangle / circle / quadrilateral), TerritoryArray_process 0x4e4bb0.
+bool Places::in_territory(const Territory& t, float x, float y) {
+    for (const Territory::Area& a : t.areas) {
+        bool in = false;
+        if (a.shape == 0) in = float(a.x[0]) <= x && x <= float(a.x[1]) && float(a.y[0]) <= y && y <= float(a.y[1]);
+        else if (a.shape == 1) {
+            const float dx = x - float(a.x[0]), dy = y - float(a.y[0]);
+            in = dy * dy + dx * dx < float(a.r * a.r);
+        } else {
+            in = true;
+            for (int k = 0; k < 4 && in; ++k) {
+                const int n = (k + 1) & 3;
+                in = (x - float(a.x[k])) * float(a.y[n] - a.y[k]) - (y - float(a.y[k])) * float(a.x[n] - a.x[k]) < 0.0f;
+            }
+        }
+        if (in) return true;
+    }
+    return false;
+}
+
 // TerritoryArray_process 0x4e4bb0 (GAMEPLAY_AI_TROOPS.md Part D §5).
 void Places::tick_territories(Mission& m) {
     if (territories_.empty()) return;
     World& w = m.world();
     const GameData& gd = w.data();
-    auto inside = [](const Territory& t, float x, float y) {
-        for (const Territory::Area& a : t.areas) {
-            bool in = false;
-            if (a.shape == 0) in = float(a.x[0]) <= x && x <= float(a.x[1]) && float(a.y[0]) <= y && y <= float(a.y[1]);
-            else if (a.shape == 1) {
-                const float dx = x - float(a.x[0]), dy = y - float(a.y[0]);
-                in = dy * dy + dx * dx < float(a.r * a.r);
-            } else {
-                in = true;
-                for (int k = 0; k < 4 && in; ++k) {
-                    const int n = (k + 1) & 3;
-                    in = (x - float(a.x[k])) * float(a.y[n] - a.y[k]) - (y - float(a.y[k])) * float(a.x[n] - a.x[k]) < 0.0f;
-                }
-            }
-            if (in) return true;
-        }
-        return false;
-    };
     // (a) player unit: enter / leave messages (throttled 4000 ms), current territory (+8).
     if (const Unit* pl = live(w, w.player_id())) {
         for (int i = int(territories_.size()); i >= 1; --i) {
             Territory& t = territories_[size_t(i - 1)];
-            const bool in = inside(t, pl->pos.x, pl->pos.y);
+            const bool in = in_territory(t, pl->pos.x, pl->pos.y);
             if (unsigned(w.now() - territory_msg_ms_) > 3999u && in != (t.player_inside != 0)) {
                 m.emit(MissionEvent::Kind::Text, t.recno, in ? 1 : 0, t.name);  // news message by territory type
                 territory_msg_ms_ = w.now();
@@ -591,7 +593,7 @@ void Places::tick_territories(Mission& m) {
                     if (c.special == 2 || c.special == 7 || c.unit_class == 0 || c.unit_class == 8 || c.unit_class == 9) continue;
                     if (u.no_react || w.dead(u)) continue;
                     if (u.nation != 0 && relation(u.nation, t.owner).status == 4) continue;
-                    hit = inside(t, u.pos.x, u.pos.y);
+                    hit = in_territory(t, u.pos.x, u.pos.y);
                 }
             if (hit && t.under_attack == 0) t.attack_ms = w.now();
             t.under_attack = hit;

@@ -5,11 +5,22 @@
 //   units                           U lines for every unit
 //   step N HELD PRESSED MDX         N ticks (33 ms); HELD/PRESSED = comma lists of InputFrame action ids or "-";
 //                                   PRESSED and MDX (mickeys) apply to the first tick only. After each tick:
-//                                   "T <now ms> <camera yaw deg>", then U lines of the units within 4000 of the player.
-//   set REC FIELD VALUE             test hook: hp | ep | xp | x | y | yaw
-//   objects                         O recno name cls type content x y z res stage on_floor  (map items within 3000 of the player)
+//                                   "T <now ms> <camera yaw deg>", then U lines of the units within 4000 of the player
+//                                   and of the watched units.
+//   watch REC,REC|-                 units printed by step whatever their distance
+//   set REC FIELD VALUE             test hook: hp | ep | xp | x | y | z | yaw
+//   setitem REC hp VALUE            test hook: map item HP
+//   flag WORD BIT VALUE             test hook: scenario bit flag (WORD 0 scenario, 1 event; builtins 277 / 279)
+//   gold [VALUE]                    G gold (sets it first when VALUE is given)
+//   objects [all]                   O recno name cls type content x y z res stage on_floor hp max_hp state
+//                                   (map items within 3000 of the player, or all)
 //   path X Y                        P x y z waypoints of the mission navmesh path from the player to (X, Y)
+//   classes                         C index code unit_class special hp str dex def gold resource
+//   rts_move X Y REC,REC [atk]      RTS move (0x44cfb0) of the listed units to (X, Y); prints K rec task p1 p2 p3
+//   bribe_cost REC                  B cost (Unit_bribe 0x4e8500 formula)
 // U rec name nat cls hp maxhp ep maxep str dex def lead level xp action x y z yaw morale armor_level leader
+//   mount rider vehicle slot task task_p1
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +30,7 @@
 #include <string>
 
 #include "game/campaign_runner.hpp"
+#include "game/interact_player.hpp"
 #include "game/multimap_nav.hpp"
 
 using namespace joa;
@@ -27,9 +39,17 @@ using namespace joa::game;
 static void put(World& w, const Unit& u) {
     std::string name = u.name;
     for (char& c : name) if (c == ' ') c = '_';
-    std::printf("U %d %s %d %d %d %d %d %d %d %d %d %d %d %d %d %.2f %.2f %.2f %.3f %d %d %d\n", u.id, name.empty() ? "-" : name.c_str(),
-                u.nation, u.cls, u.hp, w.max_hp(u), u.ep, w.max_ep(u), u.str, u.dex, u.def, u.lead, u.level, u.xp, u.action,
-                u.pos.x, u.pos.y, u.pos.z, u.yaw_deg, u.morale, u.armor_level, u.leader);
+    std::printf("U %d %s %d %d %d %d %d %d %d %d %d %d %d %d %d %.2f %.2f %.2f %.3f %d %d %d %d %d %d %d %d %d\n", u.id,
+                name.empty() ? "-" : name.c_str(), u.nation, u.cls, u.hp, w.max_hp(u), u.ep, w.max_ep(u), u.str, u.dex, u.def,
+                u.lead, u.level, u.xp, u.action, u.pos.x, u.pos.y, u.pos.z, u.yaw_deg, u.morale, u.armor_level, u.leader,
+                u.mount, u.m.rider, u.m.vehicle, u.m.slot, u.m.task_id, u.m.task_params[0]);
+}
+
+static std::vector<int> recs(const std::string& s) {
+    std::vector<int> v;
+    std::stringstream ss(s);
+    for (std::string t; std::getline(ss, t, ',');) if (t != "-") v.push_back(std::atoi(t.c_str()));
+    return v;
 }
 
 static void bits(const std::string& s, std::bitset<IN_ACTION_COUNT>& b) {
@@ -46,6 +66,7 @@ int main() {
     const formats::Vfs vfs(dir);
     std::unique_ptr<CampaignRunner> run;
     float cam_yaw = 0;
+    std::vector<int> watch;
     for (std::string line; std::getline(std::cin, line);) {
         std::istringstream in(line);
         std::string cmd;
@@ -93,15 +114,56 @@ int main() {
                 std::printf("T %u %.3f\n", m.now(), cam_yaw);  // + camera 0 yaw (deg)
                 const Unit* p = w.unit(w.player_id());
                 for (const Unit& u : w.units())
-                    if (!u.deleted && p && std::hypot(u.pos.x - p->pos.x, u.pos.y - p->pos.y) < 4000) put(w, u);
+                    if (!u.deleted && p && (std::hypot(u.pos.x - p->pos.x, u.pos.y - p->pos.y) < 4000 ||
+                                            std::find(watch.begin(), watch.end(), u.id) != watch.end())) put(w, u);
             }
+        } else if (cmd == "watch") {
+            std::string s;
+            in >> s;
+            watch = recs(s);
         } else if (cmd == "objects") {
             Mission& m = *run->mission();
+            std::string all;
+            in >> all;
             const Unit* p = m.world().unit(m.world().player_id());
             for (int r = 1; p && r <= m.objects().size(); ++r)
-                if (const MapItem* it = m.objects().item(r); it && std::hypot(it->pos.x - p->pos.x, it->pos.y - p->pos.y) < 3000)
-                    std::printf("O %d %s %d %d %d %.0f %.0f %.0f %d %d %d\n", r, it->name.empty() ? "-" : it->name.c_str(), it->cls, it->type,
-                                it->content, it->pos.x, it->pos.y, it->pos.z, it->res, it->stage, int(it->on_floor));
+                if (const MapItem* it = m.objects().item(r); it && (all == "all" || std::hypot(it->pos.x - p->pos.x, it->pos.y - p->pos.y) < 3000)) {
+                    std::string name = it->name;
+                    for (char& c : name) if (c == ' ') c = '_';
+                    std::printf("O %d %s %d %d %d %.0f %.0f %.0f %d %d %d %d %d %d\n", r, name.empty() ? "-" : name.c_str(), it->cls,
+                                it->type, it->content, it->pos.x, it->pos.y, it->pos.z, it->res, it->stage, int(it->on_floor), it->hp,
+                                it->max_hp, it->state);
+                }
+        } else if (cmd == "setitem") {
+            int r = 0, v = 0;
+            std::string field;
+            in >> r >> field >> v;
+            if (MapItem* it = run->mission()->objects().item(r); it && field == "hp") it->hp = v;
+        } else if (cmd == "flag") {
+            int word = 0, bit = 1, v = 0;
+            in >> word >> bit >> v;
+            std::uint32_t& w = run->mission()->scenario().bits[word & 3];
+            const int s = (bit - 1) & 31;   // set_scenario_bit_flag FUN_00472000
+            w = (w & ~(1u << s)) | (std::uint32_t(v & 0xff) << s);
+        } else if (cmd == "gold") {
+            int v = 0;
+            if (in >> v) run->mission()->state().gold = v;
+            std::printf("G %d\n", int(run->mission()->state().gold));
+        } else if (cmd == "rts_move") {
+            float x = 0, y = 0;
+            std::string sel, atk;
+            in >> x >> y >> sel >> atk;
+            Mission& m = *run->mission();
+            const std::vector<int> v = recs(sel);
+            const Unit* p = m.world().unit(m.world().player_id());
+            m.ai().rts_move(v, {x, y, p ? p->pos.z : 0.f}, atk == "atk");
+            for (int r : v)
+                if (const Unit* u = m.world().unit(r))
+                    std::printf("K %d %d %d %d %d\n", r, u->m.task_id, u->m.task_params[0], u->m.task_params[1], u->m.task_params[2]);
+        } else if (cmd == "bribe_cost") {
+            int r = 0;
+            in >> r;
+            if (const Unit* u = run->mission()->world().unit(r)) std::printf("B %d\n", bribe_cost(*run->mission(), *u));
         } else if (cmd == "path") {
             Mission& m = *run->mission();
             float x = 0, y = 0;
@@ -113,6 +175,12 @@ int main() {
                 q.to = {x, y, p->pos.z};
                 q.max_expand = 4000;  // as the campaign bot: a player knows the roads
                 for (const NavPt& n : nav->find_path(q).points) std::printf("P %.0f %.0f %.0f\n", n.x, n.y, n.z);
+            }
+        } else if (cmd == "classes") {
+            for (size_t i = 0; i < gd->units.size(); ++i) {
+                const UnitClass& c = gd->units[i];
+                std::printf("C %zu %s %d %d %d %d %d %d %d %d\n", i, c.code.empty() ? "-" : c.code.c_str(), c.unit_class, c.special,
+                            c.hp, c.str, c.dex, c.def, c.gold, c.resource);
             }
         } else if (cmd == "set") {
             int rec = 0;
@@ -126,6 +194,7 @@ int main() {
                 else if (field == "xp") u->xp = int(v);
                 else if (field == "x") u->pos.x = v;
                 else if (field == "y") u->pos.y = v;
+                else if (field == "z") u->pos.z = v;
                 else if (field == "yaw") u->yaw_deg = u->yaw_goal = v;
             }
         } else {

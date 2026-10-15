@@ -192,6 +192,7 @@ public:
     const Track* track(int id) const;
     int territory_by_name(std::string_view name) const;  // FUN_004e4b20 (from top)
     const Territory* territory(int recno) const;
+    static bool in_territory(const Territory& t, float x, float y);  // inside one of its areas
     Territory* territory(int recno);
     int recruit_list_by_code(std::string_view code) const;  // RecruitRes_find_by_code 0x4cad00
     int player_territory() const { return player_territory_; }  // player unit +8
@@ -243,6 +244,37 @@ private:
     int territory_msg_ms_ = 0;         // territory array +0x21
     int territory_cursor_ = 0;         // territory array +0x1d
     int player_territory_ = 0;
+};
+
+// RecruitWorkshop: the barracks / siege workshop screen copy and its rules, shared by the engine screens
+// (engine hud_recruit / hud_workshop) and the campaign bot. Barracks: open BarrUI_open 0x6bda00, aw_r / aw_l
+// BarrUI_handle_input 0x6bf630, commit BarrUI_confirm 0x6bdc00; workshop: open FUN_006ea020, aw_r / aw_l
+// FUN_006ec480, commit FUN_006ea1a0. Rows are the facility's RECRUIT.RES entries (barracks, slots below) or its
+// products (workshop).
+struct FacilityOrder {
+    // Barracks slots: 0 light inf, 1 heavy inf, 2 maceman, 3 poleman, 4 archer, 5 crossbowman (by class code).
+    static constexpr const char* kRecruitCodes[6] = {"FRENCH_LIGHT_INFANTRY", "FRENCH_HEAVY_INFANTRY", "FRENCH_MACEMAN",
+                                                     "FRENCH_POLEMAN", "FRENCH_ARCHER", "FRENCH_CROSSBOW_MAN"};
+    static FacilityOrder barracks(Mission& m, int facility, int recruiter);
+    static FacilityOrder siege_workshop(Mission& m, int facility);
+    int row_type(Mission& m, int row) const;   // the row's unit type (1-based), 0 none
+    int row_price(Mission& m, int row) const;  // class Gold +0x161 (workshop IRON / WOOD: Resource +0x165)
+    int slot(Mission& m, int row) const;       // barracks slot of the row (-1 other class) / the workshop row
+    bool more(Mission& m, int row);            // aw_r: one more if the rules allow it
+    bool less(Mission& m, int row);            // aw_l
+    void commit(Mission& m);                   // queue the new units, write money / population back
+
+    // Per slot (barracks) / product (workshop): +0x42 troop / +0x52 built, +0x5a / +0x62 new.
+    std::array<int, 6> have{}, add{};
+    int money = 0;      // +0x3e gold / workshop +0x41 gold or the facility's iron / wood
+    int cost = 0;       // +0x7e / +0x45
+    int citizens = 0;   // +0x72 able citizens (clamp(pop - 0.95 pop_max, 0, 20)), barracks
+    int recruited = 0;  // +0x76
+    int total = 0;      // +0x7a troop size incl. pending / workshop +0x49 weapons (built + new)
+    int max_troop = 0;  // the recruiter's troop limit (0 without one)
+    int recruiter = 0;  // DAT_00a48959 recruiting unit (Interact event a: player on R, selected RTS leader)
+    int facility = 0;
+    bool workshop = false;
 };
 
 }  // namespace joa::game

@@ -335,7 +335,6 @@ void AiSystem::set_unit_dead(Unit& u) {
     clear_task(u);
     u.retreat = -1;
     w_.delete_unit(u.id);
-    on_unit_removed(u.id);
 }
 
 // ---------------------------------------------------------------- persistence

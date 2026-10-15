@@ -16,23 +16,8 @@ constexpr const char* kBlack = "Goudy12 Bold Black";     // 0xa5d3c8 (row labels
 constexpr float kRowStagger = 0.03f;                     // 0x1e ms between the rows' move-to delays
 constexpr glm::vec2 kFrame{0x27b, 0x5b};
 
-// BarrUI_handle_input / BarrUI_confirm: the six recruitable French classes, by code.
-constexpr const char* kCodes[6] = {"FRENCH_LIGHT_INFANTRY", "FRENCH_HEAVY_INFANTRY", "FRENCH_MACEMAN",
-                                   "FRENCH_POLEMAN", "FRENCH_ARCHER", "FRENCH_CROSSBOW_MAN"};
 constexpr const char* kRowIcon[6] = {"FLINF", "FHINF", "FMACE", "FPOLE", "F_ARCH", "FCROSS"};   // MESSAGE set
 constexpr const char* kTroop[6] = {"linf", "hinf", "mace", "pole", "arch", "cross"};            // c_* / n_* BARRACK
-
-int slot_of(const game::GameData& gd, int type) {
-    if (type < 1 || type > int(gd.units.size())) return -1;
-    for (int s = 0; s < 6; ++s)
-        if (formats::iequals(gd.units[size_t(type - 1)].code, kCodes[s])) return s;   // 0x5270b0: case-insensitive
-    return -1;   // ponytail: the original keeps the previous row's slot for other classes (none in shipped lists)
-}
-// BarrUI_count_troop 0x6bd4b0: UnitClass unit_class 1..6 -> slot (pole 3 -> +0x4e, mace 4 -> +0x4a).
-int slot_of_class(int unit_class) {
-    static constexpr int k[7] = {-1, 0, 1, 3, 2, 4, 5};
-    return unit_class >= 0 && unit_class <= 6 ? k[unit_class] : -1;
-}
 
 void text_rect(Ui& ui, const char* font, std::string_view s, glm::ivec4 r) { ui_text_in_rect(ui, ui.font(font), s, r, kUiWhite); }
 
@@ -129,53 +114,13 @@ void FacilityWindow::draw(Ui& ui, game::Mission& m, HudModel& hud) {
 
 // ---------------------------------------------------------------- barracks
 
-// BarrUI_open 0x6bda00: gold, able citizens = clamp(pop - 0.95 pop_max, 0, 20) of the owner place, the recruiting
-// unit's troop by class (BarrUI_count_troop: members, the spawn barrack's pending groups and this facility's queue for
-// its troop id).
 void FacilityWindow::open_recruit(game::Mission& m, int fac) {
-    game::Places& pl = m.places();
-    const game::Facility* f = pl.facility(fac);
+    const game::Facility* f = m.places().facility(fac);
     if (!f || f->kind != game::Facility::Recruit) return;
     const int who = recruiter;
     *this = FacilityWindow{};
-    recruiter = who;
-    facility = fac, workshop = false, row_count_ = 6, state_ = Opening;
-    money = m.state().gold;
-    if (const game::Place* o = pl.place(f->place)) citizens = std::clamp(int(double(o->pop) - 0.95 * double(o->pop_max)), 0, 20);
-    game::World& w = m.world();
-    const game::Unit* p = w.unit(recruiter);
-    if (!p || p->deleted) return;
-    const game::GameData& gd = m.data();
-    for (int id : p->members)
-        if (const game::Unit* u = w.unit(id); u && !u->deleted)
-            if (const int s = slot_of_class(gd.units[size_t(u->cls)].unit_class); s >= 0) ++have[size_t(s)];
-    if (const game::Facility* b = pl.facility(f->spawn_barrack); b && b->kind == game::Facility::Barrack)
-        for (int g = 0; g < b->barrack.groups && b->barrack.team == p->team; ++g)
-            if (const int t = b->barrack.type[size_t(g)]; t >= 1 && t <= int(gd.units.size()))
-                if (const int s = slot_of_class(gd.units[size_t(t - 1)].unit_class); s >= 0) have[size_t(s)] += b->barrack.count[size_t(g)];
-    for (const auto& q : f->queue) {
-        if (q.team != p->team) break;
-        if (q.type >= 1 && q.type <= int(gd.units.size()))
-            if (const int s = slot_of_class(gd.units[size_t(q.type - 1)].unit_class); s >= 0) have[size_t(s)] += q.count;
-    }
-    for (int n : have) total += n;
-}
-
-// BarrUI_confirm 0x6bdc00: one queue order per class with new recruits (the recruiting unit's troop id, 9999 without
-// one), gold -= cost, owner population -= recruited.
-void FacilityWindow::commit_recruit(game::Mission& m) {
-    game::World& w = m.world();
-    const game::Unit* p = w.unit(recruiter);
-    const bool player = p && !p->deleted;
-    game::Places& pl = m.places();
-    const game::Facility* f = pl.facility(facility);
-    if (!f) return;
-    for (int s = 0; s < 6; ++s)
-        if (add[size_t(s)] != 0) pl.recruit(facility, m.data().unit_index(kCodes[s]) + 1, player ? p->team : 9999, add[size_t(s)]);
-    money -= cost;
-    m.state().gold = money;
-    if (game::Place* o = pl.place(f->place)) o->pop -= recruited;
-    recruited = cost = 0, add = {};
+    static_cast<game::FacilityOrder&>(*this) = game::FacilityOrder::barracks(m, fac, who);
+    row_count_ = 6, state_ = Opening;
 }
 
 void FacilityWindow::recruit_screen(Ui& ui, game::Mission& m, HudModel&) {
@@ -190,7 +135,6 @@ void FacilityWindow::recruit_screen(Ui& ui, game::Mission& m, HudModel&) {
 
     ui.sprite("BARRACK", "bg", {0, 0}, {1, 1, 1, alpha()});
     title(ui, ui.text("BARRACK", 15));
-    const int max_troop = player ? m.ai().max_troop_size(*player) : 0;
     const std::string gold_word(ui.text("BARRACK", 3));
 
     // Rows (FUN_006bdea0): "%s (%d %s)" name / class Gold / GOLD at (+0x60, +0x10); Attack (Strength, att_r), Defense
@@ -200,7 +144,7 @@ void FacilityWindow::recruit_screen(Ui& ui, game::Mission& m, HudModel&) {
     for (int i = 0; i < rows; ++i) {
         const int type = rec->entries[size_t(i)].type;
         const game::UnitClass& uc = gd.units[size_t(type - 1)];
-        const int s = slot_of(gd, type);
+        const int s = slot(m, i);
         const glm::vec2 p = row_pos(i);
         const bool hot = state_ == Open && ui.hover({p.x, p.y, 0x200 + 0x4c, 100});   // 0x593980(x1, y1, x2 + 0x4c, y2)
         const float off = panel(ui, i, p, hot);
@@ -225,13 +169,8 @@ void FacilityWindow::recruit_screen(Ui& ui, game::Mission& m, HudModel&) {
         // BarrUI_handle_input: aw_r adds (troop max, citizens, gold), aw_l removes; pad: left / right on the row.
         if (state_ != Open || s < 0) continue;
         const int dx = hot ? ui.nav_adjust() : 0;
-        if (ui.clicked(plus) || dx > 0) {
-            if ((player && max_troop <= total) || citizens < 1 || money < cost + uc.gold) continue;
-            cost += uc.gold, --citizens, ++recruited, ++total, ++add[size_t(s)];
-        } else if (ui.clicked(minus) || dx < 0) {
-            if (add[size_t(s)] < 1) continue;
-            cost -= uc.gold, ++citizens, --recruited, --total, --add[size_t(s)];
-        }
+        if (ui.clicked(plus) || dx > 0) more(m, i);
+        else if (ui.clicked(minus) || dx < 0) less(m, i);
     }
 
     // Info frame (FUN_006c1180 + FUN_006bdea0 tail).
@@ -269,7 +208,7 @@ void FacilityWindow::recruit_screen(Ui& ui, game::Mission& m, HudModel&) {
     const bool ok = button(ui, {0x28b, 0x2be, 156, 44}, ui.text("BARRACK", 1), "check");
     const bool cancel = button(ui, {0x32e, 0x2be, 156, 44}, ui.text("BARRACK", 2), "cross");
     if (state_ != Open) return;
-    if (ok || ui.key(SDL_SCANCODE_RETURN)) commit_recruit(m), close();
+    if (ok || ui.key(SDL_SCANCODE_RETURN)) commit(m), close();
     else if (cancel || ui.key(SDL_SCANCODE_ESCAPE)) close();
 }
 

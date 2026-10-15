@@ -7,6 +7,7 @@
 // CONTRACT (owned by the objects slice; Mission relies on load/tick/save/load_state).
 #pragma once
 
+#include <array>
 #include <map>
 #include <string>
 #include <string_view>
@@ -49,6 +50,11 @@ struct ObjRes {
     std::vector<ObjStage> stages;  // +0x62 count
     bool pickable = false, unique = false, open_with_interact = false;  // +0x1c4 / +0x25b / +0x25e
     bool skip_intersect = false;  // +0x1e3 SkipIntersectWithItem (structure sweep 0x693750)
+    int coll_shape = 0;     // +0x1e9 CollisionType: 0 none, 1 Sphere, 2 Box3d, 3 Cylinder
+    float coll_aim_h = 0;   // sphere radius +0x1f9 / box (maxZ - minZ) / 2 / cylinder height +0x225 / 2
+    // Sphere x y z r (+0x1ed) / Box3d min xyz max xyz (+0x1fd) / Cylinder x y z r h (+0x215), item-model space;
+    // Item_setup_collision 0x41e850 copies them to the item actor (+0xbc / +0xcc / +0xe4).
+    std::array<float, 6> coll{};
     std::string description;  // +0x20 Description (interact prompt text "Press %1s to ..."), raw cp1252
 };
 
@@ -140,11 +146,14 @@ public:
     bool hostile(Mission& m, int a, int b) const;        // Diplomacy FUN_004b6860
     // Physics_sweep_structures 0x693750 candidates + mesh ray (World::structure_ray contract).
     StructureHit structure_ray(int item, Vec3 from, Vec3 to);
+    // Physics_sweep_actors 0x68de40 item pass (World::item_sweep contract).
+    int sweep_items(Vec3 c, float r, Vec3 mv, float& t) const;
 
 private:
     void load_res(Mission& m, const formats::Vfs& vfs);
     int clip_ms(int res_id, int stage, std::string_view clip);   // clip length of the stage's model
-    struct ObjMesh { std::vector<Vec3> tri; Vec3 lo, hi; };   // triangle corners + bounds, model space
+    // Triangle corners + bounds, model space; r = model bounding-sphere radius (model +0x40), -1 = no model.
+    struct ObjMesh { std::vector<Vec3> tri; Vec3 lo, hi; float r = -1; };
     const ObjMesh& mesh(const MapItem& it);                   // collision triangles of the shown model
     bool footprint(const MapItem& it, Vec3 p, int r) const;   // ModItem_footprint_contains 0x41c5e0
     void deliver(Mission& m, int ir, const Trigger& t);

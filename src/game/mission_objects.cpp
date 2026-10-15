@@ -139,6 +139,15 @@ void parse_res(ObjRes& r, std::string_view text, const std::string& rec_name) {
         } else if (is("Width")) r.width = std::atoi(v.c_str());
         else if (is("Height")) r.height = std::atoi(v.c_str());
         else if (is("SkipIntersectWithItem")) r.skip_intersect = std::atoi(v.c_str()) != 0;
+        else if (is("CollisionType")) {   // ItemRes loader: the next 4 / 6 / 5 values, keys ignored, atoi
+            static constexpr const char* kShapes[] = {"Sphere", "Box3d", "Cylinder"};
+            r.coll_shape = index_of(first_token(v), kShapes, 3);   // 0x4a4540
+            const int n = r.coll_shape == 1 ? 4 : r.coll_shape == 2 ? 6 : r.coll_shape == 3 ? 5 : 0;
+            float f[6]{};
+            for (int e = 0; e < n && i + 1 < kv.size(); ++e) f[e] = float(std::atoi(kv[++i].second.c_str()));
+            r.coll_aim_h = r.coll_shape == 1 ? f[3] : r.coll_shape == 2 ? (f[5] - f[2]) / 2.0f : f[4] / 2.0f;
+            std::copy(f, f + 6, r.coll.begin());
+        }
         else if (is("Quantity")) r.quantity = std::atoi(v.c_str());
         else if (is("MinLevel")) r.min_level = std::atoi(v.c_str());
         else if (is("Damage")) r.damage = std::atoi(v.c_str());
@@ -282,10 +291,13 @@ int MapObjects::clip_ms(int res_id, int stage, std::string_view clip) {
     return it == clip_cache_.end() ? 0 : it->second;
 }
 
-// Collision triangles of the model the item shows (stage model, else Model: FUN_004a3f20). 0x693750
-// ray-tests the scene object's own mesh and skips triangles whose material +0x38 == 1 (set by the
-// loader 0x5e0530 for trailer tag 1 = blended submeshes). An AM1 is posed at its AM2's first clip
-// start, the rest pose the engine draws (HYPOTHESIS: the original tests the animated pose).
+// Collision triangles of the model the item shows (stage model, else Model: FUN_004a3f20) for 0x693750's mesh ray
+// (0x5d4a80 on the item actor's mesh +0x90; triangles whose material +0x38 == 1 skipped: the loader 0x5e0530 sets it
+// for trailer tag 1 = blended submeshes). The actor's mesh shares the model's vertex buffer (+0xb set, +0xc model):
+// an SMO's static positions; an AM1's buffer holds only uv and colour, its positions stay at the allocator fill
+// 0xEEEEEEEE (read live in S4L1: the Tourelles gate's Door.AM1, ab_gate, Camp Gate, AM1 crates and tents; every
+// triangle degenerate). So a skinned item never meets the ray (r is kept for the aim height): the gates and boxes are
+// met by their CollisionType primitive (sweep_items).
 const MapObjects::ObjMesh& MapObjects::mesh(const MapItem& it) {
     static const ObjMesh none;
     const ObjRes* r = res(it.res);
@@ -303,21 +315,13 @@ const MapObjects::ObjMesh& MapObjects::mesh(const MapItem& it) {
     formats::Mesh mm;
     std::string err;
     if (!bytes || !formats::parse_mesh(*bytes, skinned, mm, err)) return out;
-    std::vector<formats::Mat3x4> pose;
-    if (skinned) {
-        const std::string stem = model.substr(0, dot);
-        auto ab = vfs_->read("item\\" + r->dir + "anim\\" + stem + ".am2");
-        if (!ab) ab = vfs_->read("anim\\" + stem + ".am2");
-        formats::Animation a;
-        if (!ab || !formats::parse_animation(*ab, a, err)) return out;
-        pose = formats::sample_pose(a, a.clips.empty() ? a.start : a.clips.front().start);
-    }
+    out.r = mm.sphere[3];
+    if (skinned) return out;
     out.lo = {1e30f, 1e30f, 1e30f};
     out.hi = {-1e30f, -1e30f, -1e30f};
     for (const formats::Submesh& sub : mm.submeshes) {
         if (sub.blendMode != -1) continue;
-        const std::vector<formats::MeshVertex> posed = skinned ? formats::skin_vertices(sub, pose) : std::vector<formats::MeshVertex>{};
-        const std::vector<formats::MeshVertex>& vs = skinned ? posed : sub.vertices;
+        const std::vector<formats::MeshVertex>& vs = sub.vertices;
         const std::vector<std::uint32_t> idx = formats::strip_to_triangles(sub.strip);
         for (std::size_t t = 0; t + 2 < idx.size(); t += 3) {
             if (idx[t] >= vs.size() || idx[t + 1] >= vs.size() || idx[t + 2] >= vs.size()) continue;
@@ -377,7 +381,14 @@ StructureHit MapObjects::structure_ray(int item, Vec3 a, Vec3 b) {
     auto fill = [&](int ir) {
         const MapItem& it = items_[ir - 1];
         h.item = ir, h.modify = it.modify, h.pos = it.pos;
-        if (const ObjRes* r = res(it.res)) h.struction = r->struction;
+        const ObjRes* r = res(it.res);
+        if (!r) return;
+        h.struction = r->struction;
+        // ThrowItem_launch 0x5133e0: an item with an actor aims at its model bound radius (PROJ/EXPL) or a
+        // quarter of it (STC/CAN, no CollisionType); without one at ItemRes +0x26 Height.
+        const float rad = mesh(it).r;
+        h.aim_h = rad >= 0 ? rad : float(r->height);
+        h.aim_h_siege = r->coll_shape ? r->coll_aim_h : rad >= 0 ? rad / 4.0f : float(r->height);
     };
     if (item) {
         if (valid(item)) fill(item);
@@ -407,6 +418,41 @@ StructureHit MapObjects::structure_ray(int item, Vec3 a, Vec3 b) {
     }
     if (best) fill(best);
     return h;
+}
+
+// Physics_sweep_actors 0x68de40, item pass (CONFIRMED decomp, live S4L1): the items with an actor and a physics body
+// (actor +0x5c; live: exactly the 96 items whose ItemRes has a CollisionType), not a carried weapon (type 8..12), of a
+// class 0x4a4050 accepts (all but TERRAIN, WAVE, ARMOR) and within 1000 of the projectile in x and in y. Shape_sweep_pair
+// 0x6a1bb0 meets the projectile sphere with the actor's primitive (Item_setup_collision 0x41e850): a box in item space
+// (sphere and move through the inverse item matrix, radius / scale), a sphere or vertical cylinder moved to the world
+// (sizes × scale). The first item met wins. An open gate has no shape (0x48c760 clears actor +0xb8 in states 1 / 4;
+// here: passage not blocking, which also covers a destroyed gate). Live: S4L1's cannonballs stop on the Tourelles gate's
+// box (-15, -200, 0)..(15, 200, 265) (ThrowItem +0x26 = the gate) before 0x693750's look-ahead ray reaches the castle.
+// ponytail: recno order for the level's item list (+0xb2); its third list (0x54f960) folded into this one.
+int MapObjects::sweep_items(Vec3 c, float r, Vec3 mv, float& t) const {
+    for (int ir = 1; ir <= int(items_.size()); ++ir) {
+        const MapItem& it = items_[ir - 1];
+        if (it.deleted || (it.type >= 8 && it.type <= 12) || it.cls == 5 || it.cls == 12 || it.cls == 16 ||
+            std::fabs(c.x - it.pos.x) > 1000 || std::fabs(c.y - it.pos.y) > 1000 || (it.cls == GATE && !it.blocking))
+            continue;
+        const ObjRes* rs = res(it.res);
+        if (!rs || !rs->coll_shape) continue;
+        const std::array<float, 6>& f = rs->coll;
+        const float k = it.scale > 0 ? it.scale : 1.0f, cs = std::cos(it.dir), sn = std::sin(it.dir);
+        bool hit;
+        if (rs->coll_shape == 2) {
+            const float dx = (c.x - it.pos.x) / k, dy = (c.y - it.pos.y) / k;
+            const Vec3 lc{cs * dx + sn * dy, -sn * dx + cs * dy, (c.z - it.pos.z) / k};
+            const Vec3 lv{(cs * mv.x + sn * mv.y) / k, (-sn * mv.x + cs * mv.y) / k, mv.z / k};
+            hit = sweep_sphere_box(lc, r / k, lv, {f[0], f[1], f[2]}, {f[3], f[4], f[5]}, t);
+        } else {
+            const Vec3 q{it.pos.x + k * (cs * f[0] - sn * f[1]), it.pos.y + k * (sn * f[0] + cs * f[1]), it.pos.z + k * f[2]};
+            hit = rs->coll_shape == 1 ? sweep_sphere_sphere(c, r, mv, q, k * f[3], t)
+                                      : sweep_sphere_cylinder(c, r, mv, q, k * f[3], k * f[4], t);
+        }
+        if (hit) return ir;
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -625,6 +671,7 @@ void MapObjects::install_hooks(Mission& m) {
     m.world().object_nation = [this](int ir) { const MapItem* it = item(ir); return it ? it->nation : 0; };
     m.world().ladder_input = [&m](Unit& u, const InputFrame& in) { return ladder_input(m, u, in); };
     m.world().structure_ray = [this](int item, Vec3 a, Vec3 b) { return structure_ray(item, a, b); };
+    m.world().item_sweep = [this](Vec3 c, float r, Vec3 mv, float& t) { return sweep_items(c, r, mv, t); };
     AiSystem& ai = m.ai();
     ai.item = [this](int id) -> std::optional<AiItem> {
         const MapItem* it = item(id);

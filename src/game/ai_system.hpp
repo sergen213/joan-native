@@ -101,6 +101,7 @@ public:
     // --- IUnitBrain ---------------------------------------------------------------------
     void execute_orders(World& w, Unit& u) override;   // phase 2 (0x52d000)
     void think(World& w, Unit& u) override;            // phase 3 (0x49d810 body after the timer)
+    void removed(World&, int recno) override { on_unit_removed(recno); }  // World::delete_unit
 
     // --- mission data hooks ---------------------------------------------------------------
     std::map<int, AiPlace> places;                     // place id -> place
@@ -200,7 +201,7 @@ public:
     int share_team_member(Unit& dst, Unit& src, int n);                     // 0x65ef40
     void set_formation_pos(Unit& u, Vec3 anchor, float deg);                // 0x658810
     void set_team_member_pos(Unit& u);                                      // 0x658920
-    void on_unit_removed(int recno);                   // corpse deletion: leave team / disband
+    void on_unit_removed(int recno);                   // deleted unit (World::delete_unit): leave team / disband
 
     // --- player / RTS (Part B §5) -------------------------------------------------------------
     void toggle_hold(Unit& u, bool recurse);           // Unit_toggle_hold 0x5121c0

@@ -16,7 +16,8 @@
 
 namespace joa::engine {
 
-class FacilityWindow {
+// The screen copy, its +/- rules and the commit are game::FacilityOrder (shared with the campaign bot).
+class FacilityWindow : public game::FacilityOrder {
 public:
     void on_mission_events(const std::vector<game::MissionEvent>&, game::Mission&, HudModel&);
     // Draws the open screen (HudModel::recruit_screen / workshop_screen) over everything but the menus.
@@ -24,27 +25,12 @@ public:
     void reset() { *this = {}; }
     bool open() const { return state_ != Closed; }
 
-    // Screen copies (committed only by RECRUIT / BUILD / Enter). Barracks: per unit slot 0 light inf, 1 heavy inf,
-    // 2 maceman, 3 poleman, 4 archer, 5 crossbowman (+0x42 troop, +0x5a new); workshop: per product (+0x52 built,
-    // +0x62 new).
-    std::array<int, 6> have{}, add{};
-    int money = 0;      // +0x3e gold / workshop +0x41 gold or the facility's iron / wood
-    int cost = 0;       // +0x7e / +0x45
-    int citizens = 0;   // +0x72 able citizens (clamp(pop - 0.95 pop_max, 0, 20)), barracks
-    int recruited = 0;  // +0x76
-    int total = 0;      // +0x7a troop size incl. pending / workshop +0x49 weapons (built + new)
-    int recruiter = 0;  // DAT_00a48959 recruiting unit (Interact event a: player on R, selected RTS leader)
-    int facility = 0;
-    bool workshop = false;
-
 private:
     enum State { Closed, Opening, Open, Closing };
     void open_recruit(game::Mission&, int fac);
     void open_workshop(game::Mission&, int fac);
     void recruit_screen(Ui&, game::Mission&, HudModel&);
     void workshop_screen(Ui&, game::Mission&, HudModel&);
-    void commit_recruit(game::Mission&);
-    void commit_workshop(game::Mission&);
     // Shared chrome (identical in both interfaces).
     void close() { state_ = Closing, t_ = 0.0f; }
     glm::vec2 row_pos(int i) const;    // sliding row origin

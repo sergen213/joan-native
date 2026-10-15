@@ -304,9 +304,15 @@ void Mission::tick(const InputFrame& in) {
     feed();
 
     if (ss.game_finish != last_finish_) {
-        if (ss.game_finish == 1 || ss.game_finish == 2)  // WinMsg::show / GameOver_lose_freeze_units
+        // GameOver_win_freeze_units 0x6e7900: leaving scenario 5 (DAT_00a58fa7 == 5, the world S9L1 continues in) the
+        // orders / IDLE-task freeze is skipped and every unit is only stopped (Unit_stop(0, 1)).
+        if (ss.game_finish == 1 && info_.no == 5) {
+            for (Unit& u : world_->units())
+                if (!u.deleted) world_->stop(u);
+        } else if (ss.game_finish == 1 || ss.game_finish == 2) {  // WinMsg::show / GameOver_lose_freeze_units
             for (Unit& u : world_->units())
                 if (!u.deleted) ai_->set_idle(u);
+        }
         if (ss.game_finish == 2) {  // GameOver_lose_freeze_units
             state_.game_over = 1;
             if (state_.events.empty() || state_.events.back().kind != MissionEvent::Kind::Defeat) emit(MissionEvent::Kind::Defeat);

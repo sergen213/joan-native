@@ -245,8 +245,134 @@ def m_aggro(r):
     return dict(sorted(out.items(), key=lambda kv: int(kv[0].split()[0])))
 
 
+def m_mstart(r):
+    """Mission start inventory: units per nation (per-recno stat agreement: stat_diff), structures, gold,
+    unit-type costs (Gold +0x161 / Resource +0x165 of the type table vs the port's UnitClass)."""
+    us, out = r["extra"]["units"], {}
+    for nat in sorted({u["nat"] for u in us.values()}):
+        out[f"units of nation {nat}"] = sum(u["nat"] == nat and u["hp"] > 0 for u in us.values())
+    out["units total (alive)"] = sum(u["hp"] > 0 for u in us.values())
+    for i in sorted(r["extra"]["items"].values(), key=lambda i: i["rec"]):
+        if i["cls"] in (1, 4):
+            out[f"structure {i['rec']} {i['name'].replace('_', ' ') or '-'} hp/max/state"] = f"{i['hp']}/{i['mhp']}/{i['state']}"
+    out["gold"] = r["extra"]["gold"]
+    if "types" in r["extra"]:
+        ty = r["extra"]["types"]
+        for k in sorted(ty, key=int):
+            if ty[k]["code"].upper() in COST_CLASSES:
+                out[f"cost {ty[k]['code'].upper()} gold / resource"] = f"{ty[k]['gold']} / {ty[k]['res']}"
+    return out
+
+
+COST_CLASSES = {"FRENCH_LIGHT_INFANTRY", "FRENCH_HEAVY_INFANTRY", "FRENCH_ARCHER", "FRENCH_CROSSBOW_MAN", "FRENCH_POLEMAN",
+                "CANNON", "BOMBARD", "TREBUCHET", "FAUCONNEAU", "BATTERRAM", "SIEGE_TOWER", "CROSSBOW",
+                "MERCENARY_LIGHT_INFANTRY", "MER_EX_ARCHER"}
+
+
+def stat_diff(ro, rp):
+    """Units whose class / nation / level / stats differ between the sides (same recno), grouped by class."""
+    uo, up = ro["extra"]["units"], rp["extra"]["units"]
+    bad = {}
+    for k in uo.keys() & up.keys():
+        a, b = uo[k], up[k]
+        f = [f for f in ("cls", "nat", "lvl", "mhp", "mep", "str", "dex", "def", "lead") if a[f] != b[f]]
+        if f:
+            bad.setdefault(a["cls"], []).append(f"{k} {'/'.join(f)} {'/'.join(str(a[x]) for x in f)} vs {'/'.join(str(b[x]) for x in f)}")
+    only = sorted(uo.keys() - up.keys(), key=int), sorted(up.keys() - uo.keys(), key=int)
+    return {"units compared": len(uo.keys() & up.keys()), "stat mismatches": sum(map(len, bad.values())),
+            "mismatching classes": "; ".join(f"cls {c}: {len(v)}x e.g. {v[0]}" for c, v in sorted(bad.items())) or "none",
+            "recnos only in orig / port": f"{len(only[0])} / {len(only[1])}"}
+
+
+SHOTS = {51, 52, 53, 56}  # SHTOUT SHTOUT2 SHTOUTC SHTOUTH
+
+
+def drops(trace, col):
+    """HP decrements of a structure trace [(t, hp...)] in column col: [(t, amount)]."""
+    return [(b[0], a[col] - b[col]) for a, b in zip(trace, trace[1:]) if b[col] < a[col]]
+
+
+def m_cannon(r):
+    from diffrun import M4_CANNONS, M4_CREW
+    a, b = r["m"]["trigger"], r["m"]["end"]
+    tr = r["extra"]["structures"]
+    at_t = at(r, a)[1]
+    out = {"crew attached at trigger (veh set)": sum(at_t.get(c, {}).get("veh", 0) != 0 for c in M4_CREW),
+           "crew slots": " ".join(f"{c}:{at_t[c]['veh']}/{at_t[c]['slot']}" for c in M4_CREW if c in at_t)}
+    for name, col in (("abtower", 1), ("Tourelles gate", 2)):
+        d = drops(tr, col)
+        out[f"{name} first HP drop ms after trigger"] = d[0][0] - a if d else None
+        out[f"{name} HP drop sizes"] = " ".join(sorted({str(x) for _, x in d}, key=int)) or "none"
+        out[f"{name} HP at end"] = tr[-1][col]
+        z = next((t for t, *h in tr if h[col - 1] <= 0), None)
+        out[f"{name} ms to 0 HP"] = z - a if z else None
+    w = window(r, a, b)
+    shots = 0
+    for c in M4_CANNONS:
+        prev = None
+        for t, us in w:
+            act = us[c]["act"] if c in us else None
+            shots += act in SHOTS and prev not in SHOTS
+            prev = act
+    out["cannon shots (SHTOUT* entries, 4 cannons)"] = shots
+    out["cannon actions"] = " ".join(sorted({aname(us[c]["act"]) for t, us in w for c in M4_CANNONS if c in us}))
+    out["crew actions"] = " ".join(sorted({aname(us[c]["act"]) for t, us in w for c in M4_CREW if c in us}))
+    out["cannon yaw at end"] = " ".join(str(round(w[-1][1][c]["yaw"])) for c in M4_CANNONS if c in w[-1][1])
+    return out
+
+
+def m_horse(r):
+    from diffrun import M4_HORSE, M4_FOOT
+    m, J, H = r["m"], r["player"], M4_HORSE
+    out = {}
+    w = window(r, m["mount"], m["ride"])
+    out["mount actions"] = " ".join(dict.fromkeys(aname(us[J]["act"]) for t, us in w if J in us))
+    seat = next((t for t, us in w if J in us and us[J]["act"] == 67 and us[J]["mnt"]), None)
+    out["mount: ms to H_IDLE"] = seat - m["mount"] if seat else None
+    out["mounted horse"] = w[-1][1][J]["mnt"] if J in w[-1][1] else None
+    a = m["ride"]
+    run = next((t for t, us in window(r, a, m["ride_end"]) if H in us and us[H]["act"] == 11), None)
+    out["ride: ms to run gear (horse RUN)"] = run - a if run else None
+    out["ride: horse speed u/s 0.2..0.9 s"] = speed(r, a + 200, a + 900, H)
+    out["ride: horse speed u/s 1.5..3.5 s"] = speed(r, a + 1500, a + 3500, H)
+    out["ride: distance 4 s"] = speed(r, a, m["ride_end"], H) and speed(r, a, m["ride_end"], H) * (m["ride_end"] - a) / 1000
+    out["ride: rider actions"] = " ".join(dict.fromkeys(aname(us[J]["act"]) for t, us in window(r, a, m["ride_end"] + 1500) if J in us))
+    (t0, u0), (t1, u1) = at(r, m["hturn_m"]), at(r, m["hturn_end"])
+    if H in u0 and H in u1:
+        out["turn: horse yaw change deg (-300 mickeys while moving)"] = round((u1[H]["yaw"] - u0[H]["yaw"] + 180) % 360 - 180, 1)
+    hits = [d for d in hp_drops(r, m["hatk"], m["hatk_end"] + 1000, {M4_FOOT})]
+    out["attack: H_ATTACK entries"] = sum(1 for (ta, ua), (tb, ub) in zip(window(r, m["hatk"], m["hatk_end"]), window(r, m["hatk"], m["hatk_end"])[1:])
+                                          if J in ub and ub[J]["act"] == 73 and ua.get(J, {}).get("act") != 73)
+    out["attack: damage to the infantryman per hit"] = " ".join(str(h[2]) for h in hits) or "none"
+    return out
+
+
+def m_m4aggro(r):
+    a, b = r["m"]["walk"], r["m"]["end"]
+    J = r["player"]
+    first = at(r, a)[1]
+    out = {}
+    for rec, u0 in sorted(first.items()):
+        if u0["nat"] == first[J]["nat"] or not u0["nat"] or u0["hp"] <= 0:
+            continue
+        for t, us in window(r, a, b):
+            u, j = us.get(rec), us[J]
+            if not u:
+                break
+            if math.hypot(u["x"] - u0["x"], u["y"] - u0["y"]) > 30 or u["act"] in ATTACKS | MOVES | {48}:
+                out[f"{rec} {u0['name']}: Joan dist at reaction"] = round(math.hypot(u["x"] - j["x"], u["y"] - j["y"]))
+                break
+    hits = hp_drops(r, a, b, {J})
+    out["hits on Joan"] = len(hits)
+    out["damage per hit on Joan (sorted)"] = " ".join(str(h[2]) for h in sorted(hits, key=lambda h: h[2]))
+    out["reacting English units"] = sum(1 for k in out if k.endswith("reaction"))
+    return out
+
+
 METRICS = {"start": m_start, "move": m_move, "boundary": m_boundary, "turn": m_turn, "combo": m_combo, "block": m_block,
-           "archer": m_archer, "potion": m_potion, "levelup": m_levelup, "aggro": m_aggro}
+           "archer": m_archer, "potion": m_potion, "levelup": m_levelup, "aggro": m_aggro, "m4start": m_mstart,
+           "cannon": m_cannon, "horse": m_horse, "m4aggro": m_m4aggro, "m5start": m_mstart}
+PAIRED = {"m4start": stat_diff, "m5start": stat_diff}  # metrics over both traces at once (one column)
 
 
 def fmt(v):
@@ -275,6 +401,11 @@ def report():
         for k in list(dict.fromkeys(list(mo) + list(mp))):
             o, p = mo.get(k), mp.get(k)
             lines.append(f"| {sc} | {k} | {fmt(o)} | {fmt(p)} | {verdict(o, p, k) if ro and rp else 'n/a'} |")
+    for sc, f in PAIRED.items():
+        ro, rp = load("orig", sc), load("port", sc)
+        if ro and rp:
+            for k, v in f(ro, rp).items():
+                lines.append(f"| {sc} | {k} | {v} | (paired) | — |")
     text = "\n".join(lines) + "\n"
     (OUT / "report.md").write_text(text)
     print(text)

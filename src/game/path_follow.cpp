@@ -71,8 +71,7 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
     const int a = u.action;
     // Riders keep steering during H_RUN / H_ATTACK: 0x52daa0 runs the path step for every live unit and
     // only skips the gear call while H_RUN; the horse carries the rider (mount_sync).
-    if (is_knocked_ext(a) || is_flinch(a) || (is_attacking(a) && !u.mount) || a == DIE || a == STANDUP || u.airborne ||
-        (u.mount && !u.ride_ready)) {
+    if (is_knocked_ext(a) || is_flinch(a) || (is_attacking(a) && !u.mount) || a == DIE || a == STANDUP || u.airborne) {
         s.last_pos = u.pos;
         return;
     }

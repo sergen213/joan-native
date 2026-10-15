@@ -11,6 +11,7 @@
 //   anim/<UPPERFILE>.am2   clip lengths + clip events (move timing), loaded lazily per file.
 #pragma once
 
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -96,6 +97,7 @@ struct ItemDef {
     // 0x4a4200: value of `effect` for an instance of `level` (nullopt if the item lacks it).
     std::optional<int> effect_value(int effect, int level) const;
     int base_damage(int level) const { return damage + (level - min_level) * inc_damage; }  // 0x4a41c0
+    std::string model, attach_bone;      // Model (item/<model>) / AttachBoneName: ThrowItem_launch 0x5133e0 spawn bone
 };
 
 struct AnimScript {
@@ -165,7 +167,8 @@ struct UnitClass {
         power_jump = 0, disguise = 0, persuade = 0, lock_picking = 0, mountain = 0;   // +0x183..+0x197
     int level = 1, loyalty = 0, morale = 0, reputation = 0, behavior = 0, falling = 20;
     int kingdom = 0;
-    float cyl_radius = 15, cyl_height = 80;
+    // CollisionType Cylinder (+0x1c3): centre z +0x21d, radius +0x221, height +0x225 (actor +0xe4.. shape, 0x6a1bb0).
+    float cyl_radius = 15, cyl_height = 80, cyl_center_z = 40;
     int move_table = -1;         // index into GameData::move_tables (lazy, see GameData::moves)
     struct AttachPoint { float x = 0, y = 0, z = 0, dir = 0; int usage = 0, item = 0; };  // usage M1 F2 B3
     std::vector<AttachPoint> attach_points;   // AttachPointCount (+0x1ad..)
@@ -207,12 +210,19 @@ public:
     const MoveTable* moves(int cls);
     const MoveTable* moves(int cls) const { return cls >= 0 && units[cls].move_table >= 0 ? &move_tables[units[cls].move_table] : nullptr; }
     const ClipInfo* clip(const MoveRecord& r) const { return r.clip >= 0 ? &clips[r.clip] : nullptr; }
+    // Item_setup_collision 0x41e850 sphere {cx, cy, cz, r} of an item's actor: ITEMTYPE 13..18 (arrows, bolts) centre 0
+    // radius 10, every other item its model's bounding sphere (model +0x34..+0x40). Cached.
+    const std::array<float, 4>& item_sphere(int item);
+    // Model-space origin of skeleton node `bone` (case-insensitive) in move r's clip at t ms after the clip start.
+    bool bone_origin(const MoveRecord& r, const std::string& bone, float t, std::array<float, 3>& out);
 
 private:
     formats::Vfs vfs_{"."};
     std::optional<formats::ResArchive> stdset_;
     std::map<std::string, int> clip_index_;   // "file|clip" (upper) -> clips index
     std::map<std::string, std::shared_ptr<formats::Animation>> am2_;
+    std::map<std::string, std::shared_ptr<formats::Skeleton>> am3_;
+    std::map<int, std::array<float, 4>> item_sphere_;
     std::map<std::string, std::string> animate_;  // ANIMATE code -> DBF name
     int load_clip(const std::string& file, const std::string& name);
     void build_root(int clip, const std::string& file, const std::string& name);   // FUN_00417f20

@@ -2,6 +2,7 @@
 // 0x512130, ThrowItem spawn 0x4ea700/0x507fc0, launch 0x5133e0, aim solver 0x496d40, integrator
 // 0x6a8060, hit posting 0x514c40 / ground 0x4fcc00, manager 0x4913c0. GAMEPLAY_CHARACTER_COMBAT.md Part D.
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "game/world_sim.hpp"
@@ -45,7 +46,123 @@ Vec3 solve_aim(Vec3 p0, Vec3 t, float m, float mxd, float av, float gl, float mi
     }
     return scale(v, m * 1000.0f);
 }
+
+// FUN_0069e720 (+ the 16-sample sign scan of 0x6a1460): first t in [0, 1] where the moving sphere (centre c + v t,
+// radius r) touches the circle of radius R around k in the plane z = k.z: a root of
+// (|P|^2 + R^2 - r^2)^2 - 4 R^2 (Px^2 + Py^2), P = c + v t - k. A sphere that does not move reports t 0 (the original's
+// degenerate branch). ponytail: bisection instead of the original's Newton step; same root.
+bool sweep_sphere_rim(Vec3 c, Vec3 v, Vec3 k, float R, float r, float& t) {
+    if (v.x * v.x + v.y * v.y + v.z * v.z == 0) return t = 0, true;
+    auto g = [&](float s) {
+        const float px = c.x + v.x * s - k.x, py = c.y + v.y * s - k.y, pz = c.z + v.z * s - k.z;
+        const float a = px * px + py * py + pz * pz + R * R - r * r;
+        return a * a - 4 * R * R * (px * px + py * py);
+    };
+    float s0 = 0, g0 = g(0);
+    for (int i = 1; i <= 16; ++i) {
+        float s1 = float(i) / 16, g1 = g(s1);
+        if (g1 == 0) return t = s1, true;
+        if ((g0 < 0) == (g1 < 0)) { s0 = s1, g0 = g1; continue; }
+        for (int j = 0; j < 24; ++j) {
+            const float m = (s0 + s1) / 2;
+            ((g(m) < 0) == (g0 < 0) ? s0 : s1) = m;
+        }
+        return t = (s0 + s1) / 2, true;
+    }
+    return false;
+}
 }  // namespace
+
+// FUN_00699a20 (CONFIRMED): sphere (centre c, radius r) moving by v this frame vs a vertical cylinder (centre q,
+// radius R, height h). The xy circles (r + R, 0x6a0d80) give the first contact t; a hit when the sphere centre's z is
+// then within the cylinder's height (not widened by r). Otherwise the top, then the bottom cap: the sphere reaches the
+// cap plane (0x69e970; already within r counts as t 0) with its centre inside the cap disc, or it touches the rim.
+// So the hit volume is the cylinder grown by r sideways and r above/below the caps, rounded at the rims.
+bool sweep_sphere_cylinder(Vec3 c, float r, Vec3 v, Vec3 q, float R, float h, float& t) {
+    if (r == 0 || R == 0 || h == 0) return false;
+    const float dx = q.x - c.x, dy = q.y - c.y, d2 = dx * dx + dy * dy, rr = r + R;
+    if (std::sqrt(d2) <= rr) {
+        t = 0;
+    } else {
+        const float vl = std::sqrt(v.x * v.x + v.y * v.y), proj = vl > 0 ? (v.x * dx + v.y * dy) / vl : 0;
+        const float disc = rr * rr - (d2 - proj * proj);
+        if (!(proj > 0) || disc < 0 || proj - std::sqrt(disc) > vl) return false;
+        t = (proj - std::sqrt(disc)) / vl;
+        if (t < 0 || t > 1) return false;
+    }
+    const float z = c.z + v.z * t;
+    if (q.z - h / 2 <= z && z <= q.z + h / 2) return true;
+    for (const float side : {1.0f, -1.0f}) {
+        const float plane = q.z + side * h / 2, dist = side * (c.z - plane);
+        if (dist < 0) continue;
+        float tc = 0;
+        if (dist > r) {
+            if (!(side * v.z < 0)) continue;
+            tc = (dist - r) / -(side * v.z);
+            if (tc > 1) continue;
+        }
+        const float ex = c.x + v.x * tc - q.x, ey = c.y + v.y * tc - q.y;
+        if (ex * ex + ey * ey <= R * R) return t = tc, true;
+        if (sweep_sphere_rim(c, v, {q.x, q.y, plane}, R, r, t)) return true;
+    }
+    return false;
+}
+
+// FUN_006a0f90 / 0x6a09e0 / 0x6a0d80 (CONFIRMED decomp): the point c moving by v vs the sphere (q, R): t 0 when it
+// starts inside, else the first contact within this frame's move.
+static bool sweep_point_sphere(Vec3 c, Vec3 v, Vec3 q, float R, float& t) {
+    const Vec3 d = sub(q, c);
+    const float dl = len3(d), vl = len3(v);
+    if (dl <= R) return t = 0, true;
+    if (vl == 0) return false;
+    const float proj = (v.x * d.x + v.y * d.y + v.z * d.z) / vl, disc = R * R - (dl * dl - proj * proj);
+    if (!(proj > 0) || disc < 0 || proj - std::sqrt(disc) > vl) return false;
+    t = (proj - std::sqrt(disc)) / vl;
+    return true;
+}
+
+bool sweep_sphere_sphere(Vec3 c, float r, Vec3 v, Vec3 q, float R, float& t) {
+    return r + R != 0 && sweep_point_sphere(c, v, q, r + R, t);
+}
+
+// FUN_00697140 (CONFIRMED decomp + asm): in the box's frame, the faces grown by r in the order -x +x -y +y -z +z
+// (0x69e640: approaching, or exactly on the plane = t 0; the centre then within the face), then the twelve edges as
+// radius-r cylinders (0x6a09e0, the edge's own axis ignored; contact within the edge) - z edges, y edges, x edges - then
+// the eight corners (0x6a0f90). The first feature that reports a contact wins. Original quirk kept: the four
+// vertical edges test the contact's x, not its z, against the box's z extent.
+bool sweep_sphere_box(Vec3 c, float r, Vec3 v, Vec3 lo, Vec3 hi, float& t) {
+    const float C[3]{c.x, c.y, c.z}, V[3]{v.x, v.y, v.z}, L[3]{lo.x, lo.y, lo.z}, H[3]{hi.x, hi.y, hi.z};
+    auto within = [&](int a, int range, float tt) { const float x = C[a] + V[a] * tt; return L[range] <= x && x <= H[range]; };
+    for (int a = 0; a < 3; ++a)
+        for (const float s : {-1.0f, 1.0f}) {
+            const float dist = s < 0 ? L[a] - r - C[a] : C[a] - H[a] - r, vn = s * V[a];
+            float tt = 0;
+            if (dist != 0) {
+                if (dist < 0 || !(vn < 0) || -vn < dist) continue;
+                tt = -dist / vn;
+            }
+            if (within((a + 1) % 3, (a + 1) % 3, tt) && within((a + 2) % 3, (a + 2) % 3, tt)) return t = tt, true;
+        }
+    if (r == 0) return false;
+    auto edge = [&](int axis, float x, float y, float z, int check, int range) {
+        float P[3]{x, y, z}, cc[3]{C[0], C[1], C[2]}, vv[3]{V[0], V[1], V[2]}, tt;
+        P[axis] = cc[axis] = vv[axis] = 0;
+        if (!sweep_point_sphere({cc[0], cc[1], cc[2]}, {vv[0], vv[1], vv[2]}, {P[0], P[1], P[2]}, r, tt) || !within(check, range, tt))
+            return false;
+        return t = tt, true;
+    };
+    if (edge(2, L[0], L[1], 0, 0, 2) || edge(2, H[0], L[1], 0, 0, 2) || edge(2, H[0], H[1], 0, 0, 2) || edge(2, L[0], H[1], 0, 0, 2) ||
+        edge(1, L[0], 0, L[2], 1, 1) || edge(1, H[0], 0, L[2], 1, 1) || edge(1, H[0], 0, H[2], 1, 1) || edge(1, L[0], 0, H[2], 1, 1) ||
+        edge(0, 0, L[1], L[2], 0, 0) || edge(0, 0, H[1], L[2], 0, 0) || edge(0, 0, H[1], H[2], 0, 0) || edge(0, 0, L[1], H[2], 0, 0))
+        return true;
+    bool hit = false;
+    for (int k = 0; k < 8; ++k) {   // ponytail: earliest corner instead of the original's fixed order (same unless two are met)
+        float tt;
+        if (sweep_point_sphere(c, v, {k & 1 ? H[0] : L[0], k & 2 ? H[1] : L[1], k & 4 ? H[2] : L[2]}, r, tt) && (!hit || tt < t))
+            t = tt, hit = true;
+    }
+    return hit;
+}
 
 float World::ranged_base_damage(const Unit& a) const {
     float w = 0;
@@ -113,13 +230,30 @@ bool World::ai_shoot(Unit& u, int target) {
 // is not deleted re-solves its aim at the end of the draw, Aim_solve_by_type 0x4945c0 from the launch point to the
 // target's feet (+0x0e). The normalised z then picks SHTIDLE (< 0.1) or SHTIDLEH. ai_shoot's feet-to-feet direction
 // had z 0.15 for a target 40 units up the slope at 260 (mission-1 archer: SHTIDLEH; original SHTIDLE).
-// Launch point: the spawn_projectile HYPOTHESIS (the original transforms the ammo model's bone origin).
 void World::ai_reaim(Unit& u, int type) {
     const Unit* t = unit(u.range_target);
     if (!t || t->deleted) return;
     const ThrowConsts& tc = gd_.throwi[type];
-    const Vec3 p0{u.pos.x, u.pos.y, u.pos.z + gd_.units[u.cls].cyl_height * 0.75f};
+    const Vec3 p0 = launch_point(u, u.inv.ammo.item ? u.inv.ammo.item : gd_.units[u.cls].srange);
     u.aim_dir = norm(solve_aim(p0, t->pos, tc.m, tc.mxd, tc.av, tc.gl, type == 0 ? 0.0f : 0.25f));
+}
+
+// ThrowItem_launch 0x5133e0 (CONFIRMED asm): spawn point = world origin of the bone the ammo hangs from (item +0x9e
+// attach id, else the ItemRes bone: AttachBoneName) in the shooter's current pose, + the caller's offset
+// (Unit_updateAction 0x7c8775: AI holder of an item type 0xc crossbow (+0x1bf) adds world (5.337, 0, 7.5), unrotated;
+// zero otherwise), + for unit-type special 4/5 (CANNON / FAUCONNEAU) actor row0 (forward) * 68.695 + row1 (left) * 12
+// and z + 10.122 (the muzzle). Model x = forward, y = left. Without a skeleton track (unparsed .am3) the old
+// HYPOTHESIS: 3/4 of the class cylinder height above the feet.
+Vec3 World::launch_point(const Unit& s, int ammo) {
+    const UnitClass& cls = gd_.units[s.cls];
+    const float c = std::cos(s.yaw_rad()), sn = std::sin(s.yaw_rad());
+    Vec3 p{s.pos.x, s.pos.y, s.pos.z + cls.cyl_height * 0.75f};
+    std::array<float, 3> b;
+    if (const MoveRecord* mv = move(s); mv && ammo > 0 && gd_.bone_origin(*mv, gd_.items[size_t(ammo)].attach_bone, float(now_ - s.anim_start), b))
+        p = {s.pos.x + c * b[0] - sn * b[1], s.pos.y + sn * b[0] + c * b[1], s.pos.z + b[2]};
+    if (s.id != player_ && s.inv.melee[1].item && gd_.items[size_t(s.inv.melee[1].item)].type == 0xc) p.x += 5.337f, p.z += 7.5f;
+    if (cls.special == 4 || cls.special == 5) p = {p.x + c * 68.695f - sn * 12.0f, p.y + sn * 68.695f + c * 12.0f, p.z + 10.122f};
+    return p;
 }
 
 int World::spawn_projectile(Unit& s) {
@@ -138,25 +272,37 @@ int World::spawn_projectile(Unit& s) {
     p.dl = type == 0 ? bonus(s, RANGE_DISTANCE) * tc.dl / 100 : tc.dl;   // integer imul/idiv
     p.m = tc.m, p.tr = tc.tr, p.gl = tc.gl;
     p.launch_ms = now_;
-    // Launch point: model bone origin (HYPOTHESIS: 3/4 of the class cylinder height above the feet).
-    const Vec3 p0{s.pos.x, s.pos.y, s.pos.z + cls.cyl_height * 0.75f};
+    const Vec3 p0 = launch_point(s, ammo);
     p.launch = {p0.x, p0.y, 0.0f};   // +0x20 overwritten with 0 (CONFIRMED quirk)
     p.pos_m = scale(p0, 1.0f / kUnitsPerMetre);
-    const Unit* tgt = unit(s.range_target ? s.range_target : (s.ai_controlled ? s.target : 0));
-    if (s.ai_controlled && tgt) {   // 0x50aca0 AI aim
-        s.aim_dir = norm(sub(tgt->pos, s.pos));
-        if (cls.special == 4 || cls.special == 5) s.aim_dir.z += 0.15f;
+    const Unit* tgt = unit(s.range_target ? s.range_target : (s.ai_controlled && !s.range_item ? s.target : 0));
+    // +0x2dd map-item target (SHOOT order on an item); only without a unit target (0x50aca0, 0x5133e0).
+    const StructureHit obj = !tgt && s.range_item && structure_ray ? structure_ray(s.range_item, {}, {}) : StructureHit{};
+    if (s.ai_controlled && (tgt || obj.item)) {   // 0x50aca0 AI aim: the target, else the actor's forward
+        s.aim_dir = norm(sub(tgt ? tgt->pos : obj.pos, s.pos));
+    } else if (s.ai_controlled) {
+        s.aim_dir = {std::cos(s.yaw_rad()), std::sin(s.yaw_rad()), 0.0f};
+        if (cls.special == 4 || cls.special == 5) s.aim_dir = norm({s.aim_dir.x, s.aim_dir.y, 0.15f});
     }
     Vec3 f;
     float dur = 1.0f;
+    auto spread = [&] { const int v = rng().next(gd_.c.arr_accu); return rng().next(2) != 0 ? -v : v; };
+    const bool spreads = s.id != player_ && cls.unit_class != 8;   // Ranged_spread_offset 0x512130
     if (type == 0) {
         f = scale(norm(s.aim_dir), tc.fc);
         dur = 100.0f;
     } else if (tgt) {
         Vec3 t = tgt->pos;
         t.z += float(gd_.units[tgt->cls].height) * 0.8f;
-        if ((type == 1 || type == 2) && len3(sub(t, s.pos)) > 300 && s.id != player_ && cls.unit_class != 8) {
-            auto spread = [&] { const int v = rng().next(gd_.c.arr_accu); return rng().next(2) != 0 ? -v : v; };
+        if ((type == 1 || type == 2) && len3(sub(t, s.pos)) > 300 && spreads) {
+            t.x += float(spread());
+            t.y += float(spread());
+        }
+        f = solve_aim(p0, t, tc.m, tc.mxd, tc.av, tc.gl, type <= 2 ? 0.25f : 0.1f);
+    } else if (obj.item) {
+        Vec3 t = obj.pos;
+        t.z += type <= 2 ? obj.aim_h : obj.aim_h_siege;
+        if (type <= 2 && len3(sub(t, s.pos)) > 300 && spreads) {
             t.x += float(spread());
             t.y += float(spread());
         }
@@ -233,8 +379,8 @@ void World::projectile_hit_unit(Projectile& p, Unit& v) {
 // (THROWI derived T/V0) from the substep start along (vx, vy, vz - V0), re-cast at most every T ms;
 // the hit fires on the frame whose (now - dt, now] holds the predicted time, t = 1 - (now - hit)/dt.
 // Kind 3 (STM) has no case in the T/V0 switch (stale locals in the original): never tested here.
-// Primitive colliders (sphere/box/cylinder) only stop a projectile whose +0x26 is already set, i.e.
-// never a flying one; the zero-velocity mesh branch never runs for a flying one either.
+// This pass's primitive branch (mesh format 7) and its zero-velocity mesh branch never stop a flying
+// projectile; the items' CollisionType primitives are met in Physics_sweep_actors (item_sweep).
 int World::sweep_structures(Projectile& p, Vec3 from, Vec3 v, float dt_ms, float& t) {
     if (!structure_ray || p.type == 3) return 0;
     const int dt = int(dt_ms), start = now_ - dt;
@@ -294,9 +440,11 @@ void World::projectile_hit_object(Projectile& p, int item) {
     emit(Ev::ProjectileHit, 0, p.id, p.type, "item");
 }
 
-// 0x6ad660 -> 0x6a8060: fixed sub-steps, trapezoid integration, force pulse, swept unit test, structure
-// sweep, terrain. The body hit wins when it is closer than the structure hit; a structure hit returns
-// before the new state is stored.
+// 0x6ad660 -> 0x6a8060 (CONFIRMED): all fixed sub-steps first (trapezoid integration, force pulse), then once per frame
+// from the frame-start position along the frame's move: the swept actor test (Physics_sweep_actors 0x68de40), the
+// structure sweep (0x693750) and, last, the terrain flag at the new position. The body hit wins when it is closer
+// than the structure hit; either hit returns before the new state is stored (the body stays at the frame start, and
+// ThrowItem_on_hit_actor 0x514c40 tests that position against the head height).
 void World::integrate_projectiles(float dt_ms) {
     for (Projectile& p : projectiles_) {
         if (p.destroyed || p.collided || (p.type != 0 && p.ground)) continue;
@@ -304,10 +452,9 @@ void World::integrate_projectiles(float dt_ms) {
         float h = 0.001f;
         int n = int(dt_ms);
         if (dt_ms > float(max_steps)) h = std::min(dt_ms * 0.001f / float(max_steps), 1.0f), n = max_steps;
-        const Unit* shooter = unit(p.shooter);
-        for (int i = 0; i < n && !p.collided && !p.ground; ++i) {
-            const Vec3 old = p.pos_m, old_v = p.vel_m;
-            const float old_force = p.force_left_ms;
+        const Vec3 f0 = p.pos_m, fv0 = p.vel_m;
+        const float ff0 = p.force_left_ms;
+        for (int i = 0; i < n; ++i) {
             float rest = h;
             while (rest > 0) {
                 float hh = rest;
@@ -324,40 +471,42 @@ void World::integrate_projectiles(float dt_ms) {
                 p.vel_m = nv;
                 rest -= hh;
             }
-            // Swept segment vs unit cylinders (shape forced to cylinder for throw items).
-            const Vec3 s0 = scale(old, kUnitsPerMetre), s1 = scale(p.pos_m, kUnitsPerMetre);
+        }
+        const Vec3 s0 = scale(f0, kUnitsPerMetre), s1 = scale(p.pos_m, kUnitsPerMetre), mv = sub(s1, s0);
+        if (len3(mv) > 0) {
+            // The projectile's sphere (0x41e850) vs each unit's cylinder (0x6a1bb0 -> 0x699a20); first hit in unit order,
+            // then (Physics_sweep_actors' item pass) the map items' CollisionType primitives.
+            const std::array<float, 4>& sp = gd_.item_sphere(p.item);
+            const Vec3 c{s0.x + sp[0], s0.y + sp[1], s0.z + sp[2]};   // ponytail: centre offset unrotated (arrows: 0)
+            const Unit* shooter = unit(p.shooter);
             Unit* hit = nullptr;
             float tu = 1;
-            Vec3 hit_at;
             for (Unit& v : units_) {
                 if (v.deleted || v.id == p.shooter || v.m.climb) continue;   // climbers have no body (0x4ac910)
                 if (shooter && !hostile(shooter->nation, v.nation)) continue;
                 if (is_knocked(v.action) || v.action == STANDUP || v.action == DNATKED || v.action == H_DROP) continue;
                 const UnitClass& vc = gd_.units[v.cls];
-                const Vec3 d = sub(s1, s0);
-                const float dd = d.x * d.x + d.y * d.y;
-                float u = dd > 0 ? ((v.pos.x - s0.x) * d.x + (v.pos.y - s0.y) * d.y) / dd : 0.0f;
-                u = std::clamp(u, 0.0f, 1.0f);
-                const Vec3 c{s0.x + d.x * u, s0.y + d.y * u, s0.z + d.z * u};
-                const float rx = c.x - v.pos.x, ry = c.y - v.pos.y;
-                if (rx * rx + ry * ry > vc.cyl_radius * vc.cyl_radius || c.z < v.pos.z || c.z > v.pos.z + vc.cyl_height) continue;
-                hit = &v, tu = u, hit_at = c;
-                break;
+                if (sweep_sphere_cylinder(c, sp[3], mv, {v.pos.x, v.pos.y, v.pos.z + vc.cyl_center_z}, vc.cyl_radius, vc.cyl_height, tu)) {
+                    hit = &v;
+                    break;
+                }
             }
+            const int body_item = !hit && item_sweep ? item_sweep(c, sp[3], mv, tu) : 0;
             float tw = 1;
-            const int item = sweep_structures(p, s0, old_v, dt_ms, tw);
-            if (hit && (!item || tu < tw)) {
-                p.pos_m = scale(hit_at, 1.0f / kUnitsPerMetre);
-                projectile_hit_unit(p, *hit);
-                break;
+            const int item = sweep_structures(p, s0, fv0, dt_ms, tw);
+            if (hit || body_item || item) p.pos_m = f0, p.vel_m = fv0, p.force_left_ms = ff0;
+            if ((hit || body_item) && (!item || tu < tw)) {
+                // ThrowItem_on_hit_actor 0x514c40: a map item's body (actor +8 == 1) posts the events of 0x4fbc90.
+                if (hit) projectile_hit_unit(p, *hit);
+                else projectile_hit_object(p, body_item);
+                continue;
             }
             if (item) {
-                p.pos_m = old, p.vel_m = old_v, p.force_left_ms = old_force;
                 projectile_hit_object(p, item);
-                break;
+                continue;
             }
-            if (terrain_ && terrain_->height(s1.x, s1.y) > s1.z) p.ground = true;
         }
+        if (terrain_ && terrain_->height(s1.x, s1.y) > s1.z) p.ground = true;
     }
 }
 

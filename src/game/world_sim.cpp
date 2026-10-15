@@ -139,10 +139,11 @@ void World::delete_unit(int id) {
     Unit* u = unit(id);
     if (!u) return;
     // Unit_deinit 0x461f10: the ridden horse loses its rider (0x482930(0)); a horse with a rider in an
-    // active scene dismounts it (0x4fc220(0)).
+    // active scene dismounts it (0x4fc220(0)); then the team: leave_team, a leader disbands (the brain).
     if (Unit* h = unit(u->mount)) horse_set_rider(*this, *h, 0);
     if (Unit* r = unit(u->m.rider); r && u->m.active && r->mount == id) ride_horse(*this, *r, 0);
     u->deleted = true;
+    if (brain_) brain_->removed(*this, id);
 }
 Unit* World::unit(int id) {
     return id >= 1 && id <= int(units_.size()) && !units_[id - 1].deleted ? &units_[id - 1] : nullptr;
@@ -384,7 +385,7 @@ bool World::turn_step(Unit& u) {
             const UnitClass::AttachPoint& p = rec.attach_points[i];
             set_body_yaw(*this, *c, u.yaw_deg + p.dir);
             c->pos = {p.x * cs - p.y * sn + u.pos.x, p.x * sn + p.y * cs + u.pos.y, u.pos.z + p.z};
-            if (terrain_) c->pos.z = terrain_->height(c->pos.x, c->pos.y) + p.z;
+            c->pos.z = attach_z(c->pos, p.z);
             const bool pusher = p.usage & 1;
             const bool firing = c->action == SHTLOADC || c->action == SHTIDLEC || c->action == SHTOUTC;
             if (!rotating) {
@@ -604,10 +605,19 @@ void World::tick_physics() {
             u.pos = h->pos;
 }
 
+float World::attach_z(Vec3 at, float point_z) const {
+    if (!physics_) return terrain_ ? terrain_->height(at.x, at.y) + point_z : at.z;
+    float h = 0;
+    return physics_->floor(*this, at.x, at.y, at.z - point_z, h) ? h + point_z : at.z;
+}
+
 void World::unit_process(Unit& u, int phase) {
     if (u.deleted) return;
     switch (phase) {
     case 0:
+        // Unit_process 0x52c490 phase-0 head (0x52c4c4 / 0x52c4d0): the interact unit / item (+0x2e3 / +0x2e5) a
+        // TRIGGER_INTERACT wrote last tick are cleared, so a script reads each talk once (S4L1 never resets them).
+        u.m.interact_unit = u.m.interact_item = 0;
         if (auto_pickup) auto_pickup(u);   // Unit_auto_pickup 0x49da30 (phase-0 head)
         if (u.id == player_ && critical_attack_enabled) crit_check(u);
         if (u.no_react && u.action != IDLE_T && u.action != IDLE && u.action != DIE) set_action(u, u.m.bound ? IDLE_T : IDLE);

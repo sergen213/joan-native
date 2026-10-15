@@ -66,5 +66,12 @@ int main() {
         CHECK(w.max_hp(e) == 75 && e.hp == 75 && e.str == 6 && e.def == 6, "upgrades hp %d str %d def %d", w.max_hp(e), e.str, e.def);
         CHECK(e.attr_points == 4 && e.skill_points == 0, "points left %d %d", e.attr_points, e.skill_points);
     }
+    {   // Differential round 4 (mission 4 start, original memory): every level-13 ENGLISH_CROSSBOW_MAN has STR 32,
+        // DEX 35, DEF 32, max HP 57. Its UPGRADE code has two rows; only the first is used (0x531df0), so no HP+4.
+        World w(*gd, &flat, 0);
+        Unit& e = *w.unit(w.spawn_unit("ENGLISH_CROSSBOW_MAN", gd->nation_id("ENGLISH"), {0, 0, 0}, 0, 13));
+        CHECK(e.level == 13 && e.str == 32 && e.dex == 35 && e.def == 32 && w.max_hp(e) == 57,
+              "crossbow L%d str %d dex %d def %d mhp %d", e.level, e.str, e.dex, e.def, w.max_hp(e));
+    }
     return finish();
 }

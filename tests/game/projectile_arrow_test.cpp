@@ -109,5 +109,31 @@ int main() {
         }
         CHECK(drawn == SHTIDLE, "after the draw: action %d aim z %f", drawn, v.unit(aa)->aim_dir.z);
     }
+    // Arrow = sphere r 10 (Item_setup_collision 0x41e850) vs the unit cylinder r 15, z 0..80 (0x699a20): hits reach
+    // lateral 25 and 90 above the feet (measured in the original: hit at lateral 24.5, miss at 25.0; hit at axis
+    // height ~90, miss at ~92; DIFFERENTIAL_VERIFICATION.md round 5). The port used to test a point (lateral 15, top 80).
+    auto pass = [&](float lateral, float z) {
+        World v(*gd, &flat, 0);
+        // Target: an English archer (Height 100; Joan's 70 would fail 0x514c40's head test above 70).
+        const int aa = v.spawn_unit("JOAN_OF_ARC", gd->nation_id("FRENCH"), {0, 0, 0}, 0);
+        const int jj = v.spawn_unit("ENGLISH_ARCHER", gd->nation_id("ENGLISH"), {300, 0, 0}, 180);
+        v.set_player(aa);
+        v.tick({});
+        Projectile p;
+        p.id = 1, p.type = 1, p.shooter = aa, p.item = gd->item_index("ARROW"), p.tl = 7000, p.dl = 3000, p.launch_ms = v.now();
+        p.pos_m = {150 / 46.1f, lateral / 46.1f, z / 46.1f};
+        p.vel_m = {1800 / 46.1f, 0, 0};   // gl 0: a level flight past Joan's axis
+        v.projectiles().push_back(p);
+        bool hit = false;
+        for (int t = 0; t < 20; ++t) {
+            v.tick({});
+            for (const auto& e : v.take_events()) hit |= e.type == Ev::ProjectileHit && e.unit == jj;
+        }
+        return hit;
+    };
+    CHECK(pass(0, 60) && pass(20, 60) && pass(24, 60), "lateral hits within 15 + 10");
+    CHECK(!pass(26, 60) && !pass(-26, 60), "lateral miss beyond 25");
+    CHECK(pass(0, 85) && pass(0, 89), "hits up to 10 above the 80-high cylinder");
+    CHECK(!pass(0, 92), "misses over the head");
     return finish();
 }

@@ -27,7 +27,8 @@ static std::uint64_t run(GameData& gd, bool verbose) {
     if (!king || !horse) return 0;
     w.tick(none);
     CHECK(ride_horse(w, *w.unit(king), horse) == 1, "set_unit_ride_horse");
-    for (int i = 0; i < 120 && !w.unit(king)->ride_ready; ++i) w.tick(none);
+    CHECK(w.unit(king)->ride_ready, "mounted (+0x1ea = 0xff at Ride_horse)");
+    for (int i = 0; i < 120 && w.unit(king)->action != H_IDLE; ++i) w.tick(none);
     CHECK(w.unit(king)->ride_ready && w.unit(king)->action == H_IDLE, "seated");
 
     // Ride 2000 units east.
@@ -90,11 +91,27 @@ static std::uint64_t run(GameData& gd, bool verbose) {
     const int horse2 = w.spawn_unit("CAMP_HORSE", 2, {-460, 20, 0}, 0);
     w.tick(none);
     ride_horse(w, *w.unit(king2), horse2);
-    for (int i = 0; i < 120 && !w.unit(king2)->ride_ready; ++i) w.tick(none);
+    for (int i = 0; i < 120 && w.unit(king2)->action != H_IDLE; ++i) w.tick(none);
     if (verbose) std::printf("king2 mount %d ready %d action %s\n", w.unit(king2)->mount, int(w.unit(king2)->ride_ready), action_name(w.unit(king2)->action));
     w.delete_unit(horse2);
     if (verbose) std::printf("king2 after delete: mount %d action %s\n", w.unit(king2)->mount, action_name(w.unit(king2)->action));
     CHECK(w.unit(king2)->mount == 0 && !w.unit(horse2), "deleted horse: rider unlinked (0x4fc220(0); CHARLIE7 has no H_DMNT row)");
+
+    // S6L1 stage 1: set_unit_ride_horse, then set_idle (Unit_stop: rider H_IDLE) before the H_MNT clip ends. The rider is
+    // still mounted (+0x1ea = 0xff, asm 0x4fcbce) and rides where he is sent (the port left him unseated and frozen).
+    const int king3 = w.spawn_unit("CHARLIE7", 2, {0, 1000, 0}, 0);
+    const int horse3 = w.spawn_unit("CAMP_HORSE", 2, {40, 1020, 0}, 0);
+    w.tick(none);
+    ride_horse(w, *w.unit(king3), horse3);
+    w.stop(*w.unit(king3));
+    CHECK(w.unit(king3)->action == H_IDLE && w.unit(king3)->ride_ready, "mount cut short by Unit_stop: H_IDLE, mounted");
+    ai.give_order(*w.unit(king3), order::MOVE_TO_TARGET, 5, false, 1000, 1000, 0, 0, 60000);
+    const Vec3 q0 = w.unit(horse3)->pos;
+    for (int i = 0; i < 300; ++i) w.tick(none);
+    const Vec3 q1 = w.unit(horse3)->pos;
+    if (verbose) std::printf("interrupted mount: horse ran %.0f, rider %s\n", std::hypot(q1.x - q0.x, q1.y - q0.y), action_name(w.unit(king3)->action));
+    CHECK(std::hypot(q1.x - q0.x, q1.y - q0.y) > 500 && std::hypot(w.unit(king3)->pos.x - q1.x, w.unit(king3)->pos.y - q1.y) < 1,
+          "interrupted mount: the horse carries the rider to the target");
     return w.hash() ^ ai.hash();
 }
 

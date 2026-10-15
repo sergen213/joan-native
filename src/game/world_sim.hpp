@@ -66,7 +66,16 @@ struct StructureHit {
     int modify = 0;      // item +0x06: event target id
     Vec3 pos;            // item +0x56
     int struction = 0;   // ItemRes +0x1c StructionType (1/2 -> CANNONHH)
+    // ThrowItem_launch 0x5133e0 item-target aim height above pos: PROJ/EXPL, STC/CAN.
+    float aim_h = 0, aim_h_siege = 0;
 };
+
+// Swept-sphere tests of Shape_sweep_pair 0x6a1bb0 (projectile_sim.cpp): sphere centre c, radius r moving by v
+// this frame; true + t (fraction of v) on contact. Sphere 0x6a0d80 (centre q, radius R), Box3d 0x697140 (box
+// lo..hi, c and v in the box's frame), Cylinder 0x699a20 (vertical, centre q, radius R, height h).
+bool sweep_sphere_sphere(Vec3 c, float r, Vec3 v, Vec3 q, float R, float& t);
+bool sweep_sphere_box(Vec3 c, float r, Vec3 v, Vec3 lo, Vec3 hi, float& t);
+bool sweep_sphere_cylinder(Vec3 c, float r, Vec3 v, Vec3 q, float R, float h, float& t);
 
 // ThrowItem (0x6c bytes) + its rigid body. Physics in metres (46.1 units = 1 m).
 struct Projectile {
@@ -136,12 +145,16 @@ public:
     virtual ~IUnitBrain() = default;
     virtual void execute_orders(World&, Unit&) {}
     virtual void think(World&, Unit&) {}
+    // After delete_unit marked the unit deleted (corpse removal, scripts): its team membership ends.
+    virtual void removed(World&, int /*recno*/) {}
 };
 // Character physics replacement (AiTroops). Called once per tick in the physics slot.
 class IUnitPhysics {
 public:
     virtual ~IUnitPhysics() = default;
     virtual void integrate(World&, float dt_s) = 0;
+    // Floor (nav poly, walkways included) under (x, y) nearest in height to z; false when there is none.
+    virtual bool floor(const World&, float /*x*/, float /*y*/, float /*z*/, float& /*out*/) const { return false; }
 };
 
 class World {
@@ -181,6 +194,11 @@ public:
     const GameData& data() const { return gd_; }
     const ITerrainQuery* terrain() const { return terrain_; }
     void set_terrain(const ITerrainQuery* t) { terrain_ = t; }
+    // Unit_update_location 0x4fee60 crew z: the floor under the attach point `at` (weapon pos + rotated point, z = weapon z
+    // + point z) plus the point's z, the floor nearest the weapon (Phys_track_poly from the crew body + PathSpace_poly_height:
+    // a wall walkway's arbalest crew stands on the walkway); `at.z` when no floor is found. Without character physics, the
+    // terrain height.
+    float attach_z(Vec3 at, float point_z) const;
 
     // --- tick ------------------------------------------------------------------------------
     // Player controller (one frame) + stand-in pads, clock += 33, UnitArray_process (all units,
@@ -213,6 +231,10 @@ public:
     // Physics_sweep_structures 0x693750 mesh test (mission layer: MapObjects::structure_ray). item == 0:
     // nearest map item on from->to (world units); item > 0: that item's event data (.item 0 if gone).
     std::function<StructureHit(int item, Vec3 from, Vec3 to)> structure_ray;
+    // Physics_sweep_actors 0x68de40 item pass: the first map item whose CollisionType primitive (ItemRes +0x1e9, on
+    // the item actor +0xb8) the projectile sphere (centre c, radius r, world units) meets on this frame's move mv;
+    // t = fraction of mv. 0 = none (mission layer: MapObjects::sweep_items).
+    std::function<int(Vec3 c, float r, Vec3 mv, float& t)> item_sweep;
 
     // --- output ----------------------------------------------------------------------------
     const std::vector<GameEvent>& events() const { return events_; }
@@ -273,6 +295,7 @@ public:
     float apply_ranged_damage(Unit& d, Unit& a, int type, int p);       // 0x509e90
     float try_ranged_hit(Unit& d, Unit& a, int type, bool ignore_down); // 0x5051e0
     int spawn_projectile(Unit& shooter);                                // 0x4ea700 + launch 0x5133e0
+    Vec3 launch_point(const Unit& shooter, int ammo);                    // 0x5133e0 spawn point (bone + muzzle)
     bool ai_shoot(Unit& u, int target);                                 // AI fire start (SHTLOAD)
     void ai_reaim(Unit& u, int type);                                   // draw end re-aim (0x7c7ab0 cases 0x30/0x32)
     std::vector<Projectile>& projectiles() { return projectiles_; }
