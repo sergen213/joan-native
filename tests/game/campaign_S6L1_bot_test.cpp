@@ -5,15 +5,19 @@
 // Mission::finish_objectives() (the end-condition awards) and CONTINUE: Joan level 13. Without that file the test is skipped.
 //
 // The mission spans the whole map (Auxerre, Troyes and its trebuchet hill, the camps, Chalons, Reims) and needs reputation
-// 80; the bot does not win it yet (SAVES_AND_CAMPAIGN.md §8.1). Within kTicks it gets through Auxerre's trap: Glasdale
-// (objective 13) killed and the duke's cannons built at the hut for the corner towers (how many towers fall in time varies
-// from run to run: 0..4). The test checks that measured progress: Joan, Charles and Alencon alive (no defeat), Glasdale
-// dead, a French cannon standing or a tower down. A win also
-// checks the ending (CONTINUE after the last scenario: MissionEvent::Ending, no next mission).
+// 80: longer than a test may take, so it is cut at self-generated checkpoints, each segment a test of its own (fixtures):
+//   game.campaign_S6L1_auxerre  mission start -> Auxerre captured with the king there (objective 1): saves
+//                               campaign_checkpoints/bot-S6L1-auxerre.jsav (Glasdale, objective 13, dead on the way);
+//   game.campaign_S6L1_troyes   from there -> Troyes captured with the king there (objective 2): bot-S6L1-troyes.jsav;
+//   game.campaign_S6L1_bot      from there -> the win, then CONTINUE after the last scenario: MissionEvent::Ending.
+// Each segment starts a fresh bot from the save (the plan keeps no state across it). Iterate on one segment:
+// ctest -R S6L1 -FS 'campaign_.*'.
 //
-//   game_campaign_S6L1_bot_test [FROM_S4L1.jsav] [DIFFICULTY] [TICKS]   the bot on the mission-8 start
-//   game_campaign_S6L1_bot_test --checkpoint OUT [FROM] [D]             write the mission-8 start and exit; iterate with
-//                                                                       joa-campaign --load OUT --autopilot
+//   game_campaign_S6L1_bot_test [TROYES.jsav] [TICKS]                 the bot from the Troyes checkpoint: must win
+//   game_campaign_S6L1_bot_test --auxerre OUT [FROM_S4L1.jsav] [D]    the mission start to objective 1, save OUT
+//   game_campaign_S6L1_bot_test --troyes OUT [AUXERRE.jsav]           the Auxerre checkpoint to objective 2, save OUT
+//   game_campaign_S6L1_bot_test --checkpoint OUT [FROM] [D]           write the mission-8 start and exit; iterate with
+//                                                                     joa-campaign --load OUT --autopilot
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -27,11 +31,9 @@ using namespace joa::game;
 
 namespace {
 
-// No tower minimum: the crew can die at a corner tower's gun spot (SAVES_AND_CAMPAIGN.md §8.1 S6L1). The harness and a
-// save/load drive loop are deterministic and identical (MissionBot8d); the old "drive took Auxerre, test stuck" gap came
-// from a different start checkpoint.
-constexpr int kTicks = 120000;
-constexpr int kRetries = 0;
+constexpr int kAuxerreTicks = 200000, kTroyesTicks = 300000, kTicks = 400000;   // segment caps (Normal, seed 1: §8.1)
+constexpr const char* kAuxerre = "campaign_checkpoints/bot-S6L1-auxerre.jsav";
+constexpr const char* kTroyes = "campaign_checkpoints/bot-S6L1-troyes.jsav";
 
 bool start_8(CampaignRunner& run, const char* from, int difficulty, std::string& err) {
     if (!run.init(&err)) return false;
@@ -51,58 +53,84 @@ bool start_8(CampaignRunner& run, const char* from, int difficulty, std::string&
     return run.mission()->info().stem() == "S6L1" || (err = "not at S6L1", false);
 }
 
+bool done(Mission& m, int objective) { return m.state().end.size() >= std::size_t(objective) && m.state().end[std::size_t(objective - 1)].finish == 1; }
+
+int script_failures(Mission& m) {
+    int fails = 0;
+    for (const auto& [id, n] : m.host().unimplemented_calls())
+        std::printf("FAIL unimplemented builtin %d %s\n", id, std::string(formats::script_funcs()[id - 1].name).c_str()), ++fails;
+    for (const auto& e : m.vm().errors()) std::printf("FAIL script error: %s\n", e.c_str()), ++fails;
+    return fails;
+}
+
+// --auxerre / --troyes: the bot until `objective` is done (a game over, a finished mission or the tick cap fail), then
+// OUT is saved.
+int segment(CampaignRunner& run, int objective, int cap, const char* out) {
+    Mission& m = *run.mission();
+    m.autosave = false;
+    Autopilot ap(m);
+    if (const char* tr = std::getenv("JOA_BOT_TRACE")) ap.trace = std::atoi(tr);
+    int t = 0;
+    for (; t < cap && !done(m, objective) && m.finish() == 0 && !m.state().game_over; ++t) ap.step();
+    for (const std::string& l : ap.log) std::printf("  %s\n", l.c_str());
+    int fails = script_failures(m);
+    if (!done(m, objective))
+        std::printf("FAIL objective %d open after %d ticks (game over %d '%s') | bot %s\n", objective, t, int(m.state().game_over),
+                    m.state().game_over_text.c_str(), ap.goal.c_str()), ++fails;
+    std::string err;
+    if (!fails && !write_save_atomic(out, encode_save(run.save()), 0, &err)) std::printf("FAIL save: %s\n", err.c_str()), ++fails;
+    if (!fails) std::printf("objective %d at tick %d (mission tick %llu, rep %d): saved %s\n", objective, t, (unsigned long long)m.ticks(),
+                            m.state().reputation, out);
+    return fails ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const char* dir = std::getenv("JOA_GAME_DIR");
     if (!dir || !formats::Vfs(dir).exists("scenario/scenario_01.scr")) return 77;
-    const bool make = argc > 2 && std::string(argv[1]) == "--checkpoint";
-    const int a = make ? 3 : 1;
-    const char* from = argc > a ? argv[a] : "campaign_checkpoints/bot-S4L1.jsav";
-    const int difficulty = argc > a + 1 ? std::atoi(argv[a + 1]) : 1;
-    const int ticks = !make && argc > a + 2 ? std::atoi(argv[a + 2]) : kTicks;
-    if (!read_file(from)) return std::printf("skip: no %s (game.campaign_legit writes it)\n", from), 77;
+    const std::string mode = argc > 1 ? argv[1] : "";
+    const bool checkpoint = argc > 2 && mode == "--checkpoint", auxerre = argc > 2 && mode == "--auxerre",
+               troyes = argc > 2 && mode == "--troyes";
+    const char* from = checkpoint || auxerre ? (argc > 3 ? argv[3] : "campaign_checkpoints/bot-S4L1.jsav")
+                       : troyes             ? (argc > 3 ? argv[3] : kAuxerre)
+                       : argc > 1           ? argv[1]
+                                            : kTroyes;
+    if (!read_file(from)) return std::printf("skip: no %s (game.campaign_legit / the earlier S6L1 segment writes it)\n", from), 77;
     std::string err;
     auto gd = GameData::load(dir, &err);
     if (!gd) return std::printf("game data: %s\n", err.c_str()), 1;
     const formats::Vfs vfs(dir);
     CampaignRunner run(*gd, vfs);
-    if (!start_8(run, from, difficulty, err)) return std::printf("FAIL start: %s\n", err.c_str()), 1;
-    if (make) {
+    if (checkpoint || auxerre) {
+        if (!start_8(run, from, argc > 4 ? std::atoi(argv[4]) : 1, err)) return std::printf("FAIL start: %s\n", err.c_str()), 1;
+    } else {
+        auto f = decode_save(*read_file(from), &err);
+        if (!f || !migrate_save(*f, &err) || !run.init(&err) || !run.load(*f, &err)) return std::printf("FAIL load: %s\n", err.c_str()), 1;
+        if (run.mission()->info().stem() != "S6L1") return std::printf("FAIL %s is not at S6L1\n", from), 1;
+    }
+    if (checkpoint) {
         if (!write_save_atomic(argv[2], encode_save(run.save()), 0, &err)) return std::printf("FAIL save: %s\n", err.c_str()), 1;
         return std::printf("saved %s\n", argv[2]), 0;
     }
-    const MissionReport r = play_mission(run, ticks, kRetries);
+    if (auxerre) return segment(run, 1, kAuxerreTicks, argv[2]);
+    if (troyes) return segment(run, 2, kTroyesTicks, argv[2]);
+    const MissionReport r = play_mission(run, argc > 2 ? std::atoi(argv[2]) : kTicks, 0);
     Mission& m = *run.mission();
-    int fails = 0;
-    for (const auto& [id, n] : m.host().unimplemented_calls())
-        std::printf("FAIL unimplemented builtin %d %s\n", id, std::string(formats::script_funcs()[id - 1].name).c_str()), ++fails;
-    for (const auto& e : m.vm().errors()) std::printf("FAIL script error: %s\n", e.c_str()), ++fails;
+    int fails = script_failures(m);
     for (const std::string& l : r.log) std::printf("  %s\n", l.c_str());
     std::printf("%s %s ticks %d attempts %d deaths %d kills %d objectives %d/%d rep %d%s%s\n", r.stem.c_str(),
                 r.result == 1 ? "WON" : r.result == 2 ? "LOST" : "STUCK", r.ticks, r.attempts, r.deaths, r.kills, r.objectives_done,
                 r.objectives_total, m.state().reputation, r.stuck.empty() ? "" : " | ", r.stuck.c_str());
-    if (r.result == 1) {
-        m.take_events();
-        if (run.continue_after_win(&err) || err != "campaign complete") std::printf("FAIL continue: '%s'\n", err.c_str()), ++fails;
-        bool ending = false;
-        for (const MissionEvent& e : m.take_events()) ending |= e.kind == MissionEvent::Kind::Ending;
-        if (!ending) std::printf("FAIL no Ending event\n"), ++fails;
-        std::printf(fails ? "%d failures\n" : "ok\n", fails);
-        return fails ? 1 : 0;
+    if (r.result != 1) {
+        std::printf("FAIL S6L1 not won\n%d failures\n", fails + 1);
+        return 1;
     }
-    const auto& end = m.state().end;
-    const bool glasdale = end.size() > 12 && end[12].finish == 1;
-    int towers = 0, cannons = 0;
-    for (const Unit& u : m.world().units())
-        cannons += !u.deleted && !m.world().dead(u) && u.nation == m.world().unit(m.world().player_id())->nation &&
-                   m.data().units[std::size_t(u.cls)].code == "CANNON";
-    for (const char* t : {"S6L1_2_Tower1", "S6L1_2_Tower2", "S6L1_2_Tower3", "S6L1_2_Tower4"})
-        if (const MapItem* it = m.objects().item(m.objects().find_by_name(t)); it && it->hp <= 0) ++towers;
-    std::printf("progress: Glasdale dead %d, French cannons %d, Auxerre towers down %d/4\n", int(glasdale), cannons, towers);
-    if (r.result == 2) std::printf("FAIL S6L1 lost\n"), ++fails;
-    if (!glasdale) std::printf("FAIL Glasdale (objective 13) not defeated\n"), ++fails;
-    if (cannons == 0 && towers == 0) std::printf("FAIL no cannon built and no Auxerre tower down\n"), ++fails;
+    m.take_events();
+    if (run.continue_after_win(&err) || err != "campaign complete") std::printf("FAIL continue: '%s'\n", err.c_str()), ++fails;
+    bool ending = false;
+    for (const MissionEvent& e : m.take_events()) ending |= e.kind == MissionEvent::Kind::Ending;
+    if (!ending) std::printf("FAIL no Ending event\n"), ++fails;
     std::printf(fails ? "%d failures\n" : "ok\n", fails);
     return fails ? 1 : 0;
 }

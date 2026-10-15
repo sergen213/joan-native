@@ -18,7 +18,7 @@ struct PathQuery {
     NavPt from, to;
     float radius = 64.0f;        // Unit_move_to default BODY_R*2; < 200 treated as 0 for narrow polys
     int start_poly = -1;         // -1 = find_poly / nearest_poly
-    int max_expand = 100;        // every game caller passes 100
+    int max_expand = 100;        // the path_to budget: orders 500..2000 by distance, sidestep / click 100
     float body_r = 32.0f;        // BODY_R: the world-mesh leg (NavWorld) plans with radius BODY_R / 32
 };
 

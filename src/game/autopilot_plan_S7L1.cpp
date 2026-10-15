@@ -24,12 +24,39 @@ public:
         Mission& m = ap.mission();
         ap.plan_talk = 0;   // set again by before_hunt each tick it leads to the potion seller (a stale one re-talks him forever)
         // Buy screen: explosive bolts for the wall archers, plain ones, and gold kept for recruits and the siege workshop.
-        ap.shop_explosive_max = 60, ap.shop_plain_max = 150, ap.shop_gold_keep = 6000;
+        // Once La Charité's gates are open (no recruit trips or trebuchet after) the gold goes on food: 60 plain arrows for
+        // the COMPOUNDBOW, no explosive ones (60 of them were 30000 gold), nothing kept.
+        const bool open = (m.vm().state().bits[1] >> 25) & 1u;
+        ap.shop_explosive_max = open ? 0 : 60, ap.shop_plain_max = open ? 60 : 150, ap.shop_gold_keep = open ? 0 : 6000;
+        // Joan's attribute points into STRENGTH up to 60, then HIT_POINT: melee attack = STR x 3 + sword + 100, and the
+        // chain brings her with STR 9 and JOAN_SWORD_LV1 (137, against 167 with mission 4's LV4 sword when the mission was
+        // last won); STR 60 makes 290. Her HP (328 at the start) is refilled by meat and chicken.
+        ap.attr_kind = is(m, p, "JOAN_OF_ARC") && m.world().stat_str(p) < 60 ? 1 : 6;
         if (is(m, p, "JOAN_OF_ARC")) {
             if (ap.tick() >= army_tick_ && p.m.control == 0) army_tick_ = ap.tick() + (call_army(m, p) ? 900 : 30);
             if (!m.world().controller().range_mode) best_launcher(m, p);
         }
-        return bribe_job(ap, f, p) || gate_job(ap, f, p);
+        return bribe_job(ap, f, p) || gate_job(ap, f, p) || resupply(ap, f, p);
+    }
+
+    // La Charité's garrison, open once its gates are, eats Joan's food faster than any fight lets her break off for the
+    // before_hunt supply trip (every tick has a foe in reach): below 8 food she walks out to the potion seller ahead of the
+    // fights (the generic eating and retreat still run first), until within 600 of him, where the trip and its talk take over.
+    // A walk gaining less than 200 in 3000 ticks is given up for a while (from Gressart's platform the detours east never
+    // led out: she circled there under the wall archers' arrows, ate the rest of her food and died).
+    bool resupply(Autopilot& ap, InputFrame& f, Unit& p) {
+        Mission& m = ap.mission();
+        const Unit* s = potion_seller(m);
+        const int n = food(m, p);
+        if (!s || !is(m, p, "JOAN_OF_ARC") || !((m.vm().state().bits[1] >> 25) & 1u) || m.state().gold < ap.shop_gold_keep + 500 ||
+            ap.unreached(*s) || n >= 25 || (food_tick_ && ap.tick() - food_tick_ < 6000))
+            return resupply_ = false;
+        resupply_ |= n < 8;
+        if (!resupply_ || dist(p.pos, s->pos) < 600) return false;
+        if (trip_stuck(ap, p, *s)) return resupply_ = false;
+        ap.goal = "resupply at " + s->name;
+        ap.travel(f, p, s->pos);
+        return true;
     }
 
     // The walkthrough's quiet way into Saint-Pierre: bribe the Gate Guard (2200 gold) right after the gold-cart cut scene.
@@ -53,11 +80,16 @@ public:
     }
 
     // The mercenary leaders whose death is an objective first: Matthew / Martin Gough (4 / 24, killable once the
-    // monastery hill's cut scene gave them retreat -2), Gressart, Begley, Hudleg (5 / 25 / 26).
+    // monastery hill's cut scene gave them retreat -2), Gressart, Begley, Hudleg (5 / 25 / 26). Gressart (retreat 1: his
+    // "death" is a defeat event, then invulnerable, retreat -1, to "gressart retreat 2") eats his five meat at 20 % HP,
+    // ~6000 HP of sword work: not before La Charité's gates are open (from 60000 off the boss weight drew Joan into the
+    // town, where she ate all her food on him and died), nor while invulnerable, nor with less than 20 food.
     float foe_weight(Autopilot& ap, const Unit& p, const Unit& u) override {
         const float base = MissionPlan::foe_weight(ap, p, u);
-        if (u.name == "Gate Guard" && u.m.bribe == 1 && !((ap.mission().vm().state().bits[1] >> 12) & 1u)) return 0;   // bribed, not fought
+        const auto& b = ap.mission().vm().state().bits;
+        if (u.name == "Gate Guard" && u.m.bribe == 1 && !((b[1] >> 12) & 1u)) return 0;   // bribed, not fought
         const std::string& code = ap.mission().data().units[std::size_t(u.cls)].code;
+        if (code == "Perrinet" && (!((b[1] >> 25) & 1u) || u.retreat == -1 || food(ap.mission(), p) < 20)) return 0;
         for (const auto& [c, n] : {std::pair<std::string_view, int>{"MATTHEWGOUGH", 4}, {"MARTINGOUGH", 24}, {"Perrinet", 5}, {"BEGLEY", 25},
                                    {"HUDLEG", 26}})
             if (code == c)
@@ -100,27 +132,31 @@ public:
         // The inner gate to break: Joan clears its surroundings and waits there for La Hire (gate_job switches to him).
         if (gate_at_.x != 0 && dist(p.pos, gate_at_) > 800) {
             ap.goal = "to inner gate";
-            ap.travel(f, p, gate_at_);
+            ap.travel(f, p, near_side(ap, p, gate_at_, gate_dir_));
             return true;
         }
         // Supplies: the potion shop and Wardley's weapon shop next to it open with Saint-Pierre (objective 1). The HP food the
-        // bot lives on is bought there while 10 are left; bolts / arrows (La Charité's wall archers and tower crews are shot,
-        // not reached) while 10 are left, at most once in 30000 ticks (a shop out of stock is not walked to again and again).
-        // The trip from La Charité is long and crosses enemy ground; one that gains less than 200 in 3000 ticks is given up for
-        // a while (from a platform inside La Charité the bot walked the seam detours east of it for good).
+        // bot lives on is bought there while 10 are left, 25 once La Charité's gates are open (its garrison ate 40 in 50000
+        // ticks, the walk out from the town's far end burned the rest: dead at Hudleg), at most once in 6000 ticks (a bag full
+        // of other things takes no more); Wardley for a bow (COMPOUNDBOW, 50 for 10000 gold) and bolts / arrows (La Charité's
+        // wall archers and tower crews are shot, not reached) while 10 are left, at most once in 30000 ticks (a shop out of
+        // stock is not walked to again and again). The trip from La Charité is long and crosses enemy ground; one that gains
+        // less than 200 in 3000 ticks is given up for a while (from a platform inside La Charité the bot walked the seam
+        // detours east of it for good).
         if (const EndCondition* c = objective(m, 1); c && c->finish == 1 && m.state().gold > ap.shop_gold_keep + 500) {
-            const Unit* s = food(m, p) < 10 ? potion_seller(m)
-                            : ammo(m, p) < 10 && (!bolt_tick_ || ap.tick() - bolt_tick_ > 30000) ? named(m, "Wardley Orfroisier") : nullptr;
+            const int low = ((m.vm().state().bits[1] >> 25) & 1u) ? 25 : 10;
+            const Unit* s = food(m, p) < low && (!food_tick_ || ap.tick() - food_tick_ > 6000) ? potion_seller(m)
+                            : (ammo(m, p) < 10 || (bow(m, p) < 50 && m.state().gold >= ap.shop_gold_keep + 10500)) &&
+                                      (!bolt_tick_ || ap.tick() - bolt_tick_ > 30000)
+                                  ? named(m, "Wardley Orfroisier")
+                                  : nullptr;
             if (s && !ap.unreached(*s)) {
-                const float d = dist(p.pos, s->pos);
-                if (s->id != trip_id_ || d < trip_best_ - 200) trip_id_ = s->id, trip_best_ = d, trip_tick_ = ap.tick();
-                if (ap.tick() - trip_tick_ <= 3000) {
+                if (!trip_stuck(ap, p, *s)) {
                     ap.goal = "to the shop of " + s->name;
                     ap.plan_talk = s->id;
                     ap.travel(f, p, s->pos);
                     return true;
                 }
-                ap.give_up(s->id), trip_id_ = 0;
             }
         }
         // Capture objectives, each place's fightable enemies hunted down: Saint-Pierre (1, once Gough is dead; stragglers
@@ -140,14 +176,16 @@ public:
     // town is captured) when it is down to half, or at once when La Charité's trebuchet lacks crew (crew_short_) and there is
     // room: R at the facility opens the recruit screen (FacilityOrder, as the engine's), light infantry up to three in the
     // troop (the only class that mans a siege weapon), then crossbowmen and heavy infantry alternately while gold, citizens
-    // and the troop limit allow, RECRUIT.
+    // and the troop limit allow, RECRUIT. Refills other than the crew keep 15000 gold back: La Charité's garrison is fought
+    // on bought food (seven refills, 49 men, left 7500 gold at the gates and Joan starved inside).
     bool recruit_job(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
         const int cap = m.ai().max_troop_size(p);
         const bool urgent = crew_short_ && int(p.members.size()) < cap;
+        const int keep = urgent ? ap.shop_gold_keep : std::max(ap.shop_gold_keep, 15000);
         // Once La Charité's gates are open the barracks are a map away and fresh men die at the gates in minutes: no trips.
         if (!is(m, p, "JOAN_OF_ARC") || ap.tick() < recruit_tick_ || (!urgent && int(p.members.size()) * 2 > cap) ||
-            m.state().gold < ap.shop_gold_keep || ((m.vm().state().bits[1] >> 25) & 1u))
+            m.state().gold < keep + 1500 || ((m.vm().state().bits[1] >> 25) & 1u))
             return false;
         Places& pl = m.places();
         int fac = 0;
@@ -174,7 +212,7 @@ public:
             if (order.slot(m, r) == 5) rows[1] = r;
             if (order.slot(m, r) == 1) rows[2] = r;
         }
-        const auto afford = [&] { return m.state().gold - order.cost - 500 >= ap.shop_gold_keep; };
+        const auto afford = [&] { return m.state().gold - order.cost - 500 >= keep; };
         for (; light < 3 && rows[0] >= 0 && afford() && order.more(m, rows[0]); ++light) {}
         for (bool more = true; more;) {
             more = false;
@@ -295,25 +333,37 @@ public:
         if (ap.tick() - stall_tick_ > 900) ap.give_up(id), stall_id_ = 0;
     }
 
-    // Potion shop (buy screen open): HP food (item types 0x15 / 0x19) up to 120 carried, never below the plan's gold keep.
-    // Food takes a bag cell a piece (MaxQuantity 1, World::buy_item: personal grid only) and the loot fills the bag with
-    // apples (EP food, ~30 by La Charité): those beyond 5 go on the floor first (the inventory window's drop), as S5L1's.
-    // A shop selling ammo (the generic purchases bought it) is the weapon shop: its visit time stops further bolt trips.
+    // Shop screen. Food takes a bag cell a piece (MaxQuantity 1, World::buy_item: personal grid only) and the loot fills
+    // the bag with apples (EP food, ~30 by La Charité): Autopilot::make_room first (apples beyond 5 and spare weapons on the
+    // floor, food to the troop grid, the personal grid packed again).
+    // Weapon shop: a stronger bow (St-Pierre's COMPOUNDBOW, 50 against the chain's RAPIDFBOW 16; best_launcher takes it)
+    // when the gold keep allows; Joan's sword is the chain's LV1 when mission 3 bought none and no S7L1 shop sells one.
+    // Potion shop: HP food (item types 0x15 / 0x19), the best heal first (meat and chicken heal fully, bread 50), as much
+    // as the stock lists and the bag takes, never below the plan's gold keep. Either visit's time stops further trips there.
+    // Once per screen (the hook runs every tick it is open; the next tick's make_room would drop a bow still in the bag).
     void shop(Autopilot& ap, Unit& p) override {
         Mission& m = ap.mission();
+        if (shop_ms_ == m.ui().interface_ms) return;
+        shop_ms_ = m.ui().interface_ms;
         World& w = m.world();
         const GameData& gd = m.data();
-        const std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
-        const auto heal = [&](const ShopStock& s) { const int t = gd.items[std::size_t(s.item)].type; return t == 0x15 || t == 0x19; };
-        if (std::any_of(stock.begin(), stock.end(), heal))
-            for (int i = int(p.inv.bag.size()), apples = 0; i-- > 0;)
-                if (gd.items[std::size_t(p.inv.bag[std::size_t(i)].item)].type == 0x17 && ++apples > 5) w.discard_item(p, 10, i, p);
+        int& gold = m.state().gold;
+        ap.make_room(p);
+        int best = bow(m, p);
+        const auto heal = [&](const ShopStock& s) { const ItemDef& d = gd.items[std::size_t(s.item)]; return d.type == 0x15 || d.type == 0x19 ? d.damage : 0; };
+        std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
+        std::stable_sort(stock.begin(), stock.end(), [&](const ShopStock& a, const ShopStock& b) { return heal(a) > heal(b); });
         for (const ShopStock& s : stock) {
             const ItemDef& d = gd.items[std::size_t(s.item)];
             if (d.type >= 0xd && d.type <= 0x12) bolt_tick_ = ap.tick();
-            while (heal(s) && s.quantity != 0 && food(m, p) < 120 && m.state().gold - d.price >= ap.shop_gold_keep &&
-                   w.buy_item(p, s.item, s.level, std::max(1, d.quantity)))
-                m.state().gold -= d.price;
+            if (heal(s)) food_tick_ = ap.tick();
+            if (d.type == 0xb && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > best &&
+                gold - d.price >= ap.shop_gold_keep && w.buy_item(p, s.item, s.level, 1))
+                gold -= d.price, best = d.base_damage(s.level), best_launcher(m, p), ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code);
+            for (int n = 0; heal(s) && (s.quantity < 0 || n < s.quantity) && gold - d.price >= ap.shop_gold_keep &&
+                            w.buy_item(p, s.item, s.level, std::max(1, d.quantity));
+                 ++n)
+                gold -= d.price;
         }
     }
 
@@ -343,6 +393,13 @@ private:
         auto is_ammo = [&](int item) { const int t = m.data().items[std::size_t(item)].type; return t >= 0xd && t <= 0x12; };
         int n = p.inv.ammo.item && is_ammo(p.inv.ammo.item) ? p.inv.ammo.quantity : 0;
         for (const ItemInstance& it : p.inv.bag) n += is_ammo(it.item) ? it.quantity : 0;
+        return n;
+    }
+    // The strongest launcher's base damage: the ranged slot, bows in the bag.
+    static int bow(Mission& m, const Unit& p) {
+        const auto power = [&](const ItemInstance& i) { return i.item > 0 ? m.data().items[std::size_t(i.item)].base_damage(i.level) : 0; };
+        int n = power(p.inv.ranged);
+        for (const ItemInstance& i : p.inv.bag) n = std::max(n, m.data().items[std::size_t(i.item)].type == 0xb ? power(i) : 0);
         return n;
     }
     static const Unit* potion_seller(Mission& m) { return named(m, "Alfonse Potier"); }
@@ -375,7 +432,9 @@ private:
         }
         ap.goal = "hunt #" + std::to_string(best->id) + " " + m.data().units[std::size_t(best->cls)].code;
         int& shots = shot_spent_[best->id];
-        if (dist(p.pos, best->pos) < (shots > 600 ? 500 : 1500) && ap.clear_shot(p, *best)) ap.shoot(f, p, *best), ++shots;
+        // Shot at only with arrows in the ammo slot (out of them Joan stood 320000 ticks on a Saint-Pierre wall "shooting"
+        // the garrison in the yard below).
+        if (dist(p.pos, best->pos) < (shots > 600 ? 500 : 1500) && ap.clear_shot(p, *best) && ap.load_ammo(p, false)) ap.shoot(f, p, *best), ++shots;
         else ap.travel(f, p, best->pos);
         return true;
     }
@@ -476,7 +535,7 @@ private:
         const MapItem* g = m.objects().item(gate);
         const bool need = e && e->enabled && e->finish != 1 && gough && joan && lahire && g && g->state == 0 && g->hp > 0 &&
                           gate_spent_ < 9000 && !ap.linked(ap.region(joan->pos), ap.unit_region(*gough));
-        gate_at_ = need ? g->pos : Vec3{};
+        gate_at_ = need ? g->pos : Vec3{}, gate_dir_ = g ? g->dir : 0;
         if (is(m, p, "LAHIRE")) {
             if (!need) return m.switch_hero(1);
             ++gate_spent_;
@@ -484,8 +543,12 @@ private:
                 if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && !u.no_react && dist(u.pos, p.pos) < 250 && std::fabs(u.pos.z - p.pos.z) < 150)
                     return false;
             ap.goal = "la hire at gate " + std::to_string(gate);
+            // The shut gate's own poly is off the path mesh, so travel() to it finds no linked region and takes the nearest
+            // gate to open instead (Saint-Pierre's outer one, where La Hire stood for good): walk to before it on his side,
+            // then straight at it.
             if (dist(p.pos, g->pos) > 110) {
-                ap.travel(f, p, g->pos);
+                if (dist(p.pos, g->pos) > 220) ap.travel(f, p, near_side(ap, p, g->pos, g->dir));
+                else ap.steer(f, p, g->pos, false);
                 return true;
             }
             const float a = w.rel_angle(p, g->pos);
@@ -506,12 +569,30 @@ private:
     static constexpr Vec3 kCouncillor{58900, 20020, 410};  // place "councillor stand"
     static constexpr Vec3 kWorkshopScene{23280, 7300, 0};  // place "workshop cutscene"
     int siege_tick_ = 0, recruit_tick_ = 0;  // next workshop order / trebuchet RTS order; next recruit visit
-    int bolt_tick_ = 0;                      // last weapon shop screen (ammo for sale)
-    int trip_id_ = 0, trip_tick_ = 0;        // shop being walked to; tick of the last 200 gained
+    int bolt_tick_ = 0, food_tick_ = 0;      // last weapon shop screen (ammo for sale) / potion shop screen
+    int trip_id_ = 0, trip_tick_ = 0, trip_seen_ = 0;  // shop being walked to; tick of the last 200 gained; last tick walked
     float trip_best_ = 0;
+    // A shop trip gaining less than 200 in 3000 ticks of walking is given up on (Autopilot::give_up). A trip interrupted
+    // (a rest, a fight) starts its clock again: 12000 ticks of rest 700 from Alfonse counted as no headway.
+    bool trip_stuck(Autopilot& ap, const Unit& p, const Unit& s) {
+        const float d = dist(p.pos, s.pos);
+        if (s.id != trip_id_ || d < trip_best_ - 200 || ap.tick() - trip_seen_ > 30) trip_id_ = s.id, trip_best_ = d, trip_tick_ = ap.tick();
+        trip_seen_ = ap.tick();
+        if (ap.tick() - trip_tick_ <= 3000) return false;
+        ap.give_up(s.id), trip_id_ = 0;
+        return true;
+    }
     bool crew_short_ = false;                 // the trebuchet lacks crew Joan's troop could give: recruit light infantry
+    bool resupply_ = false;                   // walking out of La Charité for food
+    std::uint32_t shop_ms_ = ~0u;             // buy screen already served (MissionUi::interface_ms)
     int army_tick_ = 0, switch_tick_ = 0, gate_spent_ = 0;
-    Vec3 gate_at_{};  // the inner gate La Hire is to break (0 none)
+    Vec3 gate_at_{};      // the inner gate La Hire is to break (0 none)
+    float gate_dir_ = 0;  // its facing
+    // 160 before a shut gate on the player's side (the side linked to her region), a travel() goal that is on the path mesh.
+    static Vec3 near_side(Autopilot& ap, const Unit& p, Vec3 g, float dir) {
+        const Vec3 a{g.x + std::cos(dir) * 160, g.y + std::sin(dir) * 160, g.z};
+        return ap.linked(ap.region(p.pos), ap.region(a)) ? a : Vec3{2 * g.x - a.x, 2 * g.y - a.y, g.z};
+    }
     std::map<int, int> barrel_spent_;  // gold barrel -> ticks spent going for it
     std::map<int, int> hunt_spent_;    // capture-hunt target -> ticks spent on it
     std::map<int, int> shot_spent_;    // capture-hunt target -> ticks shot at from afar

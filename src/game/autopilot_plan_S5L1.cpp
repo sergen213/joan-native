@@ -185,8 +185,9 @@ struct PlanS5L1 final : MissionPlan {
 
     // Orleans at the start (behind its East Gate, which the generic walk to Dunois never opened): the potion seller's
     // food and the weapon seller's arrows (Joan carries a bow and no arrow; the explosive ones break up the garrison's
-    // groups), then out by the East Gate. Joan has ~26000 gold and nothing else to spend it on before Jargeau's shops
-    // open at the capture; 5000 are kept (S9L1's spy wants 3000). The way points wait meanwhile; the talk (and the
+    // groups), then out by the East Gate. Joan has 6000-26000 gold and nothing else to spend it on before Jargeau's shops
+    // open at the capture; 1000 are kept (the S9L1 plan never pays the spy; 5000 kept left the legit chain's Normal Joan,
+    // 6460 gold, 4 loaves: out of food at t120000 and killed). The way points wait meanwhile; the talk (and the
     // gates) are the generic interact, which comes before before_hunt. 100 s of walking to a seller gives him up.
     static constexpr Vec3 kOrleansOut{20233, 30195, 0};
     static bool in_orleans(Vec3 q) { return q.x > 16800 && q.x < 26000 && q.y > 30990 && q.y < 39800; }
@@ -196,7 +197,7 @@ struct PlanS5L1 final : MissionPlan {
     bool orleans(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
         World& w = m.world();
-        ap.shop_explosive_max = 20, ap.shop_plain_max = 100, ap.shop_gold_keep = 5000;
+        ap.shop_explosive_max = 20, ap.shop_plain_max = 100, ap.shop_gold_keep = 1000;
         ap.plan_talk = 0;
         if (!in_town(ap)) return false;
         for (; errand < int(std::size(kShops)); ++errand, errand_spent = 0) {
@@ -240,7 +241,8 @@ struct PlanS5L1 final : MissionPlan {
     }
     std::uint32_t food_ms = ~0u;
 
-    // Out of food below 30 % she falls back to the siege camp before the west walls and rests there to 60 %, defending
+    // Out of food below 30 % she falls back to the siege camp before the west walls and rests there to 70 % (the generic
+    // retreat holds to 70 %: released at 60 %, Normal's Joan walked on to Dunois' camp 15000 off and was killed), defending
     // only against a foe on her.
     static constexpr Vec3 kCamp{3200, 12600, 195};
     bool resting = false;
@@ -248,10 +250,16 @@ struct PlanS5L1 final : MissionPlan {
         Mission& m = ap.mission();
         World& w = m.world();
         handoff = false;
+        // Autopilot::travel: Orleans' shut gates. Normal's English group outside the East Gate held Joan inside volleying at
+        // it through the gate past the town errands (t30000), then the walk to Dunois stood at the shut South Gate for good.
+        ap.gate_unlinked = true;
+        // No volley walk (Autopilot::decide) out of town: on Normal it flickered every few ticks with the walk out of the East
+        // Gate as the English group outside crossed 3000, and neither walk ever opened the gate.
+        ap.explosive_reserve = in_town(ap) ? 1000 : 0;
         if (forage(ap, f, p)) return true;
         if (handoff) return false;
         const int pct = p.hp * 100 / std::max(1, w.max_hp(p)), eat = food(m, p);
-        resting = entered && !eat && (pct < 30 || (resting && pct < 60));
+        resting = entered && !eat && (pct < 30 || (resting && pct < 70));
         if (!resting) return false;
         for (const Unit& u : w.units())
             if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && u.target == p.id && dist(u.pos, p.pos) < 300 && std::fabs(u.pos.z - p.pos.z) < 150)

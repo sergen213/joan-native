@@ -260,6 +260,36 @@ int main() {
         CHECK(r.streaming_ok, "mission %d: unit active flag disagrees with its level's load state", no);
         if (no == 5) CHECK(r.unloaded > 0, "S5L1: far levels should be streamed out");
     }
+    // The path_to budget caps A* (PathSpace_astar 0x66ce30): S6L1's trebuchet crews climb the montagne du lion from the
+    // hill camp (z 995) to Trebuchet 2's attach point (z 2005) over 242 polys. Their MOVE_TO_TARGET passes 500; a
+    // 100-poly search ends where they stand (the port once capped every search at 100: the crews never climbed).
+    {
+        CampaignRunner run(*gd, vfs);
+        if (run.init(&err) && run.start(8, &err)) {
+            Mission& m = *run.mission();
+            m.autosave = false;
+            World& w = m.world();
+            const Vec3 from{38897, 10364, 995}, to{40128, 9050, 2005};
+            if (Unit* p = w.unit(w.player_id())) p->pos = from;
+            m.nav()->stream(w);
+            Unit* u = w.unit(w.spawn_unit("FRENCH_LIGHT_INFANTRY", 0, from, 0));
+            CHECK(u, "S6L1: spawn failed");
+            if (u) {
+                const auto end = [&](int budget) {
+                    m.ai().move_to(*u, to, budget, false, 0);
+                    const auto& path = m.ai().st(*u).path;
+                    return path.empty() ? 1e9f : std::hypot(path.back().x - to.x, path.back().y - to.y);
+                };
+                const float e500 = end(500), e100 = end(100);
+                std::printf("S6L1 hill climb: path end %.0f off the trebuchet with budget 500, %.0f with 100\n", e500, e100);
+                CHECK(e500 < 15, "S6L1: budget-500 path ends %.0f off the trebuchet", e500);
+                CHECK(e100 > 1000, "S6L1: budget-100 path should stop short (%.0f)", e100);
+            }
+        } else {
+            CHECK(false, "start 8: %s", err.c_str());
+        }
+    }
+
     // Determinism of the crossing run (S5L1: 10 levels, streaming) and the save/load round trip.
     const RunResult a = run_crossing(*gd, vfs, 5, false, true), b = run_crossing(*gd, vfs, 5, false);
     CHECK(a.hash == b.hash && a.pos.x == b.pos.x && a.pos.y == b.pos.y, "crossing run not deterministic");

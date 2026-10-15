@@ -47,6 +47,10 @@ public:
     // Below rest_pct % HP enemies that have not noticed the player are left alone and she rests, eating (F3) while she
     // carries more than rest_food (mission 4 lowers both: regen of 1 HP / 150 ticks cost it 20000+ ticks a rest).
     int rest_pct = 70, rest_food = 10;
+    // travel(): also open a gate near the player when the goal's region is not linked to hers (S9L1's Orleans east gate).
+    bool gate_unlinked = false;
+    // Character screen: where every attribute point goes (World::allocate_point type: 6 HIT_POINT, 1 STRENGTH).
+    int attr_kind = 6;
 
     // --- helpers (also for the mission plans, autopilot_plan.hpp) --------------------------------------
     Mission& mission() { return m_; }
@@ -79,6 +83,8 @@ public:
     void character_screen(Unit& p);                        // F1: attribute / skill points, a better sword
     void shop(Unit& p);                                    // buy screen open: armour, arrows
     bool loot(InputFrame& f, const Unit& p, float radius = 1200);  // break boxes / pick up items nearby
+    bool discard(Unit& p, int bag_index);                  // drop a bag item for room; loot() leaves it lying
+    void make_room(Unit& p);                               // bag room for purchases (drops, troop grid, repack)
     int swing_eta(const Unit& u) const;
     bool energy_ok(const Unit& p) const;  // EP / HP for the energy attack
 

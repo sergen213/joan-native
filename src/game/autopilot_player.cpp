@@ -310,6 +310,11 @@ void Autopilot::travel(InputFrame& f, const Unit& p, Vec3 g) {
     bool blocked = d2(stop, g) >= 300 || std::fabs(stop.z - g.z) >= 150;
     for (std::size_t i = 0; !blocked && i + 1 < path_.size(); ++i)
         if (std::fabs(path_[i + 1].z - path_[i].z) > 200) stop = path_[i], blocked = true;
+    // A goal in a region no walk links to the player's, with a path that looks whole (the coarse world-mesh leg of a
+    // cross-level plan runs straight through a shut gate: mission 6 stood 90000 ticks at Orleans' shut east gate): a gate
+    // near the player. A path end under the goal only by height counts as whole (a minimap marker stands 200 up: mission 5
+    // stood at Orleans' shut South Gate for good). Opt-in (gate_unlinked): on for every mission it lost mission 2 in 9 of 9 attempts.
+    if (gate_unlinked && d2(stop, g) < 300 && !linked(region(p.pos), region(g))) stop = p.pos, blocked = true;
     if (!blocked) return;
     // Only a gate the interact opens for the player (FUN_0041af80: a foreign gate from its back side only, and only with HP
     // left: mission 3's English camp gates have none) and one needing no key (mission 3's prison gate).
@@ -606,13 +611,14 @@ void Autopilot::shop(Unit& p) {
     arrows(false, shop_plain_max);
 }
 
-// Character screen (F1, the player's hero): every attribute point into HIT_POINT (the walkthroughs' rule; STR/DEF buy
-// little), every skill point into ADD on the lowest of the A / AA / AAA / AAAB combos the bot swings (damage x (lvl+10)/11),
-// and a stronger one-hand sword from the bag into the hand (mission 1's archer captain drops JOAN_SWORD_LV2).
+// Character screen (F1, the player's hero): every attribute point into attr_kind (default HIT_POINT, the walkthroughs'
+// rule; a plan may pick STRENGTH: melee attack = STR x 3 + weapon + 100), every skill point into ADD on the lowest of
+// the A / AA / AAA / AAAB combos the bot swings (damage x (lvl+10)/11), and a stronger one-hand sword from the bag into
+// the hand (mission 1's archer captain drops JOAN_SWORD_LV2).
 void Autopilot::character_screen(Unit& p) {
     World& w = m_.world();
     const GameData& gd = w.data();
-    while (p.attr_points > 0 && w.allocate_point(p, 6, false)) {}
+    while (p.attr_points > 0 && w.allocate_point(p, attr_kind, false)) {}
     while (p.skill_points > 0) {
         int best = -1;
         for (std::size_t i = 0; i < p.upgrades.size(); ++i) {
@@ -820,15 +826,12 @@ InputFrame Autopilot::decide() {
     const bool fresh = hp_pct >= rest_pct;
     const Unit* foe = nullptr;
     const Unit* lurker = nullptr;  // nearest unaware enemy within 600
-    // Reachable: not given up on (a foe the path mesh did not bring the player to, or one chased too long), or after the
-    // player within 150 on her level (mission 4: Talbot, given up on up his hill, came down and beat Joan while the bot
-    // walked to his marker and rested beside him). A component test (same nav level, other path-mesh component) dropped
-    // every mission 2 attacker (kills 0, the Bastard lost); the hunt below ranks by regions instead.
+    // Reachable: not given up on (a foe the path mesh did not bring the player to, or one chased too long). A component test
+    // (same nav level, other path-mesh component) dropped every mission 2 attacker (kills 0, the Bastard lost); the hunt
+    // below ranks by regions instead.
     const bool bow = p.inv.ranged.item && p.inv.ammo.item && p.inv.ammo.quantity > 0;
     const int here = region(p.pos);
-    const auto reachable = [&](const Unit& u) {
-        return !unreached(u) || (u.target == p.id && d2(p.pos, u.pos) < 150 && std::fabs(u.pos.z - p.pos.z) < 150);
-    };
+    const auto reachable = [&](const Unit& u) { return !unreached(u); };
     // A kept target more than 250 off (a wall archer the bow duels) is dropped while someone within 120 is after the player:
     // mission 6 stood shooting a tower archer while eight melee units beat Joan to death.
     const bool pressed = std::any_of(w.units().begin(), w.units().end(), [&](const Unit& u) {
@@ -1210,6 +1213,34 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     }
     steer(f, p, best_pos, false);
     return true;
+}
+
+// The inventory window's drop (World::discard_item) for bag room: loot() would walk straight back over it.
+bool Autopilot::discard(Unit& p, int bag_index) {
+    World& w = m_.world();
+    const std::size_t n = w.items().size();
+    if (!w.discard_item(p, 10, bag_index, p)) return false;
+    if (w.items().size() > n) skip_.insert(w.items().back().id);
+    return true;
+}
+
+// Bag room for purchases (one cell a loaf, arrows a 1x4 stack, a sword a 2x4 block), as S4L1's: apples (EP food) beyond 5
+// and spare weapons (item types 8..0xc; the character screen already holds the best sword) go on the floor (discard), the
+// food moves into the troop grid (F3 eats from every grid) and the personal grid is packed again, the bigger items first
+// (the inventory window's drags; cells are UI layout only).
+void Autopilot::make_room(Unit& p) {
+    const GameData& gd = m_.world().data();
+    const auto type = [&](const ItemInstance& it) { return gd.items[std::size_t(it.item)].type; };
+    for (int i = int(p.inv.bag.size()), apples = 0; i-- > 0;)
+        if (const int t = type(p.inv.bag[std::size_t(i)]); (t == 0x17 && ++apples > 5) || (t >= 8 && t <= 0xc)) discard(p, i);
+    for (ItemInstance& it : p.inv.bag)
+        if (ItemInstance n = it; it.bag == 1 && (type(it) == 0x15 || type(it) == 0x17 || type(it) == 0x19) && p.inv.place(gd, n, 2)) it = n;
+    for (ItemInstance& it : p.inv.bag)
+        if (it.bag == 1) it.bag = -1;
+    for (ItemInstance& it : p.inv.bag)
+        if (const ItemDef& d = gd.items[std::size_t(it.item)]; it.bag < 0 && d.width * d.height > 1 && d.item_class != "ENHANCER")
+            if (ItemInstance n = it; p.inv.place(gd, n, 1)) it = n;
+    p.inv.layout(gd);
 }
 
 void Autopilot::step() {

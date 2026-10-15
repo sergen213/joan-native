@@ -16,7 +16,9 @@ constexpr int kStuckMs = 500;
 float xy_d2(Vec3 a, Vec3 b) { return (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y); }
 }  // namespace
 
-int AiSystem::move_to(Unit& u, Vec3 goal, int /*budget: see doc, A* always gets 100*/, bool from_leader, int issuer) {
+// budget: the A* expansion cap (PathSpace_astar 0x66ce30 counts it down per popped poly): OrderExec_* pass 500..2000
+// by distance, sidestep / click 100.
+int AiSystem::move_to(Unit& u, Vec3 goal, int budget, bool from_leader, int issuer) {
     AiUnit& s = st(u);
     (void)issuer;
     if (u.m.physics_disabled) {  // +0x3b8: direct steering
@@ -51,6 +53,7 @@ int AiSystem::move_to(Unit& u, Vec3 goal, int /*budget: see doc, A* always gets 
         // BODY_R*2; cavalry/siege/horse-like units use 10 x their shape radius.
         q.radius = (t.unit_class == 8 || t.special == 2 || u.mount) ? 10.0f * t.cyl_radius : 2.0f * float(w_.data().c.body_r);
         q.body_r = float(w_.data().c.body_r);
+        q.max_expand = budget;
         auto r = nav_->find_path(q);
         s.path.clear();
         for (auto& p : r.points) s.path.push_back({p.x, p.y, p.z});

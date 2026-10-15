@@ -274,7 +274,7 @@ Deviations:
 2. (resolved) Executors write the desired heading +0x1e; the body turns at the 0x4f2190 rate (`World::turn_step`, see "Turning, horses, interact").
 3. `get_rotation` returns the absolute heading toward the target (what the TURN executor compares with), see `rotation_to`.
 4. A* re-opens improved closed nodes instead of propagating g through the subtree (0x66ddb0); BVH replaced by a bucket grid; overlapping polys are resolved by the surface closest to z.
-5. Path search always gets 100 expansions; the 500/1000/… "budget" argument of `path_to` is ignored (meaning unknown). Formation lateral/width offsets in the funnel are not modelled.
+5. (resolved) The `path_to` budget is the A* expansion cap: Unit_path_to 0x505dd0 hands it to PathSpace_find_path 0x66cb40 (arg 10), which passes it to PathSpace_astar 0x66ce30 as the pop counter (`for (; open && 0 < budget; --budget)`), CONFIRMED. OrderExec_* pass 500 / 1000 (APPROACH_PLACE 500..2000) by distance, sidestep 0x4f7bf0 and the click move 0x43a580 100. The port capped every search at 100: S6L1's trebuchet crews (LARGE_WEAPON_PUSH → MOVE_TO_TARGET, 242 / 467 polys up the montagne du lion) got a 100-poly partial path ending where they stood and never climbed (regression in `game.multimap_nav`). Formation lateral/width offsets in the funnel are not modelled.
 6. Push-aside speed 100 u/s (magnitude unknown); pending pushes are saved in the optional Mission save section `PHYS` (written only while one is active, so hashes of push-free states are unchanged).
 7. (resolved) AI riders are driven, see "AI riders".
 8. RECRUIT_TROOP matches the recruit type by class kingdom (race +0x14d is not loaded); news-log entries of set_task are not generated.
@@ -302,5 +302,5 @@ Test `game.ai_rider`: CHARLIE7 rides CAMP_HORSE 2000 u under MOVE_TO_TARGET (hor
 - find_path = Unit_path_to 0x505dd0: local path if the target is in the start's loaded level, else world mesh (/32, radius BODY_R/32, back ×32 +16) with the leading run inside the level replanned locally and spliced (CONFIRMED).
 - find_poly_xy searches every level whose box holds (x,y), closest height (006aae70, simplified). Gates toggle their poly via find_poly_xy(..., ignore_blocked) so re-opening / reloading finds the same poly.
 - Level streaming (World_draw 0x44c800): loaded = inside player±8000 || (loaded && inside ±16000); a level change sets `u.m.active` (Unit_activate/deactivate). Inactive units: no phase-1 action/turn/movement, no physics body (CONFIRMED 0x52c490 gates on +0x2f5), ignored by hit tests. Paths from unloaded levels are world-mesh only. Saved in the optional "NAVL" section.
-- Deviations: camera = player position (no player → all loaded); A* budget stays 100.
+- Deviations: camera = player position (no player → all loaded).
 - Test: `game.multimap_nav` (all 7 missions: load, cross-node path, AI border crossing, gate in a non-first node, determinism + save round trip).

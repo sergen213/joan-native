@@ -37,6 +37,8 @@ struct PlanS3L1 final : MissionPlan {
     bool jean_done = false;   // stage 5: Jean's turn on the wall is over
     int top_ = 0;             // kTops index in use
     int pull_tick = -100000;  // last pull shot at a far lord
+    int gate_press = -1000;   // stage 4: Jean's last R at the Castle Gate
+    bool roomed = false;      // stage 4: make_room() done before Achard's buy screen
 
     static Unit* named(Mission& m, std::string_view name) {
         World& w = m.world();
@@ -70,6 +72,22 @@ struct PlanS3L1 final : MissionPlan {
         if (a && (a->m.interact_stage == 2 || (a->m.interact_stage == 3 && !bought))) return a;
         const Unit* g = named(m, "Gilles Tollot");
         return g && g->m.interact_stage == 2 ? g : nullptr;
+    }
+
+    // Inside the city, clear of the gateway: the script's Check Enemy Place (stage 5 starts only with Joan and Jean inside it
+    // or Check Enemy Place 2, which reaches past the gate).
+    static bool in_castle(Mission& m, Vec3 at) {
+        for (const Place& pl : m.places().places())
+            if (pl.name == "Check Enemy Place" && m.places().inside(pl.recno, at)) return dist(at, kGate) > 150;
+        return false;
+    }
+    // Stage 4 after the second talk with the Bastard (Tiger's eye; his talk flag cleared): the second wave spawns once Joan
+    // and Jean are inside with the gate shut. Foes still outside (the towns' strays) are left there: hunting them kept Joan
+    // outside for good (the script's "Return to the castle" comes once).
+    static bool await_wave(Mission& m) {
+        const auto& e = m.state().end;
+        const Unit* b = bastard(m);
+        return m.scenario().stage == 4 && e.size() >= 12 && e[10].finish == 1 && e[11].finish == 1 && b && !b->m.can_interact;
     }
 
     // The wall-walk spot nearer the lords (hysteresis 100).
@@ -163,9 +181,30 @@ struct PlanS3L1 final : MissionPlan {
         return false;
     }
 
+    // Stage 4, waiting for the second wave (await_wave): Jean, held wherever stage 3 left him (outside the gate: stage 5
+    // never came), is walked inside (key 2; before_targets, after the interact prompt that opens the gate), held there once
+    // the gate is shut behind him, and the player is Joan again.
+    bool jean_home(Autopilot& ap, Unit& p) {
+        Mission& m = ap.mission();
+        Unit* joan = named(m, "Joan of Arc");
+        Unit* jean = named(m, "Jean de Metz");
+        if (!joan || !jean || !await_wave(m) || jean3 == 1) return false;
+        if (p.id == joan->id && jean->m.control == 0 && !in_castle(m, jean->pos) && in_castle(m, joan->pos)) {
+            if (!m.switch_hero(2)) return false;
+            if (!m.ai().is_holding(*joan)) m.ai().toggle_hold(*joan, true);
+            return true;
+        }
+        const MapItem* g = castle_gate(m);
+        if (p.id != jean->id || !in_castle(m, jean->pos) || (g && g->hp > 0 && g->state != 0)) return false;
+        if (!m.switch_hero(1)) return false;
+        if (m.ai().is_holding(*joan)) m.ai().toggle_hold(*joan, true);
+        if (!m.ai().is_holding(*jean)) m.ai().toggle_hold(*jean, true);
+        return true;
+    }
+
     bool first(Autopilot& ap, InputFrame&, Unit& p) override {
         Mission& m = ap.mission();
-        if (jean_turn(ap, p) || jean_stage3(ap, p)) return true;
+        if (jean_turn(ap, p) || jean_stage3(ap, p) || jean_home(ap, p)) return true;
         // Stage 4 keeps the explosive arrows for the stage-5 crews (Achard's 20 are plenty) and spends the gold on plain
         // ones (10 for 100 against 5 for 500) for John and William, before a heavier armour.
         ap.explosive_reserve = m.scenario().stage == 4 ? 1000 : 0;
@@ -244,6 +283,22 @@ struct PlanS3L1 final : MissionPlan {
             const float s = d * (crew ? 0.01f : far ? 1.0f : 0.1f);
             if (s < best) best = s, foe = &u;
         }
+        if (ap.arrows(p, false) + ap.arrows(p, true) == 0 && p.hp * 100 >= 60 * w.max_hp(p)) {
+            // Out of arrows with a lord still up outside and his men (nearly) gone: out through the gate to beat him
+            // (William waited before the gate at full HP for 110000 ticks while Joan stood below it).
+            const Unit* l = nullptr;
+            for (const Unit& u : w.units())
+                if (!u.deleted && !w.dead(u) && u.hp > 0 && lord(u) && (!l || dist(p.pos, u.pos) < dist(p.pos, l->pos))) l = &u;
+            int escort = 0;
+            for (const Unit& u : w.units())
+                escort += l && !u.deleted && !w.dead(u) && u.hp > 0 && w.hostile_to_player(u) && !u.no_react && dist(u.pos, l->pos) < 1500;
+            if (l && escort <= 4) {
+                ap.goal = "out at #" + std::to_string(l->id) + " " + l->name;
+                if (dist(p.pos, l->pos) > 150) ap.travel(f, p, l->pos);
+                else ap.fight(f, p, *l);
+                return true;
+            }
+        }
         if (!any || ap.arrows(p, false) + ap.arrows(p, true) == 0 || p.hp * 100 < 35 * w.max_hp(p)) {
             ap.goal = "below the gatehouse";
             if (dist(p.pos, kGate) > 300 || p.pos.z > 100) ap.travel(f, p, kGate);
@@ -261,14 +316,17 @@ struct PlanS3L1 final : MissionPlan {
         }
         ap.goal = "on the wall: shoot #" + std::to_string(foe->id) + " " + foe->name;
         const Unit* v = w.unit(foe->m.vehicle);
-        if (dist(at, foe->pos) > 900) {
+        const bool crew = v && !v->deleted;
+        if (!crew && dist(at, foe->pos) > 900) {
             if (ap.tick() - pull_tick > 900) pull_tick = ap.tick();
             ap.explosive_reserve = 1000;
             if (ap.load_ammo(p, false))
                 ap.shoot_at(f, p, {foe->pos.x, foe->pos.y, foe->pos.z + float(w.data().units[std::size_t(foe->cls)].height) * 0.5f}, p.action == SHTIDLE);
             return true;
         }
-        ap.explosive_reserve = v && !v->deleted ? 0 : 3 * manned;  // explosive arrows: the crews first, then the lords
+        // Explosive arrows: the crews first (also from beyond 900 with no plain ones left: the gate fell to the cannons
+        // while Joan, holding only explosive arrows, never loosed one), then the lords.
+        ap.explosive_reserve = crew ? 0 : 3 * manned;
         ap.shoot(f, p, *foe);
         return true;
     }
@@ -280,9 +338,31 @@ struct PlanS3L1 final : MissionPlan {
         if (const Unit* n = errand(m)) {
             ap.goal = "thanks / shop " + n->name;
             if (dist(p.pos, n->pos) > 80) ap.travel(f, p, n->pos);
+            // Bag room for the arrows first (stage 3's loot filled it: the buy screen opened on 42 items and bought nothing).
+            if (!roomed && n->m.interact_stage == 3 && dist(p.pos, n->pos) < 300) ap.make_room(p), roomed = true;
             return true;
         }
         if (m.scenario().stage == 3 && jean3 == 1) return guard(ap, f, p, 6000);
+        if (await_wave(m) && p.name == "Jean de Metz") {  // jean_home(): inside, the gate shut behind him
+            const MapItem* g = castle_gate(m);
+            const bool in = in_castle(m, p.pos);
+            // R at the gate: open while he stands in its passage (held there when it shut: the door leaves pin him), shut
+            // once he is inside (travel() only shuts a gate it opened itself).
+            if (g && g->hp > 0 && ((g->state == 0 && dist(p.pos, g->pos) < 60) || (g->state == 1 && in))) {
+                ap.goal = "Jean: gate";
+                if (const Vec3 at = ap.gate_inside(*g); in && dist(p.pos, at) > 60) {
+                    ap.steer(f, p, at, false);
+                } else if (ap.tick() - gate_press > 60) {
+                    gate_press = ap.tick();
+                    f.press(IN_INTERACT);
+                }
+                return true;
+            }
+            ap.goal = "Jean back inside";
+            ap.travel(f, p, {kGate.x, kGate.y - 400, kGate.z});
+            return true;
+        }
+        if (await_wave(m)) return guard(ap, f, p, 1500);
         if (m.scenario().stage != 5) return false;
         if (gatehouse(ap, f, p)) return true;
         return guard(ap, f, p, 1500);

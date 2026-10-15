@@ -31,7 +31,7 @@ namespace {
 float dist(Vec3 a, Vec3 b) { return std::hypot(a.x - b.x, a.y - b.y); }
 
 constexpr int kExplosive = 40;    // carried: the Abtower's arrow, volleys (the cannons break the gate)
-constexpr int kFood = 20;         // F3 food bought up to
+constexpr int kFood = 30;         // F3 food bought up to (20 ran out at Tourelles: two deaths with 6000+ gold left)
 constexpr int kPlain = 300;       // plain arrows bought up to, out of the gold kept back for them (the archers left on the
                                   // Abtower ruin and walls at z 325..629 are only reached by arrows: 200 ran out there)
 
@@ -97,6 +97,9 @@ struct PlanS4L1 final : MissionPlan {
         if (forest && m.places().inside(forest->recno, u.pos) && !(town && m.places().inside(town->recno, u.pos)) &&
             dist(p.pos, u.pos) > 1500 && u.target != p.id)
             return 0;
+        // Waiting for the cannons to break the gate (first()): the Augustin English are left to come at her; its capture
+        // drives the cannons off (S4L1_tactic RTS_ATTACK_ITEM) and left the bot a 1500 HP gate and 4 explosive arrows.
+        if (wait_cannons && english_in(m, "Augustin", u) && u.target != p.id) return 0;
         if (tower_down(m) && english_in(m, "Augustin", u)) return w * 0.3f;
         if (augustin_taken(m) && !gate(m) && english_in(m, "Tourelles", u)) return w * 0.3f;
         return w;
@@ -109,19 +112,41 @@ struct PlanS4L1 final : MissionPlan {
         return !(e.size() > 3 && e[2].finish == 1 && e[3].finish == 1);
     }
 
-    bool first(Autopilot& ap, InputFrame&, Unit& p) override {
+    bool first(Autopilot& ap, InputFrame& f, Unit& p) override {
         Mission& m = ap.mission();
         const World& w = m.world();
         // Before Talbot (the Tours sellers): no explosive arrows, 100 plain; the gold goes on a sword and food first. The 30
         // explosive arrows carried go into the volleys.
         const bool pre = before_talbot(m, p);
+        const int eat = food(w, p), pct = p.hp * 100 / std::max(1, w.max_hp(p));
         ap.shop_explosive_max = pre ? 0 : kExplosive;
         ap.shop_plain_max = pre ? 100 : kPlain;
-        ap.shop_gold_keep = (food(w, p) < kFood ? 2500 : 0) + (ap.arrows(p, false) < kPlain ? 3000 : 0);
-        ap.rest_pct = 50, ap.rest_food = 3;
+        ap.shop_gold_keep = (eat < kFood ? 2500 : 0) + (ap.arrows(p, false) < kPlain ? 3000 : 0);
+        ap.rest_pct = eat ? 50 : 70, ap.rest_food = 3;
+        // Five explosive arrows kept for the Abtower once Talbot is beaten (its damage starts the attack): the volleys spent
+        // all 40 on the way, and the trip back to Fierbois for one cost 10000+ ticks.
+        ap.explosive_reserve = !pre && !tower_down(m) ? 5 : 0;
         ap.plan_talk = 0;
-        return false;
+        // The tower down, the gate up, Augustin not taken: Cannons 2 and 3 turn on the gate (their crews attach near Joan) and
+        // break it within ~3000 ticks; the bot stands by them (before_targets) for up to 12000 ticks from her arrival (20000
+        // in all) before clearing Augustin.
+        const bool cannons = tower_down(m) && gate(m) && !augustin_taken(m);
+        if (!cannons) cannon_seen = cannon_since = -1;
+        else if (cannon_seen < 0) cannon_seen = ap.tick();
+        wait_cannons = cannons && ap.tick() - cannon_seen < 20000 && (cannon_since < 0 || ap.tick() - cannon_since < 12000);
+        // Out of food below 30 %: rest where she stands until 60 %, fighting only whoever is after her within 300 (the guard
+        // comes back below 45 %); the generic retreat ran back to La Hire at the start, 7000 off through the English, and
+        // died on the way (a level-10 start without food).
+        starving = !eat && (pct < 30 || (starving && pct < 60));
+        if (!starving) return false;
+        ap.goal = "plan: rest without food hp " + std::to_string(pct) + "%";
+        for (const Unit& u : w.units())
+            if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && u.target == p.id && dist(u.pos, p.pos) < 300 && std::fabs(u.pos.z - p.pos.z) < 150)
+                return ap.fight(f, p, u), true;
+        return true;
     }
+    bool starving = false, wait_cannons = false;
+    int cannon_seen = -1, cannon_since = -1;  // ticks the cannon wait began, she arrived by them
 
     // After the generic purchases: a stronger sword (Tours sells JOAN_SWORD_LV4: the chain can reach mission 4 with LV1,
     // a quarter of its damage), food (best heal first: meat and chicken heal fully), plain arrows once Talbot is beaten.
@@ -136,7 +161,7 @@ struct PlanS4L1 final : MissionPlan {
         std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
         const auto heal = [&](const ShopStock& s) { const ItemDef& d = w.data().items[std::size_t(s.item)]; return d.type == 0x15 || d.type == 0x19 ? d.damage : 0; };
         std::stable_sort(stock.begin(), stock.end(), [&](const ShopStock& a, const ShopStock& b) { return heal(a) > heal(b); });
-        make_room(ap, p);
+        ap.make_room(p);  // Tours could not place the sword in 29 scattered loaves, Fierbois no explosive arrows
         const ItemInstance& hand = p.inv.melee[0];
         const int cur = hand.item ? w.data().items[std::size_t(hand.item)].base_damage(hand.level) : 0;
         bool sword = false;
@@ -150,26 +175,13 @@ struct PlanS4L1 final : MissionPlan {
             };
             if (d.type == 9 && !sword && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > cur) sword = buy();
             if (heal(s))
-                for (int n = 0; n < s.quantity && food(w, p) < (pre ? kFood + 10 : kFood) && buy(); ++n) {}
+                for (int n = 0; n < s.quantity && food(w, p) < kFood && buy(); ++n) {}
             if (d.type == 0xe && !pre)
                 while (ap.arrows(p, false) < kPlain && buy()) {}
         }
         keeper_skip[keeper] = ap.tick() + 9000;  // served: not again for 5 min
     }
     std::set<int> served;  // shopkeepers whose buy screen opened
-    // Bag room for the purchases (one cell a loaf, arrows a cell a stack, a sword a block): the apples (EP food) beyond 5,
-    // the spare weapons (Joan carries a second bow and her old sword) go on the floor (the inventory window's drop,
-    // World::discard_item) and the personal grid is packed again first-fit (the window's drag; cells are UI layout only):
-    // the loaves lay scattered and Tours could not place the sword.
-    static void make_room(Autopilot& ap, Unit& p) {
-        World& w = ap.mission().world();
-        for (int i = int(p.inv.bag.size()), apples = 0; i-- > 0;)
-            if (const int t = w.data().items[std::size_t(p.inv.bag[std::size_t(i)].item)].type; (t == 0x17 && ++apples > 5) || (t >= 8 && t <= 0xc))
-                w.discard_item(p, 10, i, p);
-        for (ItemInstance& it : p.inv.bag)
-            if (it.bag == 1) it.bag = -1;
-        p.inv.layout(w.data());
-    }
 
     // A shopkeeper within 4000 to walk to (the Fierbois sellers, at the priest's errand): a weapon seller for explosive
     // arrows, a potion seller for food. Out of the arrows the way on needs (plain for Augustin's wall archers, explosive for
@@ -182,6 +194,9 @@ struct PlanS4L1 final : MissionPlan {
         const int gold = m.state().gold;
         const bool pre = before_talbot(m, p) && gold >= 2000;
         const bool expl = ap.arrows(p, true) < kExplosive - 20 && gold >= 2500, eat = food(w, p) < kFood / 2 && gold >= 1000;
+        // Out of food after Talbot: the nearest potion seller from anywhere (before him, from the start, the walk to Tours
+        // led through Glasdale's camp: four deaths).
+        const bool starve = food(w, p) < 3 && gold >= 1000 && !before_talbot(m, p);
         const bool restock = gold >= 1000 && ((ap.arrows(p, true) < gate_arrows(m) && augustin_taken(m)) ||
                                               (!ap.arrows(p, false) && tower_down(m) && !augustin_taken(m)));
         const Unit* best = nullptr;
@@ -190,7 +205,7 @@ struct PlanS4L1 final : MissionPlan {
             if (const auto s = keeper_skip.find(u.id); s != keeper_skip.end() && ap.tick() < s->second) continue;
             const std::string& code = w.data().units[std::size_t(u.cls)].code;
             const bool weapon = code.starts_with("WEAPON_SHOPKEEPER"), potion = code.starts_with("POTION_SHOPKEEPER");
-            const bool want = (weapon && restock) || (dist(p.pos, u.pos) < 4000 && ((weapon && expl) || (potion && eat))) ||
+            const bool want = (weapon && restock) || (potion && starve) || (dist(p.pos, u.pos) < 4000 && ((weapon && expl) || (potion && eat))) ||
                               (pre && (weapon || potion) && !served.count(u.id) && served.size() < 2 &&
                                ((dist(p.pos, u.pos) < 7000 && p.pos.y > 11000) || u.id == keeper));
             if (want && (!best || dist(p.pos, u.pos) < dist(p.pos, best->pos))) best = &u;
@@ -286,7 +301,7 @@ struct PlanS4L1 final : MissionPlan {
         ap.goal = "plan: " + why + " #" + std::to_string(u.id) + " " + u.name;
         ap.plan_talk = u.id;
         // Bag room before the buy screen's generic purchases.
-        if (dist(p.pos, u.pos) < 300 && w.data().units[std::size_t(u.cls)].code.find("SHOPKEEPER") != std::string::npos) make_room(ap, *w.unit(p.id));
+        if (dist(p.pos, u.pos) < 300 && w.data().units[std::size_t(u.cls)].code.find("SHOPKEEPER") != std::string::npos) ap.make_room(*w.unit(p.id));
         if (dist(p.pos, u.pos) > 60) go(ap, f, p, u.pos);
         else f.mouse_dx = w.rel_angle(p, u.pos) / 0.18f;  // face him: the interact prompt (decide) talks
         return true;
@@ -327,10 +342,18 @@ struct PlanS4L1 final : MissionPlan {
                 (!best || dist(p.pos, u.pos) < dist(p.pos, best->pos)))
                 best = &u;
         if (!best) return false;
+        // No 300 nearer in 3000 ticks (a wall walker up a ladder the bot does not mount: 40000 ticks at its foot): given up
+        // on for a while (Autopilot::give_up), the next one first.
+        if (best->id != hunt_id || ap.tick() - hunt_last > 60 || dist(p.pos, best->pos) < hunt_best - 300)
+            hunt_id = best->id, hunt_best = dist(p.pos, best->pos), hunt_since = ap.tick();
+        hunt_last = ap.tick();
+        if (ap.tick() - hunt_since > 3000) return ap.give_up(best->id), hunt_id = 0, false;
         ap.goal = std::string("plan: clear ") + where + " #" + std::to_string(best->id);
         go(ap, f, p, best->pos);
         return true;
     }
+    int hunt_id = 0, hunt_since = 0, hunt_last = -1;  // foe hunted, tick of its last 300 of headway, last tick hunted
+    float hunt_best = 0;                              // nearest to it yet
 
     bool before_targets(Autopilot& ap, InputFrame& f, Unit& p) override {
         Mission& m = ap.mission();
@@ -356,6 +379,14 @@ struct PlanS4L1 final : MissionPlan {
             if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && u.target == p.id && dist(u.pos, p.pos) < 400 &&
                 std::fabs(u.pos.z - p.pos.z) < 150 && (!ap.unreached(u) || dist(u.pos, p.pos) < 150))
                 return false;
+        // Waiting for the cannons (first()): by them, ahead of any shop trip (the restock walk to Tours left them without
+        // crews: they attach near Joan, and the gate stood at 1500 until Augustin fell).
+        if (const Place* cp = place(m, "Place Cannon 1"); wait_cannons && cp) {
+            ap.goal = "plan: wait for the cannons (gate hp " + std::to_string(gate(m)->hp) + ")";
+            if (dist(p.pos, cp->pos) > 300) go(ap, f, p, cp->pos);
+            else if (cannon_since < 0) cannon_since = ap.tick();
+            return true;
+        }
         if (!m.ui().buy_open)
             if (const Unit* k = shop_errand(ap, p)) {
                 if (k->id != keeper) keeper = k->id, keeper_since = ap.tick();

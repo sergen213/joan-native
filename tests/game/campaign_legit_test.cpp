@@ -1,12 +1,13 @@
 // Legitimate campaign run: the campaign bot (game/autopilot_player, InputFrames only + character-screen point
-// allocation) plays the campaign on Normal with carried progression, retrying a loss twice like the game-over RETRY.
+// allocation) plays the campaign on Normal with carried progression, retrying a loss like the game-over RETRY.
 //
-// No argument (game.campaign_legit, CTest fixture setup): the chain from a new game, stopping at the first mission it
-// cannot win. Writes campaign_checkpoints/bot-<stem>.jsav at every mission start and campaign_checkpoints/chain.txt
-// (one report per mission) into the working directory (the build tree), checks no script errors / unimplemented
-// builtins and at least kExpectedWins missions won.
-// Argument N (game.campaign_legit_mission_N): mission N from the chain's checkpoint, which must replay the chain's
-// report exactly (result, ticks, hash: determinism through save / load); SKIP when the chain did not reach it.
+// No argument (game.campaign_legit, CTest fixture setup): the chain from a new game through missions 1..kExpectedWins,
+// stopping at the first it cannot win. Writes campaign_checkpoints/bot-<stem>.jsav at every mission start, the next
+// mission's included (the start of the later missions' own segment chains, e.g. bot-S5L1.jsav), and
+// campaign_checkpoints/chain.txt (one report per mission) into the working directory (the build tree); checks no script
+// errors / unimplemented builtins and kExpectedWins missions won.
+// Argument N (game.campaign_legit_mission_N, N <= kExpectedWins): mission N from the chain's checkpoint, which must replay
+// the chain's report exactly (result, ticks, hash: determinism through save / load); SKIP when the chain did not reach it.
 // Prints one report line per mission (result, ticks, attempts, deaths, kills, objectives, where it got stuck).
 #include <cstdio>
 #include <cstdlib>
@@ -23,9 +24,9 @@ using namespace joa::game;
 
 namespace {
 
-constexpr int kTicks = 150000;     // per attempt (83 min of game time; mission 3 on Normal is won at 81000-125000)
+constexpr int kTicks = 200000;     // per attempt (111 min of game time; mission 4 on Normal is won at 109000-197000)
 constexpr int kRetries = 8;       // a lost mission is retried like the game-over RETRY: up to 9 attempts (seed + attempt)
-constexpr int kExpectedWins = 3;   // missions won on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
+constexpr int kExpectedWins = 4;   // missions won on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
 const std::filesystem::path kDir = "campaign_checkpoints";
 
 int fails = 0;
@@ -65,7 +66,7 @@ int chain(GameData& gd, const formats::Vfs& vfs) {
     std::string err;
     if (!run.init(&err) || !run.start(1, &err)) return std::printf("FAIL start: %s\n", err.c_str()), 1;
     int wins = 0;
-    while (checkpoint(run)) {
+    while (checkpoint(run) && wins < kExpectedWins) {
         const MissionReport r = play(run);
         out << line(r) << '\n' << std::flush;
         wins += r.result == 1;

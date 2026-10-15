@@ -963,7 +963,9 @@ if (anim == A) {
 ```
 
 ### 6. Open points
-- path_to (0x505dd0) return codes and node-budget meaning — HYPOTHESIS; full planner belongs to PathCollide.
+- path_to (0x505dd0) return codes — HYPOTHESIS; full planner belongs to PathCollide. The budget (arg 4, `[ebp+0x14]`) is pushed as
+  PathSpace_find_path's arg 10 at every call site (e.g. 0x5066a3) and forwarded to PathSpace_astar's 12th arg, its pop counter
+  (`dec [ebp+0x34]` / `jle` at 0x66cfa5..0x66cfbc): the A* expansion cap. CONFIRMED (disasm).
 - Game-state 0xa5d380+0xf values {0,6,7,8} semantics in 0x661ca0 — UNKNOWN.
 - Who turns the unit toward +0x1e / SHOOT target (±10° gate) — outside order code.
 - Order ids 1 COMBO_ATTACK, 3 JUMP, 5 MOVE never issued by native give_order call sites (script/player only).
@@ -2537,7 +2539,7 @@ Projectiles: Appendix A; entity containers/limits: Appendix B.
 | System | Algorithm | Key functions |
 |---|---|---|
 | Path data | precomputed **convex-polygon navmesh** per map (`MAP\<name>.PFD`) + 257×257 (or 221×221) **height grid** (same heights as `.GRI`) | loader `00670980` |
-| Path search | **A\*** over polygons (node = polygon centroid), open list = sorted singly linked list, **max 100 expansions** per call, partial path to best node on failure | `0066cb40` → `0066ce30` |
+| Path search | **A\*** over polygons (node = polygon centroid), open list = sorted singly linked list, **expansion cap = path_to's budget** (OrderExec 500 / 1000, APPROACH_PLACE up to 2000, sidestep 0x4f7bf0 / click move 0x43a580 100), partial path to best node on failure | `0066cb40` → `0066ce30` |
 | Path smoothing | portal list (shared edges) → **funnel / string pulling** with agent radius, 8-portal look-ahead, lateral offset inside portal | `0066ece0` |
 | Poly lookup | AABB tree (BVH, median split on longest axis) over polygon bboxes | `006745e0`/`006747a0`/`006752c0`/`00675430` |
 | Hierarchical | world-level PFD (`<scen>w.pfd`, coords /32) for cross-map routes; local PFD per map | `00505dd0` |

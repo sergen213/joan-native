@@ -288,7 +288,16 @@ nothing to shoot, no arrows or < 35 % HP: wait just inside the gate. When Jean's
 waited outside the gate once Joan's arrows ran out (6 → 11 of 48 whole-mission wins on one checkpoint). Limits: a lord
 idle at the gate blocks arrows from the front (`missile_block`, GUARD within BLOCKANG), ~2.5 damage per plain arrow; Joan
 enters stage 4 at a lower level (Jean took the stage-3 kills) and dies there in ~6 of 22 runs. Whole mission: **6–11 of
-48 seeds** won depending on the checkpoint (per attempt 12–23 %). Not done yet: learning
+48 seeds** won depending on the checkpoint (per attempt 12–23 %). **After the path-budget fix** (AI A* gets each
+order's budget, `AiSystem::move_to`; the stage-4 strays now outlive the town fights): Achard's buy screen gets bag room
+first (`make_room`; it had opened on 42 items and bought nothing); after the second Bastard talk (stage 4, objectives
+11 / 12 done, his talk flag cleared) the bot guards him and leaves foes outside alone (hunting them kept Joan out, and
+the script's "Return to the castle" comes once), Jean — held wherever stage 3 left him, often outside the gate or pinned
+in its passage — is walked inside (key 2; R at the gate to get out of its passage / shut it behind him) and held there,
+so stage 5's check (Joan and Jean in Check Enemy Place, gate shut) passes; crews beyond 900 are shot with explosive
+arrows when no plain ones are left; out of arrows with a lord's escort down to 3, Joan goes out through the gate and
+beats him (William had waited at the gate at full HP for 110000 ticks). 24 seeds on the chain's mission-2 checkpoint:
+4 won, 11 lost in stage 3 (citizens), 9 lost in stage 5, **no timeouts** (were 5–7). Not done yet: learning
 new upgrades (RUSH from level 4, BB), selling (the buy screen sells at Price × SellingRatio), siege use, RTS orders,
 mounting, bribes, choice dialogs (headless answers
 choice 1). The interact prompt (R) also recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks (with
@@ -296,13 +305,16 @@ the ally hero's task and target) plus hits taken / dealt, hits on friendly heroe
 (killer team), spawns, interact prompts and the player's shots / projectile hits; `JOA_BOT_DBG=T` prints 200
 ticks of per-frame inputs and nearby enemies from tick T.
 
-`game.campaign_legit` (CTest fixture `campaign_checkpoints`) runs the chain once from a new game (Normal, 150000 ticks per
-attempt, up to 8 retries of a lost mission: the game-over RETRY a player would press, reseeded seed + attempt; a timeout is
-not retried), writes `campaign_checkpoints/bot-<stem>.jsav` at every mission start and `campaign_checkpoints/chain.txt`
-(one report line per mission) into the build tree (`build*/src/game`), checks no script errors / unimplemented builtins and
-asserts `kExpectedWins` (3). `game.campaign_legit_mission_N` (N = 1..8) loads mission N's checkpoint, replays it and must
-reproduce the chain's line exactly (result, ticks, hash: determinism through save / load); skipped when the chain did not
-reach N. Iterate on one mission without rerunning the chain: `ctest -R legit_mission_4 -FS campaign_checkpoints`. Report
+`game.campaign_legit` (CTest fixture `campaign_checkpoints`) runs the chain once from a new game through missions
+1..`kExpectedWins` (4) (Normal, 200000 ticks per attempt, up to 8 retries of a lost mission: the game-over RETRY a player
+would press, reseeded seed + attempt; a timeout is not retried), writes `campaign_checkpoints/bot-<stem>.jsav` at every
+mission start — the next mission's too (`bot-S5L1.jsav`, where the later missions' own segment fixture chains start) — and
+`campaign_checkpoints/chain.txt` (one report line per mission) into the build tree (`build*/src/game`), checks no script
+errors / unimplemented builtins and asserts all `kExpectedWins` won. `game.campaign_legit_mission_N` (N = 1..`kExpectedWins`;
+the CMake RANGE follows it) loads mission N's checkpoint, replays it and must reproduce the chain's line exactly (result,
+ticks, hash: determinism through save / load); skipped when the chain did not reach N. A later mission's owner raises
+`kExpectedWins` (and the RANGE) once it wins reliably within these budgets. Iterate on one mission without rerunning the
+chain: `ctest -R legit_mission_4 -FS campaign_checkpoints`. Report
 (seed 1, Normal) and `work/cb8/chain.sh` (120000 ticks) on Easy:
 
 | mission | difficulty | result | ticks | attempts | kills | cause |
@@ -375,12 +387,23 @@ mesh pose is gone; the gate box covers the same opening (mission 2: the English 
 Gate, so the bot's `clear_shot` keeps its own-gate test, now against the boxes). The bot shoots explosive arrows into the portcullis from 350 outside (Gate_take_ranged, ~15 HP per arrow from the
 BOW: ~90 arrows), then clears Tourelles.
 
-Status (Normal, chain checkpoint, `work/MissionBot4/m4.cpp`): the west is done by ~90000 (Talbot 48000, priest 73000,
-councillor 90000, Jean 99000; before: priest 60000, councillor never). One scratch run from the t40000 save **won** (Augustin
-118690, gate ~125000, Tourelles 178696, victory 179151); from the checkpoint itself gold runs out: ~19000 buys food, arrows
-and 120 explosive, and either Augustin's last wall archers (z 325..629, plain arrows only) or the gate's last 100–200 HP
-outlast the ammunition (runs 8/9: gate 108 HP, Augustin 1 left at 260000). Not won in the chain yet: `kExpectedWins` stays 3.
-Next: the cannon launch point / structure sweep (the gate would fall for free), or cheaper arrows (blot / crossbow).
+Status (MissionBot4e, Normal, chain checkpoint: Joan level 10, JOAN_SWORD_LV1, 31 food, 16540 gold; `work/MissionBot4e/w4.cpp`
+plays a save per seed): **won** in the chain (attempt 2, t184671), 6 of 12 seeds per attempt within 200000 ticks (wins at
+109000–197000), no deaths on the last sweep; after the path-budget fix (MissionBot4f): attempt 1 (t146254), 7 of 12 seeds
+(3 deaths before the Loire, 2 timeouts). Plan changes: before Talbot, the two Tours sellers once on the Loches road (y >
+11000; from the north the walk led through Glasdale's camp) — JOAN_SWORD_LV4 (1480 gold: 4x the LV1 damage), food best-heal
+first (meat / chicken heal fully), 100 plain arrows, no explosive ones (the 30 carried go into volleys); bag room through
+`Autopilot::make_room` (apples beyond 5 and spare weapons dropped, food into the troop grid, the personal grid repacked
+bigger-first: the sword's 2x4 block never fit between 29 loaves); Talbot (940 HP, eats a full-heal meat below 20 %, retreats
+uphill at 50 % behind 14 level-15 crossbowmen and regenerates) is fought whenever wounded within 1500 on her level while she
+has food or 40 % HP (the generic bot had given him up and rested beside him while he hit her); rests stop at 50 % and eat
+from 4 food (`Autopilot::rest_pct` / `rest_food`; the 70 % rests at 1 HP / 150 ticks cost 20000+ ticks each); out of food
+below 30 % she rests in place until 60 % fighting only attackers (the generic retreat ran back to La Hire through the
+English); food up to 30, a potion seller from anywhere below 3 food after Talbot; explosive arrows up to 40 with 5 kept for
+the Abtower; once the tower is down she stands by Place Cannon 1 for up to 12000 ticks so Cannons 2 / 3 break the gate before
+Augustin's capture drives them off (a gate still up after the capture cost 40000+ ticks of arrow trips); a hunted foe without
+300 of headway in 3000 ticks is given up on. Pessimistic start (MissionBot4d's checkpoint: level 10, no food) wins 1 seed of
+4: the other three die on the way to Talbot (Patrol Area 1 / Alexander's camp) before any shop. `kTicks` is 200000.
 
 **Mission plans** (`src/game/autopilot_plan.hpp`): `autopilot_plan_<stem>.cpp` defines `make_plan_<stem>()`; CMake globs the
 files into the registry. Hooks: `first`, `before_targets`, `before_hunt` (return true = this tick's input is set),
@@ -584,8 +607,8 @@ captured and Charles there t58068 (rep 60), Fastolf (objective 14) t91836; then 
 Croncels (Troyes' wall crossbowmen), or parked west of Croncels to the 15-min assassin squads while Joan fought inside
 Troyes. A food trip to the start's potion shop never opened the buy screen: the plan's `first()` steered every tick, so
 the generic interact (after `first()`) never pressed R at the seller's prompt; it now stops within 250 of the seller.
-game.campaign_S6L1_bot (fixture `campaign_checkpoints`) plays 120000 ticks and checks no defeat, Glasdale dead and a
-cannon built / tower down (~250 s).
+game.campaign_S6L1_bot was then a single 120000-tick run checking no defeat, Glasdale dead and a cannon built / tower
+down; MissionBot8f split it into segments (below).
 MissionBot8d: the "test vs drive loop" divergence was no nondeterminism. The same start reached in process (as the test)
 and saved/loaded (as drive) hashes identically for 70000 ticks (`work/MissionBot8d/div.cpp`), and drive from the
 current fixture sticks at "cannons at tower 59" exactly like the test. 8c's good run started from an older fixture
@@ -605,6 +628,37 @@ hill camp and Troyes within the 11585 that triggers the assassin squads; an arch
 (33000,25000) park. They also get Joan's food (`transfer_item`). Then the six light infantry at
 `S6L1_3_Join_Troop_Place`, the hill camp hunt, three crew per trebuchet, and the Troyes hunt. Seen working so far: the
 join (six spawn, wards walk south) and the start of the hill approach.
+MissionBot8e: shops never sold: the talk prompt needs the seller within 100 and ahead (talk_handler), the plan stopped at
+250, and the chain's Joan arrives with a full bag (now `Autopilot::make_room` first; the start camp sells
+JOAN_SWORD_LV6 and arrows: Joan had none, so she could not shoot the hill camp's tower archers). Joan's troop is full
+(9/9), so Auxerre's barracks recruits nobody for her. Cannon crews (`unstick_crews`): crewmen who neither attach nor get
+nearer their gun for 60 s were seen (a) by the gun with its point off the walk, (b) 17 off a free point that a
+second crewman's stale `push_slot` shadowed, (c) blocked by the second cannon parked beside it. The whole crew is stood
+down and assigned afresh once, then the cannon is given up on; only one cannon is crewed at a time. Joan's light
+infantry join the king's troop at the start (all nine died in her fights before). Auxerre fell at t60359 in one run
+from the mission-8 start (r4). The 15-min assassin squads come from count_time[0] (restarted at Auxerre's / Troyes' fall
+and after each squad): past 840 s the wards follow Joan instead of parking and she stays within 10000 of the king (the
+ring road to the hill camp ran 13300 from kSouthPark and squads hit the park). The six Troyes light infantry
+(join_troop_flag = event bit 11) move to the king's park at once (the six died where they spawned). Plan code for the
+road north is written but has not run yet: Bussy, camp du marais, par le lac and Sept Saulx, plus camp du Champagne / Chalons
+while reputation is short, then the two lords and the king to Reims' gate (`road_stage`). Errands for shops more
+than 15000 away are skipped (a plan started from a mid-mission save walked back to the start camp).
+MissionBot8f. **Stuck crews are faithful, not a port bug:** OrderExec_move_to_target 0x4bfa10 ends a MOVE_TO_TARGET
+within 2 x REACH_DT (30) for a unit at LOD > 1 (+0x22 >= 2: beyond 2000 of the player), while AI_large_weapon_push_inf
+0x535020 attaches only within REACH_DT (15); Unit_update_location 0x4fee60 (crew snapped onto its point) and
+get_nearest_attach_point 0x656dc0 match the port. A crew assigned away from Joan stands ~17-30 off its point until she
+comes within 2000. `unstick_crews` gave up both cannons for exactly that; it now judges only crewmen within 2000 of her
+(LOD 1). Auxerre's last two wall archers (BUR_ARCHER, team 218, (29600,22300,512)) stood 11300 from the king's park
+while the assassin rule pulled Joan back at 10000 (35000 ticks wasted); the rule now uses the script's 3-D distance
+(get_unit_dist 0x653150) with 11400. Auxerre (objective 1) from the mission-8 start: t63821 (was t98143). In the Troyes
+stage the wards stay parked at kSouthPark (following her they were led into the hill fights and pulled her off the
+trebuchets). The trebuchet crew is led (`lead_crew`): every crewman walking alone to the hill died to the middle-ring
+squads (teams 405/424-427, ~16 men at (38800,10350)) or stopped at the hill's foot (RTS paths search 100 polygons);
+the biggest bunch of free light infantry is RTS-moved ~1000 at a time along the bot's own path with Joan beside them,
+foes within 1200 of the road hunted first, until three stand within 1500 of the trebuchet. Segment tests:
+game.campaign_S6L1_auxerre (start -> objective 1, `bot-S6L1-auxerre.jsav`), game.campaign_S6L1_troyes (-> objective 2,
+`bot-S6L1-troyes.jsav`), game.campaign_S6L1_bot (-> win + Ending), each its own fixture, TIMEOUT 600. Not yet seen:
+Wall3 falling, Troyes' fall, the road north, Reims and the win.
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
 0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
@@ -704,7 +758,7 @@ stood 23 off his point for good while Joan was away (a weapon is selectable only
 hero class) is RTS-kept at his camp and foes within 1500 of him are fought first: walked into Meung's fights he was killed by
 its wall archers (imperative 36). **Beaugency:** once Meung is captured Joan walks into `getReinforcement` (scenario bit 1:
 Glasdale, Fastolf, Scales and Richemont spawn; Glasdale's cut scene raises the north gate); bosses are fought first (foe
-weight 0.05). Not done: the spy route (marker 8 ignored), a verified run through Beaugency, Janville and the bosses.
+weight 0.05). Not done: the spy route (marker 8 ignored).
 **Shared fix (bot):** `Autopilot::fight` backed off forever from a foe on another level when it had no arrows (Joan stood 100000
 ticks under Meung's wall crossbowmen whose walkway the path reaches); without ammo it now closes in along the path.
 Results from the legit Easy start (`work/MissionBot5b/bot-S9L1-easy.jsav`, Joan level 21, seed 1): every south village (27 WIN)
@@ -736,8 +790,30 @@ new game: missions 1-4 won by `finish_objectives`, S5L1 by removing Jargeau's ga
 castle ground; the script then captures it and finishes objective 1 (the hook also removes hostiles within 2500 of the castle:
 the WIN fires only after the 15 s win delay and the idle level-7 Joan was killed by two light infantry walking in). The test
 starts from FROM.jsav, else `$JOA_S9L1_START` (CMake: `work/MissionBot5d/bot-S9L1.jsav` on Normal, else
-`work/MissionBot5b/bot-S9L1-easy.jsav`, found at configure time), else this forced start; 120000 ticks, a win or at least 1
-place liberated (measured: Normal start 1, Fountainbleu; Easy start 3, down from 6 before the one-cell-per-loaf bag rules).
+`work/MissionBot5b/bot-S9L1-easy.jsav`, found at configure time), else this forced start; 120000 ticks, a win or at least 3
+places liberated from a legit start (1 from the forced one).
+
+**S9L1 won (MissionBot6e, Easy, seed 1, bot only).** Chain of the bot's own checkpoints: the Easy start played by
+MissionBot6c's code to Meung (`work/MissionBot6c/b2/d-120000.jsav`), then the current plan: Meung's two towers fall to the
+Bastard's cannons and Meung is captured (t~20000, `work/MissionBot6e/bot-S9L1-meung.jsav`), Talbot, Beaugency, Glasdale,
+Fastolf and Scales (`work/MissionBot6e/bot-S9L1-beaugency.jsav`), then Tours, Patay, Janville: finish 1 at t63340 from
+that checkpoint. `game.campaign_S9L1_win` (`--win`) asserts the win from it (31 s). A single uninterrupted run from the
+start through the current code was not completed.
+- **Village slowdown (6 → 1-3 places in 120000 ticks), bisected:** the one-cell-per-loaf bag rule (shared, faithful) left
+  Joan's bag full (30 apples, 26 loaves scattered over the 6x8 grid), so every shop visit bought nothing and she walked to a
+  seller again every 5 min; dropping apples did not help because `Autopilot::loot` picked them straight back up. Fixed in
+  the bot: `Autopilot::discard` (dropped items go into loot's skip set) and `Autopilot::make_room` (S4L1's: apples > 5 and
+  spare weapons dropped, food to the troop grid, grid repacked) before every purchase. Easy start: 7 places at 120000.
+- **Meung's tower archers:** with the gate save/load nav fix the cannons drive through the broken north gate; the plan sends
+  them at MeungRightTower, then MeungLeftTower (`tower()`, Rts_cmd_attack_item); each falls in ~4000 ticks and the script
+  deletes its archers.
+- **Beaugency / final camp:** marker 9 (final camp) lies behind Janville's gates, which open only with Beaugency's capture
+  (S9L1_tactic l.2845); the plan walks there itself only after it (the generic marker walk stood 50000 ticks at the gate).
+- **Travel fix (opt-in `Autopilot::gate_unlinked`, set by the S9L1 plan; on for every mission it lost mission 2):** a goal in a region no walk links to with a path that looks whole (the coarse world-mesh leg runs
+  through a shut gate) opens a gate near the player (Joan stood 90000 ticks at Orleans' shut east gate).
+- Plan: sellers only within 20000 and linked; out of food (< 4) Joan breaks off fights for the seller (the Normal start was
+  killed at Chateaudun with no food); explosive arrows for archers when no plain are left; perches recomputed at most every
+  10 s. Normal start: not won (died at t105467 before the food rule; with it alive at t150000, 8 places).
 
 **Port bug fixed (mission 6):** the win freeze set every unit's task to IDLE prio 127 also when leaving scenario 5, so in S9L1
 no enemy ever fought back (Joan took 0 damage in 20000 ticks). GameOver_win_freeze_units 0x6e7900 skips the order clear and
