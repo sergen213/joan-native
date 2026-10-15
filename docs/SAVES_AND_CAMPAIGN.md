@@ -709,6 +709,51 @@ Troyes segment from the new Auxerre save lost the duke to an ambush at the south
 wall-crossbow crews left); the road from a Troyes save reached rep 74 (Champagne, par le lac) before the king died to
 an ambush squad while Joan fought 11400 off (the 10000 margin and the walk stall fix are not yet run). Not yet seen:
 Reims, the win, the Ending.
+MissionBot8h. Start: the chain's mission-5 checkpoint (`bot-S5L1.jsav`) with missions 5-7 forced (Joan 492 HP). Segments
+(campaign_S6L1_bot_test.cpp table, TIMEOUT 600 each): auxerre (objective 1), hill (S6L1_3_Wall3 down), troyes
+(objective 2), road (reputation 77), then game.campaign_S6L1_bot to the win and the Ending. The 15-min assassin rule
+(tactic l.1886) spawns at the chase facility nearest Charles that is > 11585 from Joan, only when Joan is > 11585
+from him; the clock restarts after each spawn and at Auxerre's / Troyes' fall. Plan changes: the duke builds the
+cannons from the park by the hut too (Joan had passed it in a fight: no cannons ever); a reachable foe within 2200
+of Auxerre's gate is fought (an idle Burgundian archer in the yard held the guns for good); escorted walks
+(`road_park`): the king walks in steps of at most 4000 along his nav walk to a park 6500 (3-D) short of the hill
+camp, back to kSouthPark once the wall is down, and on the road north 5000 short of the next wanted leg / Reims;
+before each step Joan clears awake foes within 2000 of its end or 1500 of its legs, then walks beside him; a step
+he is stuck on that re-plans to the same spot ends where he stands; a ward stopped for a threat is brought back
+when he drifts 1200 off (the king on his horse chased the hill ring's archers 8000 away). Chase line: 10000 on
+escorted walks (foes beyond 9500 left alone), 10500 at kSouthPark (at 11400 a squad came while Joan fought
+Troyes 11350 off), 11400 before. Seen: Auxerre t85488 from the mission-8 start (the king's troop killed a 20-man
+ambush at the Auxerre park); Troyes from a t95488 resume at t217060 (hill escort, trebuchets, wall, Fastolf). Not
+yet run: the drift hold and the 10500 line, the road north with the stepped escort, Reims, the win, the Ending.
+MissionBot8i. Bot fix (shared, `Autopilot::fight`): the "path cannot reach the foe" give-up compared the path end with
+where the foe stands now, so any foe 150..250 off the planned spot was given up at once: whole melee squads went
+"unreached" beside the duke and killed him on the road north. It now compares against the path's own goal. Plan:
+a hunt whose walk carries Joan over the chase line is given up (she turned at the line under fire for 40000 ticks on
+the hill, #889, and died); the trebuchets shoot only with no ENGLISH in S6L1_4_Camp_Place (tactic l.3990), so that
+place is hunted while Wall3 stands (three returners held them for 130000 ticks); road steps end on the mesh
+(Rts_cmd_move refuses off-mesh destinations: the king stood east of the marais camp for good), a stuck-stay is
+retried after 2 min, and on the road a step is "last" only with at most 7000 of the walk left (Reims' lords 3500
+off the park, 10000 of walk round the walls); shop trips yield to the generic interact once the seller's talk prompt
+shows (Troyes' Foucaud Telier stays 117 off: food now bought) and count only their own ticks; a leg whose place the
+walk gets no 300 nearer in 3 min is given up (Chalons). Seen: auxerre, hill (t153500), troyes (t257316, rep 65) pass;
+road reaches Sept Saulx and Reims' lords at rep 75 but fails: reputation stops short (65 after Troyes, the elders'
++2 missing; camp du Champagne holds a tower archer at z 214 no walk reaches and Joan has no arrows, Bussy's Aubert
+Lanier errand never sells; Chalons shut). The elders' S6L1_2_Trap_Gate stands at z 1168 inside the keep, a nav
+component (100009) the mesh does not link: no reachable walk found. Not yet seen: Reims, the win, the Ending.
+MissionBot8j. Camp du Champagne's two tower archers stand on watchtower tops reached by LADDER items (class 11, h 198,
+(63749,43140) / (63266,43132) to z 225): not a nav gap. `hunt_in` / `stranded` now count a foe a ladder (chain) leads
+to as reachable, and `Autopilot::ladder_to` (shared) returns the first of a two-ladder chain (down one tower, up the
+other) when no single ladder joins two regions; Champagne falls (+2). Bussy's arrows now sell. Road north only: the
+king's step starts once Joan is within 3000 of him (on his horse, beyond 4000 of her at the x1.8 LOD speed, he made
+four 4000 steps in 600 ticks after Champagne, 12000 off her: assassin squads, duke dead); below rest_pct she leaves a
+park foe not after her to the generic rest; she eats while resting down to 3 food (`rest_food`, default 10: she sat
+50000 ticks at 1 HP / 10 s on 2 chickens + 3 meat). Seen, chained from MissionBot8h's auxerre checkpoint: hill (wall down
+at mission tick 158628), troyes (266670, rep 65), road (403157, rep 77: Bussy, marais, Champagne, par le lac, Sept
+Saulx; Chalons not needed) and game.campaign_S6L1_bot (WON in 54695 ticks, rep 80, the lords dead, the king at Reims'
+gate, then the Ending event) all pass. Elders: no ladder item lies within 20000 of Auxerre; S6L1_2_Trap_Gate
+(29387,23482,1168) and the children (cut-scene camera z 1243) stay in an unlinked nav component, cause (stairs missing
+from the walk mesh or not) not settled. With the current tree game.campaign_S6L1_auxerre fails from build-MissionBot8h's
+bot-S5L1.jsav (200000 ticks, "cannons at tower 59 (open the gate) via gate"; the same with the old unreached() rule).
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
 0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
@@ -873,6 +918,50 @@ gone in 15000 ticks) or on the way to a seller.
 - Plan: sellers only within 20000 and linked; out of food (< 3) Joan breaks off fights for the seller (the Normal start was
   killed at Chateaudun with no food); explosive arrows for archers when no plain are left; perches recomputed at most every
   10 s.
+
+**MissionBot6g (Easy, from the chain's S9L1 start, segment chain).** Still **no S9L1 win**; Joan no longer starves.
+- **Starvation cause:** `Autopilot::make_room` moves food into the troop grid, from which her squad eats (`is_in_danger`:
+  a member eats only from his leader's troop supply). At Meung her men ate 28 of her 32 food in 50000 ticks, while she
+  took only 2159 damage. The plan now moves troop-grid food back into rows 4-7 of her personal grid, keeping the top half
+  free for 1x4 arrow stacks. It skips this for 10 s after a shop trip leads, otherwise the buy screen found no room and
+  sold no arrows.
+- **Food:** `buy_food` buys the most HP per gold first, which means meat and chicken (full heals). It uses `shop_buy`, so
+  stock persists.
+- **Pacing:** `rest_pct` is 50 (Joan backed away from lurkers at 50-60 % HP for 20000 ticks at Meung). A foe shot for
+  3 min without harm is left for 5 min; an earlier run walked Meung's archer captain's 114 perches for 100000+ ticks.
+  `reinforce()` runs as soon as Meung is captured, instead of hunting Beaugency's 129 behind shut gates.
+- **Result:** S5L1 is won in seg3, 11/16 places by seg7, Meung captured in seg9 (12/16).
+- **Blocker:** `getReinforcement` lies in the castle's nav region (400001: both sides of the north gate). That region
+  links to the town (400000) only through BeaugencyMiddleGate1/2 (300 HP, shut), so the walk finds no way in and Joan
+  wanders for whole segments. The Bastard's one crewed cannon (fCannonD near Meung) took neither `rts_attack_item` on a
+  middle gate (APPROACH_ITEM, target region shut off) nor an `rts_move` to a firing spot in the town, so that code was
+  dropped. Next step: find why that cannon can't move (path budget / its spot), or use La Hire's melee or explosives on
+  a middle gate.
+- **Normal:** S5L1 is not won in the chain. From seg6 on, 8 archers stay on Jargeau's west tower (z 829, inside
+  Castle_Jargeau) and the hunt walks between far targets with 0 kills.
+
+**MissionBot6h (Beaugency's middle gates).** Still **no S9L1 win on record**; the Beaugency blocker is resolved.
+- **Port bug (fixed, `game.gate_knockup`):** in a hit's knock-up, the physics let airborne bodies skip the 80-unit
+  step-up. The passage poly of a shut gate is blocked, so the lookup under it finds only the gatehouse top (770 over 290).
+  Next to BeaugencyMiddleGate1/2, Joan stepped in and "landed" up there, then walked into the castle. That is how
+  MissionBot6e reached `getReinforcement` with both middle gates at 300/300. GAMEPLAY_IMPLEMENTATION.md deviation 9.
+- **The way in:** `reinforce()` now breaks the nearest standing middle gate when the castle region is not linked to Joan.
+  She shoots explosive arrows from 350 on her side at the gate face, z + 140 (Gate_take_ranged). If her arrows (at 10 HP
+  each) cannot finish the gate, she shops first. Normal chain (seg1-8 on the earlier build): MiddleGate1 down,
+  reinforcements spawned (bit 0) in seg9, Castle_Beaugency captured by seg12 (20 places). Not run on to the bosses.
+- **The cannon that "never moved" is not a port bug.** Out of range, the attack's APPROACH_ITEM (0x4bdbc0) aims at a
+  random point around the item, with a faithful A* budget (500/1000 pops by distance). From the camp to Meung's west
+  towers, every plan ended within 90 of the cannon, so it wiggled in place. One cannon had also driven to 41 off Meung's
+  north gate, where every ball flew past (1422/1500 for 12000 ticks). Rts_cmd_move works for short legs. `guns()` now
+  RTS-moves a cannon 1500 along the nav path at a time, backs one within 300 off to 800, and fires only between 300 and
+  range. Towers are attacked only after the north gate is down. Measured: a cannon moved to 850 off the north gate broke
+  it in 7500 ticks. From the stuck Easy seg8 save, Meung was captured within 20000 ticks.
+- **The Bastard:** Regent Bedford, spawned once de la Pole falls, walked to the Bastard's camp and killed him in 2500
+  ticks while Joan fought 11000 off (Easy, LOSE). `first()` now sends Joan to him when a foe is within 1200 of him and she
+  is more than 2500 away. Not yet run through that event.
+- **Shared bot:** `Autopilot::loot` takes MISSION floor items only when the bag has room. S9L1's gold keys and letter
+  drew a full-bagged Joan 40000 off, 900 ticks each.
+- **Chain on this build:** S5L1 is won in seg2 on both Easy and Normal.
 
 **Port bug fixed (mission 6):** the win freeze set every unit's task to IDLE prio 127 also when leaving scenario 5, so in S9L1
 no enemy ever fought back (Joan took 0 damage in 20000 ticks). GameOver_win_freeze_units 0x6e7900 skips the order clear and

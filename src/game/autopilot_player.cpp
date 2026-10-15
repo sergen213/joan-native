@@ -127,7 +127,7 @@ int Autopilot::region(Vec3 q) const {
 void Autopilot::build_seams() {
     const NavWorld* nav = m_.nav();
     if (!nav || (seam_gates_ == gates_ && seams_built_)) return;
-    seam_gates_ = gates_, seams_built_ = true, seams_.clear(), linked_.clear(), ladders_.clear();
+    seam_gates_ = gates_, seams_built_ = true, seams_.clear(), linked_.clear(), ladders_.clear(), no_ladder_.clear();
     const MapObjects& o = m_.objects();
     for (int r = 1; r <= o.size(); ++r)
         if (const MapItem* l = o.item(r); l && l->cls == 11)
@@ -183,14 +183,18 @@ int Autopilot::unit_region(const Unit& u) {
     return r;
 }
 
-// A foe the player could not get at is left alone for 60 s, twice as long each further time (up to 8 min).
+// A foe the player could not get at is left alone for 60 s, twice as long each further time (up to 8 min), while it stays
+// within 300 of where it stood: the verdict is about that spot. Mission 6 Normal gave up a squad below Meung's wall walk
+// (Joan on it, the path to them ending short), which then walked 800 to the Bastard's camp and killed him (LOSE) beside
+// a Joan that took none of them on.
 void Autopilot::give_up(int id) {
-    auto& [until, times] = unreach_[id];
-    until = tick_ + (1800 << std::min(times++, 3));
+    Unreach& u = unreach_[id];
+    u.until = tick_ + (1800 << std::min(u.times++, 3));
+    if (const Unit* f = m_.world().unit(id)) u.at = f->pos;
 }
 bool Autopilot::unreached(const Unit& u) const {
     const auto it = unreach_.find(u.id);
-    return it != unreach_.end() && tick_ < it->second.first;
+    return it != unreach_.end() && tick_ < it->second.until && d2(u.pos, it->second.at) < 300;
 }
 
 // The centre of the first enabled, unfinished WIN objective's territory (the minimap shows the towns / camps) not given up on
@@ -478,12 +482,15 @@ void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
         else f.held.set(IN_DEFEND);
         return;
     }
-    // Close in. A foe the path mesh cannot bring the player to (behind mission 3's locked prison gate), or one chased for 30 s
-    // in all without getting within 150 (mission 3: the G Defend Place hill guards above the dock road), is left for 60 s.
+    // Close in. A foe the path mesh cannot bring the player to (behind mission 3's locked prison gate: the path to where he
+    // stood ends short of it), or one chased for 30 s in all without getting within 150 (mission 3: the G Defend Place hill
+    // guards above the dock road), is left for 60 s. The path's end is judged against its own goal, not where the foe is
+    // now: a foe who moved 150..250 since (the replan distance) gave up every man of a melee at once (S6L1: the squad
+    // that killed the duke on the road north stood "unreached" beside him).
     if (d <= 150 && !other_level) chase_.erase(foe.id);
     if (d > 85 || other_level) {
         steer(f, p, foe.pos, false);
-        if ((d2(path_.back(), foe.pos) > 150 && d2(p.pos, path_.back()) < 100) || ++chase_[foe.id] > 900)
+        if ((d2(path_.back(), path_goal_) > 150 && d2(p.pos, path_.back()) < 100) || ++chase_[foe.id] > 900)
             give_up(foe.id), chase_.erase(foe.id);
         return;
     }
@@ -1126,18 +1133,24 @@ InputFrame Autopilot::decide() {
 }
 
 // A ladder (map item class 11, ends cached by build_seams()) between region `from` and region `to`: up from its foot or down
-// from its top. `end` = the end to walk to, `up` = the direction; nearest end to the player, null if none.
+// from its top, else the first of two (down from one watchtower, up the next: camp du Champagne). `end` = the end to walk
+// to, `up` = the direction; nearest end to the player, null if none.
 const MapItem* Autopilot::ladder_to(int from, int to, Vec3& end, bool& up) {
     build_seams();
+    if (no_ladder_.count({from, to})) return nullptr;
     const Unit* p = m_.world().unit(m_.world().player_id());
+    const auto leads = [&](const Ladder& l, bool u, int a, int b) { return linked(a, u ? l.foot_region : l.top_region) && linked(u ? l.top_region : l.foot_region, b); };
     const MapItem* best = nullptr;
-    for (const Ladder& l : ladders_)
-        for (const bool u : {true, false}) {
-            const Vec3 e = u ? l.foot : l.top;
-            if (p && linked(from, u ? l.foot_region : l.top_region) && linked(u ? l.top_region : l.foot_region, to) &&
-                (!best || d2(p->pos, e) < d2(p->pos, end)))
-                best = m_.objects().item(l.item), end = e, up = u;
-        }
+    for (int hops = 1; hops <= 2 && !best; ++hops)   // ponytail: two hops cover the maps seen; a BFS when one needs more
+        for (const Ladder& l : ladders_)
+            for (const bool u : {true, false}) {
+                const Vec3 e = u ? l.foot : l.top;
+                bool ok = leads(l, u, from, to);
+                for (std::size_t k = 0; hops == 2 && !ok && k < ladders_.size(); ++k)
+                    for (const bool v : {true, false}) ok |= &ladders_[k] != &l && leads(l, u, from, v ? ladders_[k].foot_region : ladders_[k].top_region) && leads(ladders_[k], v, u ? l.top_region : l.foot_region, to);
+                if (p && ok && (!best || d2(p->pos, e) < d2(p->pos, end))) best = m_.objects().item(l.item), end = e, up = u;
+            }
+    if (!best) no_ladder_.insert({from, to});
     return best;
 }
 
@@ -1167,12 +1180,15 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     int best_key = 0;
     float best_d = radius;
     bool box = false;
-    // Floor items only when the pickup would take them (Unit_auto_pickup 0x49da30): gold, MISSION items, red food that
-    // fits the HP missing, else what the bag has room for (World::can_give: give_item 0x495f40 without the change). With a
+    // Floor items only when the pickup would take them (Unit_auto_pickup 0x49da30): gold, S7's gold bars / food, red food
+    // that fits the HP missing, else what the bag has room for (World::can_give: give_item 0x495f40 without the change),
+    // MISSION items too (S9L1's two gold keys and a letter, 40000 off, drew a full-bagged Joan for 900 ticks each). With a
     // full bag the bot walked over items it could not take (S5L1: 45000 ticks beside dropped apples).
     const auto takes = [&](int item, int level, int quantity) {
         const ItemDef& d = gd.items[std::size_t(item)];
-        if (d.item_class == "GOLD" || d.item_class == "MISSION" || (d.type == 0x15 && d.damage < w.max_hp(p) - p.hp)) return true;
+        if (d.item_class == "GOLD" || (d.item_class == "MISSION" && (d.code == "S7_GOLDBAR" || d.code.starts_with("S7_food"))) ||
+            (d.type == 0x15 && d.damage < w.max_hp(p) - p.hp))
+            return true;
         return w.can_give(p, d.code, level, quantity) > 0;
     };
     // `far`: a MISSION item (mission 1's Imperial Scroll, dropped by the messenger when he falls: "You must retrieve

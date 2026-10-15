@@ -1,5 +1,6 @@
 #include "game/physics_char.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -137,11 +138,13 @@ void CharPhysics::integrate(World& w, float dt_s) {
                         }
                     }
             }
-            // Navmesh walls and the 80-unit step-up limit.
+            // Navmesh walls and the 80-unit step-up limit; airborne, from the feet (higher of ground and body). Exempting
+            // airborne bodies let a hit's knock-up beside a shut gate (passage poly blocked, so the lookup finds only the
+            // gatehouse top 480 above) step in and "land" up there, through the gate (Beaugency's middle gates, S9L1).
             const float g0 = ground(w, u.pos.x, u.pos.y, u.pos.z);
             auto ok = [&](float x, float y) {
                 if (!walkable(w, x, y, u.pos.z)) return false;
-                return u.airborne || ground(w, x, y, u.pos.z) - g0 <= kStepUp;
+                return ground(w, x, y, u.pos.z) - (u.airborne ? std::max(g0, u.pos.z) : g0) <= kStepUp;
             };
             float tx = u.pos.x + vx * h, ty = u.pos.y + vy * h;
             if (!ok(tx, ty)) {

@@ -278,6 +278,7 @@ Deviations:
 6. Push-aside speed 100 u/s (magnitude unknown); pending pushes are saved in the optional Mission save section `PHYS` (written only while one is active, so hashes of push-free states are unchanged).
 7. (resolved) AI riders are driven, see "AI riders".
 8. RECRUIT_TROOP matches the recruit type by class kingdom (race +0x14d is not loaded); news-log entries of set_task are not generated.
+9. Airborne bodies keep the 80-unit step-up, measured from max(ground, body z): the port exempted them, so a hit's knock-up (`combat_melee` vel.z) beside a shut gate, whose passage poly is blocked so the lookup under it finds only the gatehouse top 480 above, stepped in and "landed" up there, through the gate (S9L1: Joan into Beaugency castle past its shut middle gates). The original's swept body hits the gate's CollisionType box instead (HIGH). Regression: `game.gate_knockup`.
 
 Gaps: `search_for_item` is a simplified reading of 0x503680; can_energy_attack ignores the energy-cost item effect; `.por` anti-portals are not loaded.
 

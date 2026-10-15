@@ -9,6 +9,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <tuple>
 
 #include "game/autopilot_player.hpp"
 #include "game/multimap_nav.hpp"
@@ -35,7 +36,8 @@ constexpr Cap kCaps[] = {
 class PlanS9L1 final : public MissionPlan {
 public:
     bool first(Autopilot& ap, InputFrame& f, Unit& p) override {
-        const bool shopping = ap.plan_talk != 0 || ap.mission().ui().buy_open;  // a trip led last tick, or the buy screen
+        // A trip led within 10 s (the talk and its dialog run before the buy screen opens), or the buy screen.
+        const bool shopping = ap.tick() - led_tick_ < 300 || ap.mission().ui().buy_open;
         ap.plan_talk = 0;  // set again by supplies() each tick it leads to a seller
         // Buy screen: explosive arrows for the towns' bombards (siege weapons take only stone / explosive hits: unit.res
         // TriggerType 0x6040), plain ones for the archers on walls and towers no path reaches, 1500 kept for food (buy_food
@@ -44,22 +46,47 @@ public:
         ap.shop_explosive_max = kExplosive, ap.shop_plain_max = kPlain, ap.shop_gold_keep = 1500;
         ap.explosive_reserve = kExplosiveKeep;
         ap.gate_unlinked = true;  // Autopilot::travel: Orleans' shut east gate
+        // Rest / avoid unaware foes only below half HP, where F3 eats: with meat (a full heal) in the bag Easy spent 20000
+        // ticks of Meung's siege backing away from lurkers at 50-60 % HP.
+        ap.rest_pct = 50;
         const Unit* b = bastard(ap.mission());
         guard_ = b && ap.mission().ai().rts_selectable(*b) ? std::optional<Vec3>(b->pos) : std::nullopt;
         bastard_id_ = b ? b->id : 0;
         army(ap, p), pick(ap, p);
         // Food in the troop grid feeds her squad (is_in_danger: a member eats only from his leader's troop supply), and
         // make_room puts it there for bag room: in Meung's brawl her men ate 28 of her 32 (2159 HP taken by Joan) and she
-        // starved. Back into her own grid while it has room, but not on a shop trip: the buy screen then found the personal
-        // grid full of food and sold no arrows (Easy went without explosives for the towns' bombards).
+        // starved. Back into the bottom half of her own 6x8 grid (rows 4-7), the top half kept for 1x4 arrow stacks (food
+        // placed from the top left no column free, and the buy screen sold Easy no arrows); not on a shop trip
+        // (make_room just made room for the purchase).
         if (!shopping)
             for (ItemInstance& it : p.inv.bag)
                 if (const int t = ap.mission().data().items[std::size_t(it.item)].type; it.bag == 2 && (t == 0x15 || t == 0x19))
-                    if (ItemInstance n = it; p.inv.place(ap.mission().data(), n, 1)) it = n;
+                    if (ItemInstance n = it; low_cell(ap.mission().data(), p.inv, n)) it = n;
         // Out of food: to the seller even mid-fight (the hunt's supplies() runs only between fights; the Normal start's Joan
         // fought Chateaudun's garrison down from 23 food to none and was killed, LOSE 5). Only near empty: the garrisons left
         // behind chase her the whole way (Blois' 15 from 8 food to Orleans, 18000 off, where they killed her).
-        return food(ap.mission().world(), p) < 3 && supplies(ap, f, p) && trip_d_ > 150;  // near: the generic talk
+        if (food(ap.mission().world(), p) < 3 && supplies(ap, f, p) && trip_d_ > 150) return true;  // near: the generic talk
+        // A foe at the Bastard (imperative 36) with Joan 2500+ off: to him through whatever is on the way, his attackers
+        // weighted first there (foe_weight). Regent Bedford, spawned in Meung's barracks once de la Pole falls, walked to
+        // his camp and beat him for 2500 ticks while Joan fought at Meung's west wall 11000 off (Easy, LOSE).
+        if (b && is_joan(ap.mission(), p) && d2(p.pos, b->pos) > 2500) {
+            World& w = ap.mission().world();
+            for (const Unit& u : w.units())
+                if (!u.deleted && !w.dead(u) && u.m.active && w.hostile_to_player(u) && d2(u.pos, b->pos) < 1200 && std::fabs(u.pos.z - b->pos.z) < 150) {
+                    ap.goal = "to the Bastard: #" + std::to_string(u.id) + " at him";
+                    walk(ap, f, p, b->pos);
+                    return true;
+                }
+        }
+        // Meung all that is left: meet the Bastard first (meetOrlean, S9L1_tactic l.2332; the cut scene makes him and his
+        // cannons the player's), taking on only who is at the player. Normal stood 5000 ticks 900 short of the box duelling
+        // Meung's wall archers, then fought the sorties 9000 west until one killed him unmet in his camp (LOSE).
+        if (b && meet_open(ap.mission()) && d2(p.pos, bastard_home(ap.mission())) < 6000 && !beset(ap.mission(), p)) {
+            ap.goal = "Meung: meet the Bastard first";
+            walk(ap, f, p, {bastard_home(ap.mission()).x, bastard_home(ap.mission()).y, p.pos.z});
+            return true;
+        }
+        return false;
     }
     std::optional<Vec3> guard_;  // the Bastard once he is the player's (his attackers are fought first)
     int bastard_id_ = 0;
@@ -97,6 +124,10 @@ public:
         const bool in = target_ && in_place(m, target_, u);
         if (c.unit_class == 8) return 0;  // siege weapons: shot with explosive arrows (before_hunt), a sword does nothing
         if (!walkable(ap, p, u)) return 0;  // tower tops: shot from a perch (before_hunt), not from wherever the fight is
+        // Meung all that is left: no chase over 3000 from the Bastard (his camp takes Meung's sorties: see meet_open).
+        if (const Unit* b = m.world().unit(bastard_id_); b && !target_ && !captured(m, "Castle_Meung") && d2(u.pos, b->pos) > 3000 &&
+                                                         !(u.target == p.id && d2(p.pos, u.pos) < 400))
+            return 0;
         if (guard_ && d2(u.pos, *guard_) < 1500) return 0.1f;  // the Bastard's attackers first
         // Also before he is met (imperative 36): Easy lost at t245554 to a group that walked into his camp while Joan was
         // 5000 off at Bourges.
@@ -159,8 +190,11 @@ public:
         }
         if (mark) {
             // Meung's tower archers (WALL tops only stone breaks here; the script deletes a team when its tower falls,
-            // S9L1_tactic l.6560): the Bastard's cannons at that tower, else the bow.
-            if (const int t = tower(m, *mark); t && guns(ap, f, p, t, "the tower")) return true;
+            // S9L1_tactic l.6560): the Bastard's cannons at that tower, else the bow. The north gate first while it stands:
+            // the cannons wait at the camp outside it, and the way round to the west towers is beyond any cannon's path.
+            const int ng = m.objects().find_by_name("MeungNorthGate");
+            if (const int t = tower(m, *mark); t && guns(ap, f, p, gate_down(m, "MeungNorthGate") ? t : ng, gate_down(m, "MeungNorthGate") ? "the tower" : "the north gate"))
+                return true;
             return shoot_foe(ap, f, p, *mark, left), true;
         }
         if (left) return skip(ap, "unreached"), false;
@@ -250,6 +284,10 @@ private:
     // under fire drops it); Joan stays by the guns. A crew walks to its attach point only near the player: MOVE_TO_TARGET
     // ends within REACH (x2 at LOD > 1, beyond 2000 of the player) while attaching needs REACH_DT (0x535020), so a crew 23
     // off its point far from Joan never mans the cannon (rts_selectable needs every point manned). False: no cannon left.
+    // Out of range the attack's APPROACH_ITEM (0x4bdbc0) plans to a random point round the item with an A* budget of
+    // 1000 pops: from the camp to Meung's west towers (9000, round the walls) every plan ended within 90 of the cannon,
+    // which wiggled in place all segment. Such a cannon is RTS-moved (Rts_cmd_move, as a player clicks) 1500 along
+    // Joan's path at a time; one within 300 (41 off Meung's north gate: every ball flew past it) is moved back to 800.
     bool guns(Autopilot& ap, InputFrame& f, Unit& p, int item, const char* what) {
         Mission& m = ap.mission();
         World& w = m.world();
@@ -264,13 +302,44 @@ private:
         const MapItem* g = m.objects().item(item);
         ap.goal = "Meung: " + std::to_string(ids.size()) + "/" + std::to_string(all) + " cannons at " + what + " (hp " + std::to_string(g ? g->hp : 0) + ")";
         if (!all) return false;
-        if (ap.tick() >= gun_tick_ && !ids.empty()) {
+        if (ap.tick() >= gun_tick_ && !ids.empty() && g) {
             gun_tick_ = ap.tick() + 600;
-            std::erase_if(ids, [&](int id) { return m.ai().curr_task(*w.unit(id)) == task::RTS_ATTACK_ITEM && m.ai().curr_task_para(*w.unit(id), 1) == item; });
-            if (!ids.empty()) rts(m, p, [&](AiSystem& a) { a.rts_attack_item(ids, item); });
+            std::vector<int> fire;
+            for (const int id : ids) {
+                const Unit& c = *w.unit(id);
+                const float d = std::max(d2(c.pos, g->pos), 1.0f), range = float(m.ai().unit_range(c, 2));
+                Vec3 to{g->pos.x + (c.pos.x - g->pos.x) / d * 800, g->pos.y + (c.pos.y - g->pos.y) / d * 800, c.pos.z};
+                if (d >= 300 && d < range) {
+                    if (m.ai().curr_task(c) != task::RTS_ATTACK_ITEM || m.ai().curr_task_para(c, 1) != item) fire.push_back(id);
+                    continue;
+                }
+                if (d >= range && !hop(m, c.pos, g->pos, range, to)) {
+                    fire.push_back(id);
+                    continue;
+                }
+                rts(m, p, [&](AiSystem& a) { a.rts_move(std::vector<int>{id}, to, false); });
+            }
+            if (!fire.empty()) rts(m, p, [&](AiSystem& a) { a.rts_attack_item(fire, item); });
         }
         if (d2(p.pos, at) > 400) walk(ap, f, p, at);
         return true;
+    }
+    // The point 1500 along the nav path from `from` to `to`, or where it first comes within range - 200 of `to`.
+    static bool hop(Mission& m, Vec3 from, Vec3 to, float range, Vec3& out) {
+        const NavWorld* nav = m.nav();
+        if (!nav) return false;
+        PathQuery q;
+        q.from = {from.x, from.y, from.z}, q.to = {to.x, to.y, to.z}, q.max_expand = 4000;
+        const auto pts = nav->find_path(q).points;
+        float run = 0;
+        Vec3 prev = from;
+        for (const NavPt& n : pts) {
+            const Vec3 v{n.x, n.y, n.z};
+            run += d2(prev, v), prev = v;
+            if (run >= 1500 || d2(v, to) < range - 200) break;
+        }
+        if (pts.empty() || d2(prev, from) < 100) return false;
+        return out = prev, true;
     }
     int gun_tick_ = 0;
     // The standing Meung tower under u (MeungRightTower / MeungLeftTower, WALL 200 HP) while a crewed cannon is the
@@ -290,21 +359,50 @@ private:
     // Beaugency: once Meung is taken a Frenchman in getReinforcement (by its north gate) brings Glasdale, Fastolf and
     // Scales with their troops (scenario bit 1; they follow the player) and Richemont; Glasdale's cut scene raises the
     // north gate. Each boss beaten once retreats to Janville (bit 19, event_2 bits 30 / 31: Beaugency's capture needs all
-    // three) and is beaten there again for objectives 16 / 24 / 25. With no place open, Joan walks into getReinforcement.
-    bool reinforce(Autopilot& ap, InputFrame& f, const Unit& p) {
+    // three) and is beaten there again for objectives 16 / 24 / 25. Once Meung is taken, Joan walks into getReinforcement.
+    // The place lies in the castle's nav region (both sides of the north gate), which meets the town only at the middle
+    // gates (300 HP, shut all mission; "we can whittle away at its defenses", S9L1_tactic l.3455): with no walk there she
+    // breaks the nearest with explosive arrows (Gate_take_ranged, as S4L1's Tourelles portcullis) from 350 on her side.
+    bool reinforce(Autopilot& ap, InputFrame& f, Unit& p) {
         Mission& m = ap.mission();
         Places& ps = m.places();
         const Place* mp = ps.place(ps.place_by_name("Castle_Meung"));
         const Place* r = ps.place(ps.place_by_name("getReinforcement"));
         if (!mp || !mp->captured || !r || (m.vm().state().bits[0] & 1u)) return false;
+        const Vec3 g{(r->box_min.x + r->box_max.x) / 2, (r->box_min.y + r->box_max.y) / 2, p.pos.z};
+        const int here = ap.unit_region(p);
+        if (!ap.linked(here, ap.region({g.x, g.y, 290})) && p.inv.ranged.item) {
+            const MapItem* gate = nullptr;
+            Vec3 spot{};
+            for (const char* name : {"BeaugencyMiddleGate1", "BeaugencyMiddleGate2"}) {
+                const MapItem* it = m.objects().item(m.objects().find_by_name(name));
+                if (!it || it->hp <= 0 || it->state != 0) continue;
+                for (const float side : {350.0f, -350.0f}) {
+                    const Vec3 q{it->pos.x + side * std::cos(it->dir), it->pos.y + side * std::sin(it->dir), it->pos.z};
+                    if (const int rq = ap.region(q); rq >= 0 && ap.linked(here, rq) && (!gate || d2(p.pos, q) < d2(p.pos, spot))) gate = it, spot = q;
+                }
+            }
+            if (gate) {
+                if (ap.arrows(p, true) * 10 < gate->hp && supplies(ap, f, p, true)) return true;  // ~15 HP an arrow
+                if (ap.arrows(p, true) > 0) {
+                    ap.goal = "Beaugency: shoot " + gate->name + " (hp " + std::to_string(gate->hp) + ")";
+                    if (d2(p.pos, spot) > (m.world().controller().range_mode ? 150 : 80)) return walk(ap, f, p, spot), true;
+                    const float c = std::cos(gate->dir), s = std::sin(gate->dir), k = (spot.x - gate->pos.x) * c + (spot.y - gate->pos.y) * s > 0 ? 12.0f : -12.0f;
+                    ap.load_ammo(p, true);
+                    ap.shoot_at(f, p, {gate->pos.x + k * c, gate->pos.y + k * s, gate->pos.z + 140}, p.action == SHTIDLE);  // the face toward her
+                    return true;
+                }
+            }
+        }
         ap.goal = "Beaugency: to getReinforcement";
-        walk(ap, f, p, {(r->box_min.x + r->box_max.x) / 2, (r->box_min.y + r->box_max.y) / 2, p.pos.z});
+        walk(ap, f, p, g);
         return true;
     }
 
     // A siege weapon (explosive arrows) or a foe no path reaches (plain arrows) holding the place: from a perch (perch()),
     // then the bow. A perch where 15 s of shots do no harm (the prediction is marginal: the shooter's pose moves the launch
-    // point) is dropped for the next; one with no perch left is left for 5 min.
+    // point) is dropped for the next; one with no perch left, or 3 min without harm (Easy walked Meung's archer captain's
+    // 114 perches for 100000+ ticks), is left for 5 min.
     void shoot_foe(Autopilot& ap, InputFrame& f, Unit& p, const Unit& u, int left) {
         World& w = ap.mission().world();
         const auto& c = w.data().units[std::size_t(u.cls)];
@@ -312,8 +410,11 @@ private:
         shot_id_ = u.id;
         const Vec3 aim{u.pos.x, u.pos.y, u.pos.z + float(c.height) * (siege ? 0.5f : 0.8f)};
         Perch& pc = perch(ap, p, u, aim, expl);
-        if (pc.i >= pc.spots.size()) {
-            shot_skip_[u.id] = ap.tick() + 9000, shot_id_ = 0, perch_.erase(u.id);
+        auto& [harm_tick, harm_hp, seen] = harm_[u.id];  // last hp drop (tick, hp), last tick shot at
+        if (ap.tick() - seen > 300 || u.hp < harm_hp) harm_tick = ap.tick(), harm_hp = u.hp;
+        seen = ap.tick();
+        if (pc.i >= pc.spots.size() || ap.tick() - harm_tick > 5400) {
+            shot_skip_[u.id] = ap.tick() + 9000, shot_id_ = 0, perch_.erase(u.id), harm_.erase(u.id);
             if (ap.trace) std::printf("[plan %d] leave #%d %s (hp %d)\n", ap.tick(), u.id, c.code.c_str(), u.hp);
             return;
         }
@@ -347,6 +448,7 @@ private:
     }
     int shot_id_ = 0;
     std::map<int, int> shot_skip_;  // foe -> tick it is shot at again
+    std::map<int, std::tuple<int, int, int>> harm_;  // foe -> (tick of its last hp drop, that hp, last tick shot at)
 
     // Where to shoot u from: walkable points within 1600 whose locked arrow (lob_margin) beats the structures by 0.1 s, the
     // nearest the player first. Meung's tower tops (2-poly nav islands at z 521, no ladder or .pfd link; the towers are
@@ -453,7 +555,7 @@ private:
             return false;
         }
         ap.goal = "to the shop of " + s->name;
-        ap.plan_talk = s->id;
+        ap.plan_talk = s->id, led_tick_ = ap.tick();
         // Bag room before the buy screen opens (a purchase needs a free cell or stack room, FUN_006c5a00; one cell per loaf,
         // the loot fills the bag with apples): 30 apples and a crossbow, then 26 loaves scattered over the personal grid,
         // left no 1x4 column for plain arrows, and each failed visit was walked again 5 min later.
@@ -474,7 +576,7 @@ private:
     // garrison at their heels, and were killed on the way.
     static constexpr int kFoodLow = 20, kFood = 30, kArrowsLow = 8, kExplosive = 40, kPlain = 300, kExplosiveKeep = 12;
     static constexpr float kTripMax = 20000;  // farther sellers (Jargeau's, Chateauneuf's from Beaugency: 55000) cost more than the stock
-    int trip_id_ = 0, trip_tick_ = 0;
+    int trip_id_ = 0, trip_tick_ = 0, led_tick_ = -1000;  // led_tick_: last tick supplies() led to a seller
     float trip_best_ = 0, trip_d_ = 0;  // trip_d_: distance to the seller supplies() last walked to
     std::map<int, int> trip_skip_;  // seller -> tick it is walked to again
 
@@ -681,6 +783,13 @@ private:
             if (!u.deleted && !w.dead(u) && !u.m.can_interact && u.nation == w.unit(w.player_id())->nation &&
                 m.data().units[std::size_t(u.cls)].code == "ENGLISH_SPY")
                 return true;
+        return false;
+    }
+    // A free cell for the 1x1 item n in rows 4-7 of the personal grid (6x8, items_inventory.cpp kBagW / kBagH).
+    static bool low_cell(const GameData& gd, const Inventory& inv, ItemInstance& n) {
+        for (n.bag = 1, n.row = 7; n.row >= 4; --n.row)
+            for (n.col = 0; n.col < 6; ++n.col)
+                if (inv.fits(gd, n)) return true;
         return false;
     }
     static int food(const World& w, const Unit& p) {  // F3 food (item types 0x15 / 0x19), as the bot counts it

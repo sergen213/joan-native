@@ -41,6 +41,7 @@ public:
     // NPC a plan walks up to this tick: talked to at the interact prompt again 300 ticks after the last word (as the
     // errand NPC; the plan sets it each tick it leads there).
     int plan_talk = 0;
+    int talk_prompt() const { return prompt_ && prompt_kind_ == "talk" ? prompt_id_ : 0; }   // unit the talk indicator shows, 0 none
     // Ticks a way point on an open gate is shown before the bot goes to close it (default 30 s: mission 2's generic play
     // closed it after John's 10 s mark, closing then sends him and team 11 off, long before the 180 s reinforcements).
     int gate_delay = 30 * 30;
@@ -124,6 +125,7 @@ private:
     int escort_skip_ = 0;                // no escort wait before this tick
     struct Ladder { int item; Vec3 foot, top; int foot_region, top_region; };
     std::vector<Ladder> ladders_;    // built with seams_
+    std::set<std::pair<int, int>> no_ladder_;  // (from, to) regions ladder_to() found no ladder chain between
     bool climb_up_ = true;           // direction of the ladder use_ladder() mounted
     int hunt_target_ = 0, hunt_tick_ = -1000;  // enemy hunted, since
     unsigned gates_ = 0;             // gate states the current path was planned with
@@ -150,7 +152,8 @@ private:
     Vec3 check_pos_{};
     int check_tick_ = 0, unstick_until_ = 0, unstick_dir_ = 0, stuck_count_ = 0;
     int fight_target_ = 0;
-    std::map<int, std::pair<int, int>> unreach_;  // foe -> (left alone until tick, times given up on)
+    struct Unreach { int until = 0, times = 0; Vec3 at{}; };
+    std::map<int, Unreach> unreach_;  // foe -> left alone until tick, times given up on, where it stood then
     bool shot_ = false;              // shoot() ran this tick (range mode is left otherwise)
     std::uint32_t shop_ms_ = ~0u;    // buy screen opening already shopped at
     bool retreat_ = false;           // HP < 30 % and F3 had no effect: guard near an ally until 70 %
