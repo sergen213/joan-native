@@ -37,6 +37,7 @@ struct BuiltinTable {
 void bind_objects(BuiltinTable& t);     // script_bind_objects.cpp: items, gates, walls, boxes (MapObjects)
 void bind_places(BuiltinTable& t);      // script_bind_places.cpp: places, facilities, territories, nations
 void bind_units(BuiltinTable& t);       // script_bind_units.cpp: unit queries
+void install_hit_danger(Mission& m);   // script_bind_units.cpp: World::hit_danger = is_in_danger(1)
 void bind_unit_state(BuiltinTable& t);  // script_bind_unit_state.cpp: unit state setters
 void bind_troops(BuiltinTable& t);      // script_bind_troops.cpp: spawn, teams, orders/tasks, inventory
 void bind_mission(BuiltinTable& t);     // script_bind_mission.cpp: objectives, counters, date/weather, save_game

@@ -121,6 +121,38 @@ int world_part(fixture::Env& env) {
     std::printf("cart moved %.0f, driver max offset/yaw error %.2f\n", moved, worst);
     CHECK(moved > 500, "cart moved");
     CHECK(worst < 0.5f, "driver follows the cart");
+
+    // Rts_cmd_assign 0x44f750 branch A: with every free point reserved by men still on their way, a newly assigned
+    // crewman takes the point of one that did not think this tick (its task cleared); captains are not crew.
+    {
+        World w2(*env.gd, env.terrain.get(), 7);
+        AiSystem ai2(w2, env.nav.get());
+        CharPhysics phys2(env.nav.get());
+        w2.set_physics(&phys2);
+        const int gun = w2.spawn_unit("CANNON", 1, {cx, cy, 0}, 90);
+        int stale[2];
+        for (int i = 0; i < 2; ++i) {
+            stale[i] = w2.spawn_unit("ENGLISH_LIGHT_INFANTRY", 1, {cx - 1150, cy - 250 + 500.0f * i, 0}, 0);
+            ai2.give_task(*w2.unit(stale[i]), task::LARGE_WEAPON_PUSH, 10, gun, i, 0, 0);
+        }
+        auto res = [&]() -> const std::vector<int>& { return w2.unit(gun)->m.reserved; };
+        auto thought_now = [&] { return w2.unit(stale[0])->think_ts >= w2.now() || w2.unit(stale[1])->think_ts >= w2.now(); };
+        auto ready = [&] { return res().size() == 2 && res()[0] && res()[1] && !thought_now() && w2.now() > 1000; };
+        for (int t = 0; t < 600 && !ready(); ++t) w2.tick({});
+        CHECK(ready() && !w2.unit(gun)->m.crew[0] && !w2.unit(gun)->m.crew[1], "both points reserved by men on their way");
+        const int cap = w2.spawn_unit("ENGLISH_LIGHT_INFANTRY_CAPTAIN", 1, {cx - 100, cy, 0}, 0);
+        const int fresh = w2.spawn_unit("ENGLISH_LIGHT_INFANTRY", 1, {cx - 100, cy + 50, 0}, 0);
+        const int sel[] = {cap, fresh};
+        CHECK(ai2.rts_assign(sel, gun, true), "assign accepted");
+        const int dropped = ai2.curr_task(*w2.unit(stale[0])) == task::LARGE_WEAPON_PUSH ? stale[1] : stale[0];
+        std::printf("assign over stale reservations: reserved %d %d, dropped #%d task %d\n", res()[0], res()[1], dropped,
+                    ai2.curr_task(*w2.unit(dropped)));
+        CHECK(ai2.curr_task(*w2.unit(cap)) != task::LARGE_WEAPON_PUSH, "a captain is not crew");
+        CHECK(ai2.curr_task(*w2.unit(fresh)) == task::LARGE_WEAPON_PUSH && std::count(res().begin(), res().end(), fresh) == 1,
+              "the new crewman reserved a point");
+        CHECK(ai2.curr_task(*w2.unit(dropped)) != task::LARGE_WEAPON_PUSH && std::count(res().begin(), res().end(), dropped) == 0,
+              "a stale reserver gave his point up");
+    }
     return 0;
 }
 
@@ -149,7 +181,7 @@ int mission_part(const char* dir) {
     const int gate = o.find_by_name("Castle Gate");
     CHECK(gate && o.item(gate)->state == 0, "closed Castle Gate");
     const MapItem g0 = *o.item(gate);
-    const int poly = m.nav()->find_poly_xy(g0.pos.x, g0.pos.y, g0.pos.z);
+    const int poly = m.nav()->find_poly_xy(g0.pos.x, g0.pos.y, g0.pos.z, true);   // as gate_nav: the blocked poly under it
     const int english = gd->nation_id("ENGLISH"), french = gd->nation_id("FRENCH");
     w.set_hostile(english, french, true), w.set_hostile(french, english, true);
     // The S1L1 script loses the mission when a castle guard dies (S1L1_finish.sce): the ram's swing hits
@@ -199,6 +231,14 @@ int mission_part(const char* dir) {
     CHECK(batter.size() >= 6, "front crew swung with the ram");
     // Gate_set_open_collision(0): the passage opens (gate_nav clears the poly under the gate, if any).
     CHECK(!blocking && (poly < 0 || m.nav()->poly(poly).state == 0), "gate collision / nav poly open");
+    // A save taken once the destroyed gate is deleted (its fade-out; S7L1's "StPierre gate 2") loads with the passage open:
+    // the map load blocks every closed gate's poly before the saved objects replace them.
+    if (poly >= 0) {
+        if (o.item(gate)) o.del_item(m, gate);
+        CampaignRunner run2(*gd, vfs);
+        CHECK(run2.init(&err) && run2.load(run.save(), &err), err);
+        CHECK(run2.mission()->nav()->poly(poly).state == 0, "destroyed gate's nav poly open after a load");
+    }
 
     // Ram death takes its front crew (Unit_die crew release).
     Unit& R = *w.unit(ram);

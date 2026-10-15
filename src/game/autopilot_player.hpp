@@ -34,7 +34,8 @@ public:
     int trace = 0;                 // diagnostic: print a status line every `trace` ticks (env JOA_BOT_TRACE)
     // Buy screen (shop()): ammo of the launcher in hand is bought up to these counts carried, and gold is never spent below
     // shop_gold_keep. Mission plans set them (default: explosive up to 20, plain with all the gold left).
-    int shop_explosive_max = 20, shop_plain_max = std::numeric_limits<int>::max(), shop_gold_keep = 0;
+    // shop_plain_first plain ones are bought before a heavier armour.
+    int shop_explosive_max = 20, shop_plain_max = std::numeric_limits<int>::max(), shop_gold_keep = 0, shop_plain_first = 0;
     // Explosive arrows the generic volleys leave alone (a plan keeps them for a structure: S4L1's Tourelles gate).
     int explosive_reserve = 0;
     // NPC a plan walks up to this tick: talked to at the interact prompt again 300 ticks after the last word (as the
@@ -43,6 +44,9 @@ public:
     // Ticks a way point on an open gate is shown before the bot goes to close it (default 30 s: mission 2's generic play
     // closed it after John's 10 s mark, closing then sends him and team 11 off, long before the 180 s reinforcements).
     int gate_delay = 30 * 30;
+    // Below rest_pct % HP enemies that have not noticed the player are left alone and she rests, eating (F3) while she
+    // carries more than rest_food (mission 4 lowers both: regen of 1 HP / 150 ticks cost it 20000+ ticks a rest).
+    int rest_pct = 70, rest_food = 10;
 
     // --- helpers (also for the mission plans, autopilot_plan.hpp) --------------------------------------
     Mission& mission() { return m_; }

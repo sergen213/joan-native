@@ -35,6 +35,19 @@ screen is open.
 | Camera | wheel / NUMPAD+ NUMPAD- zoom, `,` `.` rotate (RTS) |
 | Misc | F5 quick save, F6 quick load (prompt), F10 capture screen |
 
+Character details (F1): click an item to put it on the pointer (or hold and drag it), click a grid cell or slot to
+put it down, right click puts it back / eats food / wears armour. Clicking a commander's portrait (bottom right)
+shows his window; releasing an item on a portrait hands it to that commander, as in the original ("SHARING ITEMS
+AMONG YOUR COMMANDERS"): a free melee / ranged / ammo slot takes it first, otherwise a free cell of his personal,
+then troop inventory (stacks merge). Refused without room, for a commander under script control, and for one
+outside the minimap view (his portrait is drawn faded). Releasing an item outside the inventory, right of x 800 or
+below y 600 (over the minimap / HUD side), drops it on the ground beside the shown commander ("DISPOSING ITEMS");
+hero armour, letters, keys and a few unique weapons cannot be dropped. Inventories are grids as in the original:
+with no room a floor item stays where it lies (walking over it again picks it up once there is room), the shop
+answers "no room" (BUY 9; purchases go to the personal inventory only), and a scripted gift that does not fit is
+put on the ground next to its receiver. Weapons, bows and arrows picked up or given fill an empty hand / quiver
+first. Food does not stack (one cell per loaf), potions and arrows do.
+
 RTS mode (selected units stand in the original's `select*.SMO` ring, the RTSICON cursor shows the right-click
 command): LMB click / drag-box selects (Shift adds, a leader brings his team), Ctrl+1..9 stores the selection as a
 group, Alt+1..9 recalls it; 1–7 select a commander (press twice / double-click his portrait = centre the camera,
@@ -105,9 +118,11 @@ first pad input only shows the focus.
 
 Character details (D-pad up = F1), shop and ARMORY windows: the focus walks the attribute rows (South = the row's ADD
 while points are left), the CB/WP button, every inventory grid cell and equipment slot (melee 1 / melee 2 / ranged /
-ammo), the combo rows (South = ADD), LEARN and the scroll arrows. South on an item picks it up, South on a cell or slot
-drops it there (same World equip / unequip / bag moves as the mouse drag); West (X / Square) uses the focused item
-(right click) or puts a held one back. The focused cell/item shows the window's hover state and its tooltip below it.
+ammo), the combo rows (South = ADD), LEARN, the scroll arrows and the commander portraits. South on an item picks it
+up, South on a cell or slot drops it there (same World equip / unequip / bag moves as the mouse drag), South on a
+portrait shows that commander and hands him a held item, North (Y / Triangle) drops a held item on the ground; West
+(X / Square) uses the focused item (right click) or puts a held one back. The focused cell/item shows the window's
+hover state and its tooltip below it.
 LB / RB step inventory → combo list pages → inventory. Shop: South buys the focused stock item / sells the focused
 own item. East = Escape closes (also while an item is held); D-pad up inside the window moves the focus instead of
 closing it.
@@ -225,8 +240,14 @@ AI-driven in RTS). GL and Vulkan end with the same mission hash.
   hover shots and vs the port's own mouse hover.
 - `engine.character_details` (headless): F1 pauses, ADD on Strength, bag sword dragged onto the weapon grid
   (World::equip), right-click bread (World::use_item), CB/WP page switch, F1 closes; shop buy (gold/bag), BUY 8 on
-  missing gold, Esc closes; then pad only (PadWindows): D-pad up through GameInput opens it, ADD Strength, South
-  picks the bag sword and drops it on melee 1, West eats a bread, RB/LB pages, East closes, South buys in the shop.
+  missing gold, Esc closes; ItemTransfer: Joan's explosive arrows clicked onto Jean's portrait (window shows Jean, the
+  arrows arrive), dragged back onto Joan's portrait, a task-locked Jean refuses (no input in his window), a potion
+  dragged outside the window lands on the floor beside Joan, a CanDrop 0 letter stays; then pad only (PadWindows):
+  D-pad up through GameInput opens it, ADD Strength, South picks the bag sword and drops it on melee 1, West eats a
+  bread, RB/LB pages, East closes, South buys in the shop, South on Jean's portrait hands him arrows, North drops a
+  potion. `game.items_transfer`: World::transfer_item rules (rank, control, task lock, minimap view, slot-first
+  placement, bag room, self hand-over), give_item / buy_item / floor pickup with full bags and partial stacks,
+  drop_item distance, discard_item CanDrop.
   `engine.gl_/vk_character_details`: window vs s04_06_character_details (masked SSIM 0.95), combo page and shop
   shots. `engine.gl_/vk_gamepad` also write `gamepad_<gl|vk>_charwin.png` (pad focus on a bag cell + tooltip).
 - `engine.recruit_workshop` (headless, mission 7): barracks opened by the Interact event pauses, pad right adds /

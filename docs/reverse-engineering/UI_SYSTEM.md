@@ -898,7 +898,7 @@ where F2 is gated to scenario >= 5, so they show action mode): visuals are check
 ### Character details window (CharDetails) — RE notes
 Code `src/engine/hud_character.{hpp,cpp}` (class CharacterWindow, owned by the Client, drawn before `ui_hud`); flow hooks in
 `session_flow.cpp` (actions 35/36, Esc, `paused()`), `HudModel::show_character`; game layer `World::use_item` /
-`World::unequip`, `ItemDef::description/detail_file`, `UpItem::desc`. Tests `engine.character_details` (headless clicks),
+`World::unequip` / `World::transfer_item`, `ItemDef::description/detail_file`, `UpItem::desc`. Tests `engine.character_details` (headless clicks),
 `engine.gl_/vk_character_details` (`character_details_shots.hpp`); autoplay `work/PlayableGame2/CharDetails/play_chardetails.txt`.
 - Open/close: FUN_006f7d80 (open: unit +0x6af, game speed 0 = sim paused, HIGH: Game_process_tick skips the sim when
   speed == 0), FUN_006f7e90 (close, speed restored). Input FUN_006f7780: Esc closes; FUN_006f5a70 maps actions 34..41 to
@@ -922,6 +922,37 @@ Code `src/engine/hud_character.{hpp,cpp}` (class CharacterWindow, owned by the C
   UsableUnit +0x255 checked. Right click: red 0x15 / blue 0x17 / all 0x19 potion → 0x50b4f0/0x50ba00/0x50bcd0 (force 1,
   team overflow) = World::use_item; ARMOR → equip. Item tooltip: name + Description with %Nd values (0x5a4c30) +
   INVENT 12..15 hint. Saint-Catherine-de-Fierbois socket swords use JOAN_SWORD_LV10_<n> icons. CONFIRMED.
+- Party portraits / commander hand-over (ItemTransfer; manual p. 35 "SHARING ITEMS AMONG YOUR COMMANDERS": left-click
+  the item, then the commander's portrait). CONFIRMED (decomp + asm):
+  - Hit test FUN_006ffd90 on the main game interface 0xa4d618 (party list +0x125, count +0x145): the circle of radius
+    36 (sqrt ≤ 36) around (DAT_009de66c[i + 8 − n] − 800 + W, H − 0x3a); table (read from joan.exe) 115, 207, 299,
+    391, 483, 575, 667, 759 = frame x (DAT_009de64c) + 46.
+  - FUN_006f7780, before the page input: a left press (Mouse_single_click_in_rect, event 0, click count 1) inside the
+    party panel rect DAT_00a48868..74 on a portrait whose unit has rank +0x104 > 3 sets the shown unit +0x6af, restarts
+    the CSELECT blink (DAT_00a4d75f) and returns; a non-playable hero forces the inventory page (FUN_006f7f20(1)).
+  - Pointer item state (+8): 1 pressed on an item, 2 after a < 200 ms click (FUN_00594d30), 3 = held ≥ 500 ms (drag),
+    4 = the next click. On a left release (event 4, FUN_00594a10) in state 3/4, 0x6db54a: portrait under the release
+    point → target must have rank ≥ 4 (asm `cmp [ecx+0x104],4; jl`), not Unit_is_task_locked, +0x2f == 0 and pass
+    FUN_00717a90 on the minimap 0xa4f381 (its position within half the minimap view of the player); then
+    Unit_add_item 0x495f40(item, count, level, target, extra.., 0) on target +0x1c1. Success: FUN_006de4d0 item sound
+    (IE_SWORD types 8..10, IE_BOW 0xb/0xc, IE_ARROW 0xd..0x12), pointer cleared. Failure: state 4 keeps the item on the
+    pointer, state 3 puts it back (switch on the source +0x11). The window's own unit must pass the same three tests
+    for any inventory input (0x6d8c21). So a click on another portrait shows that hero (press) and hands him the item
+    (release); a drag onto a portrait hands it over while the window stays.
+  - Port: `CharacterWindow::party` (after the page; the press switches `unit`, the release calls World::transfer_item
+    with `hud_minimap_scale`); the port keeps the pointer item in its source (Held::owner) until it lands, so a
+    refused item held from another hero can only go to a portrait or back. Placement rules: GAMEPLAY_IMPLEMENTATION.md
+    "Commander hand-over". The HOLD / RESUME button area keeps its own clicks (as ui_rts). PadWindows: the portraits
+    join the focus ring; South on one = press + release.
+- Drop on the ground (manual "DISPOSING ITEMS FROM YOUR INVENTORY": click the item, click outside the inventory).
+  CONFIRMED (decomp FUN_006d8ac0 after the portrait test): state 3/4, left release, no portrait unit under the
+  pointer, pointer outside (0, 0)-(800, 600) (FUN_00594900, screen pixels: the minimap / HUD side) and ItemRes +0x25c
+  CanDrop (ItemRes_parse default 1; 41 records say 0: hero armours, letters, keys, Orleans' / Charles' / Arthur's
+  weapons via the case-insensitive key) → FUN_00512830 on the window's unit: 10 tries at Misc_random(360) degrees,
+  class radius + item radius + 15 from the unit, onto a floor polygon (Phys_track_poly, height + 0.2) with a floor
+  marker; no floor = the item is destroyed. Failure keeps a clicked item, puts a dragged one back. Port:
+  `CharacterWindow::party` → World::discard_item → World::drop_item (item radius = 15 as the pickup's, so it lands
+  15 beyond the pickup reach); PadWindows: North (Y / Triangle) drops the held item.
 - Combo page FUN_006ef9e0 / FUN_006f0a90 / list FUN_006f0fe0 (IATTCOMB): learned skill upgrades (types 9..16,
   unlocked == applied) in 10 LIST rows (0x15d, 0x69+0x1c i), DESC at (0x160, 0x6e+0x1c i) + " (key)" in red for types
   0xb..0xe, level centred (0x269..0x2e4); ADD (0x2b7, 0x6c+0x1c row) → spend type 8; New Attacks (unlocked, REQUIRE
@@ -932,8 +963,11 @@ Code `src/engine/hud_character.{hpp,cpp}` (class CharacterWindow, owned by the C
   unlimited : level −1 MinLevel) in a 6x13 grid (+0x100,+0x38); player bag 6x8 (+0x210,+0x38); coins (+0x10,+0x1d0),
   gold (+0xc9,+0x1d4); BUY 1/2 titles; tooltips BUY 3/4/5 (stock), BUY 6/10 (own items); BUY 8 / BUY 9 message box;
   every close (Esc / Enter / c_* button (+0x67,+0x218)) commits, so purchases go straight to MissionState::gold +
-  World::give_item. Selling: Price × SellingRatio (record key) per piece, MISSION items "Cannot sell" (BUY 10). Sim
-  paused while open (windowed runs).
+  World::buy_item. Buy (CONFIRMED decomp): gold < price → BUY 8; stock −1 (unless unlimited); a free personal cell
+  for the footprint (FUN_006c9d20, column by column) or MaxQuantity room in same-item stacks of the copied personal
+  bag (FUN_006c9f10), else stock +1 and BUY 9; FUN_00457ba0 tops up stacks from the last one and puts the rest in
+  the cell (no equipping, no troop grid). Selling: Price × SellingRatio (record key) per piece, MISSION items
+  "Cannot sell" (BUY 10). Sim paused while open (windowed runs).
 - ARMORY (armory_interface, layout FUN_006b9870; trigger at the end of Unit_auto_pickup 0x49da30: a player pickup of a
   ShowArmoryInterface (+0x1e8) item not yet in the hint list 0x472a90 → add 0x4729c0 → open 0x6bbc90 / 0x6ba4b0):
   `CharacterWindow::on_world_events` on Ev::Effect "PICKUP", hint list MissionState::item_hints_a, HudModel::armory_item
@@ -953,8 +987,8 @@ Code `src/engine/hud_character.{hpp,cpp}` (class CharacterWindow, owned by the C
 - Gaps: troop inventory items are not used by the troop AI;
   shop buys / sells by click instead of drag, buy price = Price (the exe's FPU expression is unrecovered), hourly
   restock (FUN_00469710) not modelled, stock kept for the window's lifetime only; the armory's rotating 3D item and its
-  slide-in animation are not drawn; party-portrait clicks that switch the shown hero, letter viewing (type 0x23) and
-  cross socketing (0x6de590) are not wired; the shop's 3D seller / player portraits (View3D) are not drawn.
+  slide-in animation are not drawn; letter viewing (type 0x23) and cross socketing (0x6de590) are not wired; the
+  shop's 3D seller / player portraits (View3D) are not drawn.
 
 ### Recruit and siege workshop screens (RecruitWorkshop) — RE notes
 Code `src/engine/hud_recruit.{hpp,cpp}` (FacilityWindow, shared chrome + barracks), `hud_workshop.cpp`; game side

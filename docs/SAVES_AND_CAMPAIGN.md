@@ -260,9 +260,8 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
   presses R only once it stayed lit 3 ticks (R while walking landed out of reach: mission 2 never got the
   shop talk). Gates are never toggled in passing.
 - **Gates:** a way point on an open interactable gate (mission 2 stage 3: "Someone must approach and close
-  the gate") is closed (walk to 100 inside it, towards `home()`, R) 30 s after it appears: after John's
-  10 s mark (closing then sends him and team 11 off) and long before the 180 s reinforcements (16 more
-  units while the gate is open). `travel()` (way points, territories, hunting) opens a closed gate whose
+  the gate") is closed (walk to 100 inside it, towards `home()`, R) `gate_delay` after it appears (default 30 s; the
+  mission-2 plan closes it at once). `travel()` (way points, territories, hunting) opens a closed gate whose
   shut passage ends the navmesh path short of the goal (or on another level); a gate the bot opened
   itself is not closed again while an enemy lives within 4000 outside it.
 - **Navigation:** stuck twice on the same line (house corners the path mesh cuts) → run off sideways,
@@ -271,19 +270,35 @@ character-screen attribute allocation. Strategy (from the mission scripts and th
   many citizens were killed; it freezes every unit even when no LOSE record ends the mission).
 
 Hero switching is `Mission::switch_hero` (the key path, RTS commander pick and rts_deinit call it); hold is
-`AiSystem::toggle_hold` (Shift+N). Tried on mission 2: the bot as Jean with Joan on the AI (the script's
-DEFEND_PLACE at the gate) lost Joan in 5/6 seeds; Joan anchored at the Bastard (enemies > 1500 from him
-ignored) lost on citizens in 10/12 seeds; neither is used. Jean's RAPIDFBOW (damage 16 vs Joan's BOW 8)
-with his 90 arrows is the untried switching use (the bot would play Jean, Joan held). Not done yet: learning
-new upgrades (RUSH from level 4, BB), selling (the buy screen sells at Price × SellingRatio), hero-to-hero item
-transfer (not modelled by the port), siege use, RTS orders, mounting, bribes, choice dialogs (headless answers
+`AiSystem::toggle_hold` (Shift+N). **Mission 2 plan (`autopilot_plan_S3L1.cpp`, measured 2026-10-15 on the mission-2
+checkpoint, one attempt per seed, after the hit-time food fix below and ItemTransfer's `World::transfer_item`).** Stage 3
+(the walkthrough's route): Joan closes the gate at once (never closing: 0/48 seeds survive), hands Jean her explosive
+arrows on the character screen (`World::transfer_item`, minimap zoomed out: zoom 0 maps the whole map onto one 200-px
+tile, so the transfer's 100-px reach covers the town), stays on hold there and the player takes Jean (key 2): the
+Bastard's attackers first, then every foe within 6000 of him by distance / (1 + citizens within 1500); none left: the
+generic hunt. Survives stage 3 in **22/48** seeds (Joan as the player, Jean held: 9/48; without the transfer 3/48; Joan
+not held 12/48). Back to Joan for stage 4 (Jean playing it too: 3/48 won instead of 11/48). Stage 4: Achard's 20 explosive
+arrows are kept; his buy screen spends the gold on plain arrows first (`shop_plain_first` 250, before the JOAN_ARMOR_LV2).
+Stage 5 (walkthrough): Jean (key 2, RAPIDFBOW, 90 arrows; Joan held inside) then Joan shoot from the wall walk beside the
+gatehouse ((7640,11300) or (9280,11320), z 517, inner edge: the gatehouse deck dropped a knocked-back shooter outside) one
+crewman of every manned cannon (it fires only with `siege_slots_full`): the gate then holds at ~800–1400 HP for the whole
+stage. A far lord gets one pull shot every 30 s and then walks up to the gate's outer face, where he is shot within 900;
+nothing to shoot, no arrows or < 35 % HP: wait just inside the gate. When Jean's turn ends his bow and arrows go to Joan
+(the walkthrough gives her the L2 bow): the lords now eat their food when hit and William, back at full HP, otherwise
+waited outside the gate once Joan's arrows ran out (6 → 11 of 48 whole-mission wins on one checkpoint). Limits: a lord
+idle at the gate blocks arrows from the front (`missile_block`, GUARD within BLOCKANG), ~2.5 damage per plain arrow; Joan
+enters stage 4 at a lower level (Jean took the stage-3 kills) and dies there in ~6 of 22 runs. Whole mission: **6–11 of
+48 seeds** won depending on the checkpoint (per attempt 12–23 %). Not done yet: learning
+new upgrades (RUSH from level 4, BB), selling (the buy screen sells at Price × SellingRatio), siege use, RTS orders,
+mounting, bribes, choice dialogs (headless answers
 choice 1). The interact prompt (R) also recruits. `JOA_BOT_TRACE=N` prints a status line every N ticks (with
 the ally hero's task and target) plus hits taken / dealt, hits on friendly heroes (attacker team), deaths
 (killer team), spawns, interact prompts and the player's shots / projectile hits; `JOA_BOT_DBG=T` prints 200
 ticks of per-frame inputs and nearby enemies from tick T.
 
 `game.campaign_legit` (CTest fixture `campaign_checkpoints`) runs the chain once from a new game (Normal, 150000 ticks per
-attempt, 2 retries), writes `campaign_checkpoints/bot-<stem>.jsav` at every mission start and `campaign_checkpoints/chain.txt`
+attempt, up to 8 retries of a lost mission: the game-over RETRY a player would press, reseeded seed + attempt; a timeout is
+not retried), writes `campaign_checkpoints/bot-<stem>.jsav` at every mission start and `campaign_checkpoints/chain.txt`
 (one report line per mission) into the build tree (`build*/src/game`), checks no script errors / unimplemented builtins and
 asserts `kExpectedWins` (3). `game.campaign_legit_mission_N` (N = 1..8) loads mission N's checkpoint, replays it and must
 reproduce the chain's line exactly (result, ticks, hash: determinism through save / load); skipped when the chain did not
@@ -316,6 +331,15 @@ cart following the player) is taken back to the NPC whose talk brought its icon,
 waited for while it closes in; enemies within 2000 of an errand NPC count as on a ward; the talk give-up (30 s) counts
 from 400 off; holds only for territories the player's nation owns. Open: two far foes scoring alike, chosen in turn,
 can root the player (seen in Forêt Fierbois; a 1.3x hysteresis fixed it but cost mission 3 its seed-1 win).
+
+**Port bug fixed (AI heroes never ate):** Unit_onMessage 0x75d540 calls Unit_is_in_danger 0x4fd980(1) after every hit
+(melee, down attack, arrows / stones / explosive, keg), before its death check. A non-player unit below INDANGER (0.2)
+eats: a hero (rank > 2) from his personal items (inventory +0x16), then his troop supply (+0x1a); a soldier only from his
+leader's troop supply (the port's bag: items on grid 2). The argument also lets 0x50b4f0 feed a unit the blow took to 0 HP,
+so a hero carrying food survives it. The port only ran it from the unused script builtin, so AI Jean / the Bastard / La Hire
+and the bosses (John, William, Talbot, Glasdale, Alexander carry 1–3 food) never healed (`World::hit_danger`,
+`game.hit_danger`). Effects: mission 2's AI Joan at the gate survives the walkthrough's route; the bosses now outlast a few
+more arrows / blows.
 
 **Port bug fixed (cannons never hit):** OrderExec_shoot 0x4bd090 stores a SHOOT order's map-item target in unit +0x2dd
 (clearing +0x2db; `Unit::range_item`), and ThrowItem_launch 0x5133e0 / Unit_compute_aim_dir 0x50aca0 solve the shot to that
@@ -421,6 +445,25 @@ from afar stops at (30425,15345) and its reservations block the attach points, s
 rejoining Joan's team), so it never fires at "wall2", the gates (event bit 26) stay shut, ~390 mercenaries, Gressart
 (retreated to "gressart retreat 2") and Hudleg remain. The S7L1 test still asserts the bribe only.
 
+**Mission 7 update (MissionBot7d): S7L1 won.** The trebuchet's third man was not a port bug: Joan's interact key took him back.
+`Unit_find_recruitable_unit` 0x48dfb0 (decompiled, GAMEPLAY_AI_TROOPS §4.4) has no task test, so a light infantryman walking to
+the weapon (LARGE_WEAPON_PUSH, not yet attached) shows the recruit prompt within 100 in front of the player, and the core
+pressed R on every prompt (gdb: `recruit_nearby` → `join_team(#1407, Joan)` every 300 ticks). The core now skips a recruit
+prompt on a man with that task. **Port bug fixed:** Rts_cmd_assign 0x44f750 branch A (GAMEPLAY_IMPLEMENTATION "Siege crews")
+frees the point of a stale reserver when no free one is left, detaches a man from another weapon and takes only ENGLISH /
+FRENCH / MER_LIGHT_INFANTRY; the port did none of it (crew stuck on the way kept the points reserved — the plan's dismiss
+workaround is gone); test `game.siege_crew`. Plan fixes: no barracks trips once the gates are open (42 % of the time went
+on them); supply trips to Alfonse (HP food, now up to 120) and Wardley Orfroisier next to him (bolts: the whole La Charité
+phase had been played with none — its wall archers and tower crews are shot, not reached), a trip gaining < 200 in 3000 ticks
+given up for a while (a platform inside La Charité walked the seam detours for good); the stall watchdog restarts on 100 of
+headway (it gave up the long walk to the summit poleman at (1329,13017,4642) after 30 s); a hunt that shot 20 s without
+effect from up to 1500 (bolts drop, `clear_shot` sees no rock) closes to 500 first. Result (Normal, seed 1, from the legit
+chain's `bot-S4L1.jsav`): gates open t300990 (`--charite`: 408 s wall), Hudleg t338988, Gressart t544414, La Charité
+t739631, **won t740086**, no deaths. Test: `game.campaign_S7L1_charite` (fixture) plays to the gates and saves
+`campaign_checkpoints/bot-S7L1-charite.jsav` (asserts the bribe without the alarm); `game.campaign_S7L1_bot` plays on from it
+and must win with objectives 2 / 5 / 26 done within 700000 ticks (439096 ticks, 270 s wall). Easy and the pessimistic
+start (Joan level 9) not measured.
+
 **Mission 5 (S5L1, from `S5L1_des` / `S5L1_tactic` / `S5L1_finish.sce`).** No `SCRIPT` call reaches `S5L1_tactic2/3`
 (Meung / Beaugency belong to S9L1, which continues in this world). Enabled at start: WIN 1 (Castle_Jargeau captured: the player
 in `Castle_Jargeau` or `castleJargeau2` and `number_of_fightable_enemy_in_place` 0 in both; also sets the Jargeau barrack /
@@ -428,16 +471,43 @@ territory, which S9L1's main thread needs), LOSE 5 Joan, 14 La Hire, 17 Jean, 30
 (meet Dunois, way point 2; enables 19 d'Illiers, way point 3). WIN 34 William de la Pole (enabled by a French unit in
 `meetSuffolk` or the `crossBridge` cut scene, finished at his retreat −1) and WIN 33 John de la Pole (enabled in `reachLord`,
 finished at his death) join later; win delay 15 s. `autopilot_plan_S5L1.cpp`: hunts the fightable English left in the two castle
-places without the generic 30 s give-up (the inner bailey is reached over the wall walk, a ~190-point path round the east walls),
-ignores foes on the other side of the shut middle gate and way point 1 (at that gate) once inside, keeps swinging at William / John
-above 40 % HP (they regenerate while the generic bot rests), eats or walks out of range when hurt under unreachable tower/wall
-archers, and brings the West Left tower (inside `Castle_Jargeau`; its fall deletes team 80) down with the French cannons by an RTS
-order (F2, select, right-click the tower, F2: `AiSystem::rts_attack_item`). Start checkpoint: the legit chain's `bot-S4L1.jsav`,
-S4L1 forced (`joa-campaign --load bot-S4L1.jsav --win-at 10 --continue --save-at <transition+1>`; `game.campaign_S5L1_bot
---checkpoint OUT`): Joan level 11. Results (seed 1, 200000 ticks): Normal and Easy reach 18, 19, 33, 34 (John and William beaten,
-t67000–166000) but time out on objective 1 — reachable outer-bailey remnants and the inner-bailey north-wall tower archers / polemen
-(teams 57, 58, 79) are left; ordering the cannons straight after d'Illiers' talk lost them and d'Illiers (now only from inside the
-castle, unverified). Pessimistic start (forced chain from a new game, Joan level 7, no food): Joan killed at t40729 on the way.
+places without the generic 30 s give-up, nearest by navmesh path length (straight-line picks bounced between the wall walk and the
+west gatehouse archers above it), ignores foes behind the shut middle gate and archers on a standing guard tower, drops way point 1
+(at the middle gate) once Joan has been inside (walking back to it whenever a hunt led past the north wall cost ~40000 ticks),
+keeps swinging at William / John above 40 % HP (they regenerate while the generic bot rests), eats or walks out of range when hurt
+under unreachable archers, rests at the siege camp before the west walls when out of food below 30 % (the generic retreat walked
+to Dunois' camp 15000 off). RTS every 20 s once Joan is inside (F2, select, right-click, F2): the crewed cannons at a tower
+holding castle foes (West Left: its fall deletes team 80), else at the middle gate; every other selectable troop (no hero, not
+Dunois / d'Illiers: sent along both died by t30000) attack-moved at the nearest ground castle foe a path reaches; a troop that
+dropped its order without moving (units in unloaded far levels) is left 5 min. Tower archers are unreachable in the original
+too: the West Left top is a 2-poly nav island with no .pfd link and S5L1 has no ladder items. Start checkpoint: the legit chain's
+`bot-S4L1.jsav`, S4L1 forced (`game.campaign_S5L1_bot --checkpoint OUT`): Joan level 11, ~31 food. Results (seed 1):
+**Easy won** at t158169 (Jargeau captured; 18 / 19 / 33 / 34 done; Dunois alive, d'Illiers dead), S9L1-start save
+`work/MissionBot5b/bot-S9L1-easy.jsav`. The plan stocks up first: with no foe near and bag room it breaks any heal-food box
+within 3000 (8000 below 10 food) and walks over the drop (147 food boxes on the map; Orleans alone holds 18, behind its
+East Gate, which the plan's walk hands to the generic interact to open and close), drops its spare apples (blue EP food,
+5 kept) and spare swords at the Orleans potion seller and buys his heal food, the best heal first, as far as the
+personal grid holds (World::buy_item; one cell a loaf since the bag-room rules), visits the weapon seller (way points
+wait, 5000 gold kept; no arrows are bought since the bag rules: the bag is full of food by then), then leaves by the East
+Gate: ~51 food (23 at the start; 37 with the apples kept). The tower blocker (MissionBot5c: West Left at 40/200 HP with
+every cannon's crew dead; arrows do the tower 0 damage, S5L1 walls take only stone / keg hits; S5L1 has no kegs) gets a
+re-crew: while fewer than 3 cannons within 8000 of the target are manned or have a crew walking to them, the nearest
+commandable French light infantry (loaded level, not task-locked: Louis Barbier's team 582 is `no_react`) are assigned to
+the idle cannon nearest it (Rts_cmd_assign). It only helps while such infantry live: by the time the crews are dead the
+light infantry near Jargeau usually are too (Joan's two left in Orleans never leave their unloaded level). 40 explosive
+arrows from the bailey took one tower archer from 123 to 7 HP (they regenerate), so the bow is no way out either.
+Results, Normal (difficulty 1) from the `work/MissionBot7/legit2` mission-4 start (before the re-crew rule): **seed 1 won**
+at t187953 (tower down
+t40000 by d'Illiers' crews, Jargeau captured, 18 / 19 / 33 / 34 done, Joan level 20; S9L1-start save
+`work/MissionBot5d/bot-S9L1.jsav`, which `game.campaign_S9L1_bot` now prefers), **seed 3 won** at t218708, seed 2 lost
+(Joan killed at t156877 in the inner bailey, 3 food left), seed 4 stuck on the West Left tower at 128 HP (no French light
+infantry left near Jargeau to crew a cannon). Easy, seed 1: won at t237100.
+`game.campaign_S5L1_bot` plays 40000 ticks (a win takes 160000-240000, past a test's time) and checks progress there: not
+lost, ≥ 10 heal food bought in Orleans, 18 / 19 met (d'Illiers at ~t34000), ≤ 200 fightable English left (122-186).
+
+**Bot fix (bag rules):** `Autopilot::loot` walked to floor items the bag could not take (Unit_auto_pickup leaves them
+lying): Joan stood 45000 ticks beside her dropped apples. It now only goes for gold, MISSION items, red food that fits the
+HP missing, or what `World::give_item` takes on a copy of the unit.
 
 **Port bug fixed:** Unit_process 0x52c490 phase 0 clears the interact unit / item (+0x2e3 / +0x2e5, `mov word [edx+0x2e3],0`
 at 0x52c4c4, `[eax+0x2e5]` at 0x52c4d0) before Unit_auto_pickup; the port never cleared them, so S4L1 (which, unlike
@@ -498,6 +568,43 @@ stationary height-100 target on open ground takes only ~15 of 28 arrows (`work/M
 mover sphere (radius ≠ 0, else no hit) and FUN_00699a20 also tests the caps with that radius, and 0x514c40 rejects hits
 only above z+Height(100). That suggests a port bug (arrow body radius missing), but the arrow actor's radius is not
 decoded and no original measurement exists yet (recipe: tools/reference/diff/diffrun.py, `Orig(mission=4)`).
+Re-measured with the sphere-vs-cylinder arrows (MissionBot8c, `work/MissionBot8c/scan.cpp` / `boom.cpp`): from 128
+walkway / yard spots around tower 1 only 3 put a plain arrow into its chamber (about one hit in six shots there), and
+explosive arrows splash ~20 HP per shot over a tower's 3-4 archers (≈170 explosive arrows, 85000 gold, for the four).
+The plan takes the walkthrough's route instead: when Joan passes the hut the player switches to the duke (IRON workshops
+open only to Alencon within 1024, 0x43c080), who orders two CANNONs at `S6L1_2_Iron_Workshop` (4000 iron, 1500 each);
+two of Joan's FRENCH_LIGHT_INFANTRY (the only crew class, Rts_cmd_assign 0x44f750) crew the first at once. An idle
+crewed cannon goes for any enemy item within 4000 (AI_cannon_default APPROACH_ITEM), i.e. the gate under the gate-tower
+archers (teams 224/225, TOWER_ATTACK range 2000) who killed the crew, so it waits at (16300,26300). With only tower
+archers left it is RTS-moved to a gun spot whose muzzle-to-aim line meets the tower first (from most of the yard a
+building takes the stone) and sent at the tower: five stones (40 HP each) per tower, the script deletes its team. The
+wards park at (18700,25300), out of the gate archers' reach (the old (19300,24790) spot got Alencon shot dead). Status
+(Normal, legit chain checkpoint, drive loop): Glasdale t20807, elders t26666, all four towers t45000–58000, Auxerre
+captured and Charles there t58068 (rep 60), Fastolf (objective 14) t91836; then the king died: following Joan past
+Croncels (Troyes' wall crossbowmen), or parked west of Croncels to the 15-min assassin squads while Joan fought inside
+Troyes. A food trip to the start's potion shop never opened the buy screen: the plan's `first()` steered every tick, so
+the generic interact (after `first()`) never pressed R at the seller's prompt; it now stops within 250 of the seller.
+game.campaign_S6L1_bot (fixture `campaign_checkpoints`) plays 120000 ticks and checks no defeat, Glasdale dead and a
+cannon built / tower down (~250 s).
+MissionBot8d: the "test vs drive loop" divergence was no nondeterminism. The same start reached in process (as the test)
+and saved/loaded (as drive) hashes identically for 70000 ticks (`work/MissionBot8d/div.cpp`), and drive from the
+current fixture sticks at "cannons at tower 59" exactly like the test. 8c's good run started from an older fixture
+(`ck-l.jsav`) and older code. That stall had three causes: (1) the trap shut the gate (now English) on the crewed
+cannon outside, and the RTS move then had no path (path 0, RTS_MOVE_TO forever); Joan, 500 off it on the walkway, never
+travelled. She now opens the gate from 150 inside it (the interact opens a foreign gate from its back side). (2) Every
+light infantryman died (crew under the gate-tower archers, the rest in the trap fights), and nothing else crews a gun.
+The cannon now stays parked while anyone hostile is within 2200 of the gate. (3) The 14 gate-tower archers (teams
+224/225, z 544) stood until heroes on the walkway happened to kill them. Joan now walks up and fights them
+(`gate_towers`). From there Auxerre fell at t73867 (rep 58). The crew can still die to a corner tower's archers at a gun
+spot 1400 off (tower 58, r9). Spots beyond their TOWER_ATTACK 2000 are not tried yet.
+After Auxerre (plan code in place, not yet seen through): shop errands (start camp: JOAN_SWORD_LV6, 60 dmg against
+the chain's LV1 10, and food. Auxerre: RECURVEBOW 38 vs RAPIDFBOW 16, JOAN_ARMOR_LV3. Troyes food. Bussy JOAN_SWORD_LV9)
+and Auxerre recruits. Troyes' men are left alone while Wall3 stands: unprovoked, she fought in through the gate to
+Fastolf, ate all her food and fled at 4 % HP. The wards park in Auxerre's yard and then at (36000,16000), which keeps the
+hill camp and Troyes within the 11585 that triggers the assassin squads; an archer killed the king at the old
+(33000,25000) park. They also get Joan's food (`transfer_item`). Then the six light infantry at
+`S6L1_3_Join_Troop_Place`, the hill camp hunt, three crew per trebuchet, and the Troyes hunt. Seen working so far: the
+join (six spawn, wards walk south) and the start of the hill approach.
 
 Mission 2: the bot meets the Bastard, buys 15 explosive + 40 plain arrows at the blacksmith (1980 →
 0 gold), talks to the shop (stage 3), then 50 English/Burgundian units (teams 11–15, 31–33, levels 4,
@@ -575,33 +682,62 @@ are only scripted inside `if Castle_Jargeau captured` (l.2292), which only S5L1'
 Loches, pay Elya Tinchor 3000 at Selles-en-Berry, keep French units out of `attackMeung` until he opens the south gate) or the
 Bastard's cannons (controllable via RTS after meeting him at `meetOrlean`). Beaugency additionally needs bit 19 and bits_2 30 / 31.
 
-Plan `autopilot_plan_S9L1.cpp`: the nearest open place to the player's hero (prerequisite captured, Meung only with a gate open;
-skipped 5 min when its remaining enemies are all unreachable, after 90 s without headway or 20 s inside without capture), its
-garrison first (foe weight 0.3, siege weapons 0.5 in towns), then a walkable point inside the box; a walk without headway for
-20 s takes `Autopilot::detour`'s first level-seam crossing (the engine plans a goal on another level over the coarse world mesh,
-from Orleans straight over the Loire); markers other than 8 (spy) / 9 (final camp) ignored (`MissionPlan::use_waypoint`); a
-buy screen buys food (keeping 3000 gold for the spy), but no one is sent shopping (every food trip ended badly: Joan and Jean
-to Jargeau's shop through the English villages died, Jean at Orleans' shop ended on its wall walkway with no way down).
+Plan `autopilot_plan_S9L1.cpp`: the nearest open place to the player's hero (prerequisite captured, Meung only with a gate
+destroyed: gates the English open for a sortie shut behind the player; 90 s / 3 min without headway, or 20 s inside without
+capture, skip it for 5 min), its garrison first (foe weight 0.3), then a walkable point inside the box; a walk without headway
+for 20 s takes `Autopilot::detour`'s first level-seam crossing. Siege weapons take only stone / explosive hits (unit.res
+TriggerType 0x6040: Joan's sword did nothing to Loches' bombard for 25000 ticks), so towns' bombards and the foes no path
+reaches (tower archers) are shot (explosive / plain arrows) from within 700 with a clear line. Only marker 9 (final camp) is
+followed (`MissionPlan::use_waypoint`). **Supplies:** Joan buys at the nearest French seller (Jargeau's; Meung's / Beaugency's
+once taken) when below 12 food or 8 arrows of a kind, and stocks up before Meung (half of 300 plain, 40 explosive, 60 food):
+its walls hold ~40 archers and crossbowmen. Also JOAN_SWORD_LV5 at Jargeau. 3000 gold is always kept (the spy's price).
 **Army:** units in a map level the player is not near are deactivated (`NavWorld::stream`, Unit_deactivate 0x41fcc0) and ignore
-their orders, so the heroes at Orleans never come to Joan at Jargeau (FOLLOW_UNIT also paths with a 1000-node budget); the
-march between the two killed the hero leading it every time. The player therefore switches to the sturdiest hero at Orleans
-(`Mission::switch_hero`, Jean) and plays from there; Joan waits in Jargeau (frozen). Every other hero within 4000 is assigned
-with his squad to follow the player (RTS select with team + right-click the leader, Rts_cmd_assign 0x44f750 branch B); a hero
-below 150 max HP stays home (Alencon: 106 HP, died in the first fight east of Orleans); one below 35 % HP is RTS-moved with
-his squad to where the plan first saw him until above 80 %. Any hero's death is game over (S9L1_finish `call_gameover_msg`).
-Not used: barracks recruits. Refilling the leader's troop from Orleans' barracks by RTS (`FacilityOrder::barracks` / `more` /
-`commit`, macemen) paid 150 gold every 30 ticks while the troop stayed short (the recruits spawn behind Orleans' shut gates,
-far from the troop at Rouvray), and the run that recruited lost Jean at tick 8294 with nothing liberated. Not done: the spy
-route and the Bastard's cannons into Meung, Beaugency and the bosses.
+their orders. A Joan sturdier than every hero (the legit start: level 21, 640 HP against 106-206) plays alone: Jean following
+her into Saint-Aignan's fights was killed. A weaker Joan (the forced start, level 7) switches to the sturdiest hero at Orleans
+(`Mission::switch_hero`, Jean); every other hero (150+ max HP) within 4000 is assigned with his squad to follow (Rts_cmd_assign
+0x44f750 branch B); one below 35 % HP is RTS-moved home until above 80 %. Any hero's death is game over.
+**Meung (Bastard's cannons):** with no other place open, Joan stocks up, walks into `meetOrlean` (cut scene, event bit_3 11, the
+Bastard's men and four cannons become RTS-selectable), stays by the cannons and sends every manned one at MeungNorthGate
+(Rts_cmd_attack_item, re-given every 20 s). A crew walks to its attach point only near the player: MOVE_TO_TARGET ends within
+REACH (x2 at LOD > 1, beyond 2000 of the player) while attaching needs REACH_DT (15, 0x535020), so fCannonA's second crewman
+stood 23 off his point for good while Joan was away (a weapon is selectable only fully manned). The Bastard (147 HP, not a
+hero class) is RTS-kept at his camp and foes within 1500 of him are fought first: walked into Meung's fights he was killed by
+its wall archers (imperative 36). **Beaugency:** once Meung is captured Joan walks into `getReinforcement` (scenario bit 1:
+Glasdale, Fastolf, Scales and Richemont spawn; Glasdale's cut scene raises the north gate); bosses are fought first (foe
+weight 0.05). Not done: the spy route (marker 8 ignored), a verified run through Beaugency, Janville and the bosses.
+**Shared fix (bot):** `Autopilot::fight` backed off forever from a foe on another level when it had no arrows (Joan stood 100000
+ticks under Meung's wall crossbowmen whose walkway the path reaches); without ammo it now closes in along the path.
+Results from the legit Easy start (`work/MissionBot5b/bot-S9L1-easy.jsav`, Joan level 21, seed 1): every south village (27 WIN)
+and Chateauneut, Saint-Florent, Fountainbleu, Rouvray, Checy, Bourges, Blois in ~190000 ticks (~355 kills by 150000); Meung
+entered through sortie-opened gates down to 11 fightable English, then (from that save) the four cannons manned with Joan by
+them broke the north gate and Meung was cleared to 6: four archers on a platform at z 524 (path ends ~100 short) that the hunt
+alternates between instead of shooting. Not won. `game.campaign_S9L1_bot` (Easy start, 120000 ticks): passes (278 s).
+**Meung's last six (MissionBot6d).** Five are archers (teams 170 / 171, task TOWER_ATTACK) on MeungRightTower / MeungLeftTower
+(WALL, 200 HP, `broken_b_g42.SMO`): each top is a 2-poly nav island at z 521 with no ladder item and no .pfd link (as Auxerre's),
+inside a parapet up to z 664 with 570..650 embrasures, so the 80-tall archers are hidden from most angles; the sixth (a poleman on
+the wall walk) is reachable. Not a nav bug. The script deletes each team when its tower's hp reaches 0 (S9L1_tactic l.6560), and
+a WALL takes ranged damage from stone only outside scenario 4 (Wall_take_ranged 0x492b10: explosive arrows do nothing here), so the
+intended tool is the Bastard's cannons (range 1600). From the bot's checkpoint they could not get there: APPROACH_ITEM drove them
+into the north gate hole, a 10-poly island with no path west. MissionBot7e later found the probable cause, a port bug since fixed:
+loading a save left the poly of a gate destroyed before the save blocked. That route was not tried again. Arrows: a locked
+player arrow (spawn_projectile → solve_aim to feet + 0.8 height, lobbed to normalised z ≥ 0.25 from 800 off) stops at the
+first structure the look-ahead ray predicts (Physics_sweep_structures 0x693750: an FT-ms (1015) ray along (vx, vy, vz − V0),
+re-cast from frame starts). A predictor built on exactly that (`lob_margin` in the plan) matched the physics on 81/81 test shots.
+It finds perches (about 1500 off, outside the west wall or on the east walls) from which arrows land; 16-20 damage each. The
+plan walks to the nearest perch, shoots only while the predicted flight is clear (the archers pace their tower tops) and moves
+to the next perch after 15 s without harm. `solve_aim` is now declared in world_sim.hpp for it. Tested from the Meung
+checkpoint, no kill yet: the archers moving made shots that were clear in the test misses in play. Also: tower archers no
+walk reaches have foe weight 0 (they were chased forever), boss priority applies only within 1500 (Talbot, 15000 off at
+Beaugency, pulled Joan out of Meung), and the bag is cleared before shopping (one cell per loaf since give_item became
+Unit_add_item: 30 apples and a crossbow left no room for arrows). Shop purchases use `World::buy_item`.
 
-**S5L1 win of the start checkpoint (not a port bug).** `game.campaign_S9L1_bot` builds its start from a new game: missions 1-4
-won by `finish_objectives`, S5L1 by removing Jargeau's garrison and putting Joan (with her squad) on the castle ground; the
-script then captures it and finishes objective 1. The chain failed with finish 2: the WIN fires only after the 15 s win delay,
-and the idle award-only Joan (level 7, 60 HP, no input) was killed by two ENGLISH_LIGHT_INFANTRY walking in from ~1300 away
-(LOSE 5 "Joan of Arc is defeated"; `process_end_conditions` as documented in §3). The hook also removes hostiles within 2500
-of the castle. Result (Normal, seed 1, 90000-tick budget, ~3 min): not won; Rouvray liberated, 18 kills, lost at tick 41293
-(Jean, the leading hero, killed near the eastern bridge). The heroes (levels 8-10, award experience only) are outmatched by
-the English garrisons (soldiers level 12+, bosses 23-25); the test asserts a win or at least one place liberated.
+**S5L1 win of the forced start checkpoint (not a port bug).** Without a legit start `game.campaign_S9L1_bot` builds one from a
+new game: missions 1-4 won by `finish_objectives`, S5L1 by removing Jargeau's garrison and putting Joan (with her squad) on the
+castle ground; the script then captures it and finishes objective 1 (the hook also removes hostiles within 2500 of the castle:
+the WIN fires only after the 15 s win delay and the idle level-7 Joan was killed by two light infantry walking in). The test
+starts from FROM.jsav, else `$JOA_S9L1_START` (CMake: `work/MissionBot5d/bot-S9L1.jsav` on Normal, else
+`work/MissionBot5b/bot-S9L1-easy.jsav`, found at configure time), else this forced start; 120000 ticks, a win or at least 1
+place liberated (measured: Normal start 1, Fountainbleu; Easy start 3, down from 6 before the one-cell-per-loaf bag rules).
 
 **Port bug fixed (mission 6):** the win freeze set every unit's task to IDLE prio 127 also when leaving scenario 5, so in S9L1
 no enemy ever fought back (Joan took 0 damage in 20000 ticks). GameOver_win_freeze_units 0x6e7900 skips the order clear and

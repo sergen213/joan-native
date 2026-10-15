@@ -2428,6 +2428,7 @@ Playable list at 0x9f8b10 stride 0x104: JOAN_OF_ARC, JEAN_DE_METZ, LAHIRE, ALENC
 
 #### 4.4 Interact (action 17) chain in action handlers (e.g. 0x4343e0): first of `0x43bef0`, `0x43bd40`, `0x43be40`, `0x43c210`, `0x43bc50` that succeeds, else `0x43bfe0` (barracks UI) / `0x43c080` (workshop UI).
 - `ViewCtrl_interact_recruit 0x43c210`: `0x48dfb0(100)` on player = nearest recruitable unit within 100; it leaves its team, `join_team(player)`, stop task, drop orders, destroy its script runtime. CONFIRMED (ECX checked). (Recruit details: TeamRecruit notes.)
+- `Unit_find_recruitable_unit 0x48dfb0(radius)` (CONFIRMED, decomp): only for a live player with +0x339 and a team (+0x31 ≠ 0, +0x33 team record) below `Unit_max_troop_size`; candidates: same nation (+0x2), another team (+0x31), rank +0x104 < 3, not the player (`DAT_00a5b9e8`), +0x2f == 0, no weapon attached (+0x384 == 0), type class (+2) not 0 / 8 / 9, type special +0x118 0 or 1, not task-locked (+0x2e1, `Unit_is_task_locked 0x432b90`), alive; 3-D distance ≤ radius and `Unit_relAngleToUnit` within ±90°; nearest wins. No task test: a light infantryman walking to a siege weapon (LARGE_WEAPON_PUSH, not yet attached) is recruitable — R next to him takes him back from the weapon.
 - `ViewCtrl_interact_hire 0x43be40` → `Unit_hire_mercenary 0x4e8500(player)` on unit `0x46fa80(200)`: needs +0x2eb==1 (for hire), cost (ftol, MER_EX_ARCHER(_CAPTAIN) priced differently) ≤ gold `DAT_00a596c4` else one-shot "not enough gold" message; pay, release weapon slot, members leave team, switch nation `0x509250`, stop task, destroy order queue, clear targets referencing it, join buyer's team if rank<3 and room (`max_team_size`), +0x2eb=2, counters `DAT_00a591a9++`, `DAT_00a591ad+=cost`, voice RTS_OTHER_NARRATOR_001. HIGH.
 
 ### 5. Key bindings — remapkey.cpp 0x4cae70-0x4cb310 (RemapKey object 0xa48820)
@@ -2519,7 +2520,7 @@ GAMEPLAY.RES: `[MAX_COM]2000 //MAX_COMMAND_POINT`, `[COM_LIM]200 //CHANGE_COMMAN
 
 ### Gaps
 - Exact semantics of 0x5ef400 (scene toggle on RTS enter/exit), player unit +0x102 / +0x23f flags.
-- `0x693580` destination validity test, `0x452830` terrain pick, `0x48dfb0` recruit filter, `0x4eef00` event ids 0x20/0x200 meanings — not opened.
+- `0x693580` destination validity test, `0x452830` terrain pick, `0x4eef00` event ids 0x20/0x200 meanings — not opened.
 - How AI routines treat HOLD marker (task 0, p1 1) vs leader-task inheritance in get_curr_task — for TaskAI* agents.
 - Mode 2 (mouse-driven) control: analysed in docs/GAMEPLAY_IMPLEMENTATION.md "Point & click" (0x438b30, 0x439090, 0x43acb0, 0x43b2d0).
 

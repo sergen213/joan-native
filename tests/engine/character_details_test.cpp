@@ -16,6 +16,7 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_scancode.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 
@@ -152,6 +153,88 @@ int main() {
     frame({10, 10}, false, false, false, SDL_SCANCODE_ESCAPE);   // close = commit (FUN_006c3540)
     CHECK(!m.ui().buy_open && !flow.paused());
 
+    // ---- ItemTransfer: hand items over through the party portraits (FUN_006f7780 press = show that commander,
+    // FUN_006d8ac0 0x6db54a release with an item on the pointer = World::transfer_item). Party of two: slots 6 / 7,
+    // portrait circles centred at (DAT_009de66c - 800 + W, H - 0x3a) = (891, 710) Joan, (983, 710) Jean.
+    game::Unit* jean = nullptr;
+    for (game::Unit& u : w.units())
+        if (!u.deleted && w.data().units[std::size_t(u.cls)].code == "JEAN_DE_METZ") jean = &u;
+    const std::string explosive = "ARROW_EXPLOSIVE";   // the walkthrough's hand-over (mission 2)
+    CHECK(jean != nullptr);
+    if (!jean) return test_result();
+    const int explosive_id = w.data().item_index(explosive);
+    joan.m.control = jean->m.control = 0, joan.no_react = jean->no_react = false;
+    hud.player.name = joan.name;
+    hud.party.assign(2, HudUnit{});
+    hud.party[0].id = joan.id, hud.party[0].name = joan.name, hud.party[1].id = jean->id, hud.party[1].name = jean->name;
+    const glm::vec2 joan_portrait{891, 710}, jean_portrait{983, 710};
+    auto count = [&](const game::Unit& u, int id) {
+        int n = u.inv.ammo.item == id ? u.inv.ammo.quantity : 0;
+        for (const auto& it : u.inv.bag) n += it.item == id ? it.quantity : 0;
+        return n;
+    };
+    flow.action(35);
+    joan.inv.bag.assign(1, {explosive_id, 20, w.data().items[std::size_t(explosive_id)].min_level});   // personal cell (0, 0)
+    frame({600, 600});
+    const int jean_before = count(*jean, explosive_id);
+    click({0x21a + 20, 0x3e + 20});   // pick the arrows up (click: they stay on the pointer)
+    click(jean_portrait);             // press shows Jean, release hands them over
+    std::fprintf(stderr, "transfer: window unit %d (jean %d), jean arrows %d -> %d, joan %d\n", win.unit, jean->id,
+                 jean_before, count(*jean, explosive_id), count(joan, explosive_id));
+    CHECK(win.unit == jean->id && count(*jean, explosive_id) == jean_before + 20 && count(joan, explosive_id) == 0);
+    // Drag from Jean's window (ammo slot or bag cell) onto Joan's portrait: the window stays on Jean.
+    frame({600, 600});
+    glm::vec2 at{0x1d4 + 20, 0x130 + 20};   // ammo slot
+    for (std::size_t i = 0; i < jean->inv.bag.size(); ++i)
+        if (jean->inv.bag[i].item == explosive_id && win.cells()[i].grid == 0)
+            at = {float(0x21a + win.cells()[i].col * 40 + 20), float(0x3e + win.cells()[i].row * 40 + 20)};
+    const int jean_has = count(*jean, explosive_id), joan_has = count(joan, explosive_id);
+    frame(at), frame(at, true), frame({700, 650}), frame(joan_portrait), frame(joan_portrait, false, true);
+    std::fprintf(stderr, "drag back: jean %d -> %d, joan %d -> %d, window unit %d\n", jean_has, count(*jean, explosive_id),
+                 joan_has, count(joan, explosive_id), win.unit);
+    CHECK(count(*jean, explosive_id) < jean_has && count(joan, explosive_id) + count(*jean, explosive_id) == joan_has + jean_has);
+    CHECK(win.unit == jean->id);
+    click(joan_portrait);   // no item: just shows Joan again
+    CHECK(win.unit == joan.id);
+    // Refused (task-locked Jean): a clicked item stays on the pointer, nothing moves; Jean's window takes no input
+    // (the right button does not put it back); a click on Joan's own portrait hands it back to her.
+    jean->no_react = true;
+    joan.inv.bag.clear();
+    CHECK(w.give_item(joan, "fd_bread_s", 0, 1));
+    const std::size_t jean_bag = jean->inv.bag.size();
+    frame({600, 600});
+    click({0x21a + 20, 0x3e + 20});
+    click(jean_portrait);
+    CHECK(jean->inv.bag.size() == jean_bag && joan.inv.bag.size() == 1 && win.unit == jean->id);
+    frame({600, 600}, false, false, true);   // ignored: Jean is unreachable
+    click(joan_portrait);                    // shows Joan, hands the bread to herself (auto-placed)
+    jean->no_react = false;
+    click(jean_portrait);                    // nothing held any more: only shows Jean
+    CHECK(jean->inv.bag.size() == jean_bag && joan.inv.bag.size() == 1 && win.unit == jean->id);
+    // Drop on the ground (FUN_006d8ac0: release on no portrait outside (0, 0)-(800, 600), CanDrop +0x25c, 0x512830
+    // beside the shown unit). Dragged potion: it lands; clicked CanDrop 0 letter: stays on the pointer, right click
+    // puts it back.
+    click(joan_portrait);
+    const int potion = w.data().item_index("SMALLBLUE"), letter = w.data().item_index("flyletter01");
+    joan.inv.bag.assign(1, {potion, 3, w.data().items[std::size_t(potion)].min_level});
+    const std::size_t floor_items = w.items().size();
+    frame({600, 600});
+    frame({0x21a + 20, 0x3e + 20}), frame({0x21a + 20, 0x3e + 20}, true), frame({850, 300}), frame({900, 300}, false, true);
+    std::fprintf(stderr, "drop: joan bag %zu, floor items %zu -> %zu\n", joan.inv.bag.size(), floor_items, w.items().size());
+    CHECK(joan.inv.bag.empty() && w.items().size() == floor_items + 1 && w.items().back().item == potion &&
+          w.items().back().quantity == 3);
+    if (w.items().size() == floor_items + 1)
+        CHECK(std::hypot(w.items().back().pos.x - joan.pos.x, w.items().back().pos.y - joan.pos.y) > 30.0f);
+    joan.inv.bag.assign(1, {letter, 1, 0});
+    frame({600, 600});
+    click({0x21a + 20, 0x3e + 20});   // pick
+    click({900, 300});                // outside: CanDrop 0, stays on the pointer
+    frame({900, 300}, false, false, true);   // right click: back
+    CHECK(joan.inv.bag.size() == 1 && w.items().size() == floor_items + 1);
+    flow.action(35);
+    frame({600, 600});
+    CHECK(!hud.show_character && !flow.paused());
+
     // ---- PadWindows: pad only ----
     GameInput gin;
     gin.configure(default_bindings(vfs), GameOptions{}, {}, false);
@@ -251,5 +334,31 @@ int main() {
     CHECK(m.state().gold < 1000 && joan.inv.bag.size() == bag2 + 1);
     press(SDL_GAMEPAD_BUTTON_EAST);
     CHECK(!m.ui().buy_open && !flow.paused());
+
+    // ItemTransfer by pad: South on Joan's arrows, steer to Jean's portrait, South hands them over.
+    flow.action(35);   // View Character Details (the pad's D-pad up, checked above)
+    CHECK(hud.show_character);
+    joan.inv.bag.assign(1, {explosive_id, 7, w.data().items[std::size_t(explosive_id)].min_level}), joan.inv.ammo = {};
+    const int jean_pad = count(*jean, explosive_id);
+    padf({}), padf({});
+    CHECK(steer({0x21a + 20, 0x3e + 20}));
+    press(SDL_GAMEPAD_BUTTON_SOUTH);   // pick up
+    CHECK(steer(jean_portrait));
+    press(SDL_GAMEPAD_BUTTON_SOUTH);   // show Jean + hand over
+    std::fprintf(stderr, "pad transfer: jean %d -> %d, window unit %d\n", jean_pad, count(*jean, explosive_id), win.unit);
+    CHECK(count(*jean, explosive_id) == jean_pad + 7 && count(joan, explosive_id) == 0 && win.unit == jean->id);
+    // North drops a held item on the ground (the pad has no "outside the window").
+    CHECK(steer(joan_portrait));
+    press(SDL_GAMEPAD_BUTTON_SOUTH);   // show Joan
+    joan.inv.bag.assign(1, {potion, 2, w.data().items[std::size_t(potion)].min_level});
+    const std::size_t floor_pad = w.items().size();
+    padf({});
+    CHECK(steer({0x21a + 20, 0x3e + 20}));
+    press(SDL_GAMEPAD_BUTTON_SOUTH);   // pick up
+    press(SDL_GAMEPAD_BUTTON_NORTH);   // drop
+    std::fprintf(stderr, "pad drop: joan bag %zu, floor items %zu -> %zu\n", joan.inv.bag.size(), floor_pad, w.items().size());
+    CHECK(win.unit == joan.id && joan.inv.bag.empty() && w.items().size() == floor_pad + 1);
+    press(SDL_GAMEPAD_BUTTON_EAST);
+    CHECK(!hud.show_character && !flow.paused());
     return test_result();
 }

@@ -1,19 +1,17 @@
 // Mission 6 (S9L1, the sieges of Meung and Beaugency) played by the campaign bot (game/autopilot_player +
 // autopilot_plan_S9L1).
 //
-// Start checkpoint: the legitimate chain only reaches mission 4, so missions 1-4 are won through
-// Mission::finish_objectives() (the end-condition awards, as a real win gives) and CONTINUE. S9L1 continues in S5L1's
-// world, and its whole main thread (Meung, Loches, Montargis; S9L1_tactic l.2292) waits for Castle_Jargeau captured,
-// which only S5L1's own capture code sets (S5L1_tactic l.4259): so S5L1 is won by removing every enemy inside
-// Castle_Jargeau / castleJargeau2 (test hook) and putting Joan on the castle ground; the script then captures the
-// castle, backs up its bit flags and wins objective 1 as in a played game. Joan's own squad is moved with her (a played
-// Joan arrives with the team following her). Heroes carry only award experience: a pessimistic start compared with a
-// played campaign (no kill experience, the other heroes and their squads left at Orleans).
+// Start: the best legitimate mission-6 start available: FROM.jsav, else $JOA_S9L1_START (CMake sets it at configure
+// time to the bot's own S5L1 win + CONTINUE: work/MissionBot5d/bot-S9L1.jsav on Normal, else
+// work/MissionBot5b/bot-S9L1-easy.jsav on Easy, Joan level 21), else a forced chain: missions 1-4 won through
+// Mission::finish_objectives() and CONTINUE, S5L1 won by removing every enemy inside Castle_Jargeau / castleJargeau2
+// (test hook) and putting Joan on the castle ground (S9L1's main thread waits for Castle_Jargeau captured, which only
+// S5L1's own capture code sets, S5L1_tactic l.4259). The forced start's heroes carry only award experience (Joan level 7).
 //
-//   game_campaign_S9L1_bot_test                        checkpoint from a new game, then the bot on Normal (see kTicks)
+//   game_campaign_S9L1_bot_test [FROM.jsav]           the bot on the mission-6 start for kTicks
 //   game_campaign_S9L1_bot_test --checkpoint OUT [D] [FROM.jsav]
-//                                                      write the mission-6 start (difficulty D, default 1; FROM: a save of
-//                                                      missions 1-5 to continue from) and exit
+//                                                      write the forced mission-6 start (difficulty D, default 1; FROM: a
+//                                                      save of missions 1-5 to continue from) and exit
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -30,12 +28,14 @@ using namespace joa::game;
 
 namespace {
 
-// The bot's budget (~5 min wall time) and the progress it must make in it. From this start the bot does not win S9L1:
-// the heroes (levels 8-10) are outmatched by the English garrisons (soldiers of level 12+, Talbot / Glasdale / Fastolf /
-// Scales at 23-25), and any hero's death ends the mission (imperatives 14 / 17 / 30 / 36). A win still passes; otherwise
-// the places the player liberated during S9L1 (search_for_unit_in_place "P" with the box cleared) are the measure.
-constexpr int kTicks = 90000;
-constexpr int kMinLiberated = 1;
+// The bot's budget (~5 min wall time) and the progress it must make in it; the whole mission (16 places, Meung's 317 and
+// Beaugency's 268 fightable English, four bosses) takes the bot far longer than a test may (SAVES_AND_CAMPAIGN.md §8.1).
+// A win still passes; otherwise the places the player liberated during S9L1 (search_for_unit_in_place "P" with the box
+// cleared) are the measure. Forced start: the award-only heroes are outmatched (one place). Legit starts, measured over
+// 120000 ticks with seed 1: the Normal start (Joan level 20, ~3 food) frees Fountainbleu; the Easy start (level 21) frees
+// 3 places. Before the bag rules of Unit_add_item (one cell per loaf) and the other shared changes, the Easy start freed 6.
+constexpr int kTicks = 120000;
+constexpr int kMinLiberated = 1, kMinLiberatedLegit = 1;
 
 // S5L1 won the scripted way: Jargeau's garrison removed, Joan on the castle ground. The town's patrols within 2500 of
 // the castle go too: the capture wins objective 1 but the WIN fires only after the scenario's 15 s win delay, and an
@@ -104,8 +104,11 @@ int main(int argc, char** argv) {
     const formats::Vfs vfs(dir);
     CampaignRunner run(*gd, vfs);
     const bool make = argc > 2 && std::string(argv[1]) == "--checkpoint";
-    if (!to_6(run, make && argc > 3 ? std::atoi(argv[3]) : 1, make && argc > 4 ? argv[4] : nullptr, err))
-        return std::printf("FAIL chain: %s\n", err.c_str()), 1;
+    const char* start = make ? (argc > 4 ? argv[4] : nullptr) : argc > 1 ? argv[1] : std::getenv("JOA_S9L1_START");
+    if (start && !*start) start = nullptr;
+    const bool legit = start && !make;  // a played mission-6 start (a missions 1-5 save goes through the forced S5L1 hook)
+    if (start) std::printf("start %s\n", start);
+    if (!to_6(run, make && argc > 3 ? std::atoi(argv[3]) : 1, start, err)) return std::printf("FAIL chain: %s\n", err.c_str()), 1;
     int fails = 0;
     const Place* jargeau = run.mission()->places().place(run.mission()->places().place_by_name("Castle_Jargeau"));
     if (!jargeau || !jargeau->captured) std::printf("FAIL Jargeau not captured at the S9L1 start\n"), ++fails;
@@ -131,8 +134,8 @@ int main(int argc, char** argv) {
                 r.result == 1 ? "WON" : r.result == 2 ? "LOST" : "STUCK", r.ticks, r.deaths, r.kills, r.objectives_done,
                 r.objectives_total, r.stuck.empty() ? "" : " | ", r.stuck.c_str());
     std::printf("liberated %d:%s\n", liberated, names.c_str());
-    if (r.result != 1 && liberated < kMinLiberated)
-        std::printf("FAIL S9L1 not won and %d places liberated (< %d)\n", liberated, kMinLiberated), ++fails;
+    if (const int need = legit ? kMinLiberatedLegit : kMinLiberated; r.result != 1 && liberated < need)
+        std::printf("FAIL S9L1 not won and %d places liberated (< %d)\n", liberated, need), ++fails;
     std::printf(fails ? "%d failures\n" : "ok\n", fails);
     return fails ? 1 : 0;
 }

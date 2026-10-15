@@ -25,6 +25,7 @@ int proj_type_for(int item_type) {
     default: return -1;
     }
 }
+}  // namespace
 
 // 0x496d40: returns M * v(m/s) * 1000 (a 1 ms force pulse that sets v exactly).
 Vec3 solve_aim(Vec3 p0, Vec3 t, float m, float mxd, float av, float gl, float min_sin) {
@@ -46,6 +47,8 @@ Vec3 solve_aim(Vec3 p0, Vec3 t, float m, float mxd, float av, float gl, float mi
     }
     return scale(v, m * 1000.0f);
 }
+
+namespace {
 
 // FUN_0069e720 (+ the 16-sample sign scan of 0x6a1460): first t in [0, 1] where the moving sphere (centre c + v t,
 // radius r) touches the circle of radius R around k in the plane z = k.z: a root of

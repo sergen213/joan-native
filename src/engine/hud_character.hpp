@@ -30,7 +30,7 @@ public:
     int unit = 0;              // +0x6af shown unit (party portrait clicks switch heroes)
 
     // Bag item placement on the inventory grids: each bag item's own cell (ItemInstance bag/col/row = the original's
-    // +0x15/+0x16, saved with the game); unplaced items go first-fit in bag order. grid 0 personal 6x8, 1 enhancers 4x1.
+    // +0x15/+0x16, saved with the game; Inventory::layout); grid 0 personal 6x8, 1 enhancers 4x1, 2 troop 6x4.
     struct Cell { int item = 0, level = 0, grid = -1, col = 0, row = 0; };
     const std::vector<Cell>& cells() const { return cells_; }   // per bag index of `unit` (last drawn frame)
 
@@ -38,6 +38,7 @@ private:
     struct Held {              // item on the pointer (+0x11 source, +0x12 item)
         int src = -1;          // 0..3 melee0 / melee1 / ranged / ammo, 10 bag
         int bag = -1;
+        int owner = 0;         // the unit it came from (the shown unit may change while it is held)
         int item = 0, level = 0;
         glm::vec2 at{0.0f};
         bool dragging = false;
@@ -48,6 +49,7 @@ private:
     void inventory(Ui&, game::Mission&, game::Unit&);
     void combos(Ui&, game::Mission&, game::Unit&);
     void layout(const game::GameData&, game::Unit&);
+    void party(Ui&, game::Mission&, HudModel&, bool dragged);   // portraits: show that commander / hand the item over
     bool drop(game::Mission&, game::Unit&, glm::vec2 p);
     void shop(Ui&, game::Mission&);
     void armory(Ui&, game::Mission&, HudModel&);
@@ -59,6 +61,7 @@ private:
     std::vector<Cell> cells_;              // per bag index of `unit`
     int cells_unit_ = 0;
     Held held_;
+    glm::vec2 view_{0.0f};                 // minimap px per world unit this frame (FUN_00717a90 reach; 0 = no minimap)
     glm::vec2 rest_mouse_{-1.0f};
     float rest_ = 0.0f, blink_ = 0.0f;     // pointer rest time (tooltips after 250 ms), CB button blink clock
     int combo_scroll_ = 0, new_scroll_ = 0, combo_rows_ = 0;   // combo_rows_: learned combos (PadWindows LB / RB scroll)

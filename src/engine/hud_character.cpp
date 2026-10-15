@@ -2,6 +2,7 @@
 #include "engine/hud_character.hpp"
 
 #include "engine/menu_saveload.hpp"
+#include "engine/ui_screens.hpp"
 
 #include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_gamepad.h>
@@ -68,6 +69,12 @@ std::string button(Ui& ui, glm::vec4 r, std::string_view base, std::string_view 
 
 bool is_class(const ItemDef& d, std::string_view c) { return d.item_class == c; }
 bool is_ammo(int type) { return type >= 0xd && type <= 0x12; }
+// FUN_006de4d0 after every placement: weapons IE_SWORD, bows / crossbows IE_BOW, ammo IE_ARROW.
+void item_sound(Ui& ui, const ItemDef& d) {
+    if (d.type >= 8 && d.type <= 10) ui.sound("IE_SWORD");
+    else if (d.type == 0xb || d.type == 0xc) ui.sound("IE_BOW");
+    else if (is_ammo(d.type)) ui.sound("IE_ARROW");
+}
 // FUN_006d8ac0: bows (0xb) shoot arrows 0xd..0xf, crossbows (0xc) bolts 0x10..0x12.
 bool ammo_fits(int ranged_type, int ammo_type) {
     if (!ranged_type || !ammo_type) return true;
@@ -201,9 +208,12 @@ void CharacterWindow::draw(Ui& ui, game::Mission& m, HudModel& hud) {
         else if (p > 0 ? combo_scroll_ < last : combo_scroll_ > 0) combo_scroll_ = std::clamp(combo_scroll_ + 10 * p, 0, last);
         else combo_page = false;
     }
-    left_panel(ui, m, *u);   // PadWindows: rows, CB, then the page's grid cells / list rows form the focus ring
+    view_ = hud_minimap_scale(ui, hud);
+    const bool dragged = held_.dragging;
+    left_panel(ui, m, *u);   // PadWindows: rows, CB, then the page's grid cells / list rows, then the portraits
     if (combo_page) combos(ui, m, *u);
     else inventory(ui, m, *u);
+    party(ui, m, hud, dragged);
     draw_tip(ui);
     if (ui.key(SDL_SCANCODE_ESCAPE)) hud.show_character = m.ui().inventory_open = open_ = false, held_ = {};
 }
@@ -294,26 +304,15 @@ static void store_cell(game::ItemInstance& it, const CharacterWindow::Cell& c) {
     it.bag = c.grid >= 0 && c.grid < 3 ? kBag[c.grid] : -1, it.col = c.col, it.row = c.row;
 }
 
-// Each bag item sits at its own cell (ItemInstance bag/col/row, saved with the game); unplaced or clashing items
-// go first-fit in bag order (enhancers into the enhancer grid first, then personal, then troop: the Player.dat
-// export order) and keep that cell from then on.
+// Each bag item sits at its own cell (ItemInstance bag/col/row, saved with the game); Inventory::layout places the
+// unplaced or clashing ones first-fit (the Player.dat export order) and they keep that cell from then on.
 void CharacterWindow::layout(const GameData& gd, Unit& u) {
     static constexpr int kGrid[3] = {1, 0, 2};   // original bag -> hud grid
     cells_unit_ = u.id;
+    u.inv.layout(gd);
     cells_.assign(u.inv.bag.size(), Cell{});
-    for (std::size_t i = 0; i < cells_.size(); ++i) {
-        const auto& it = u.inv.bag[i];
-        if (it.bag < 0 || it.bag > 2) continue;
-        const Cell c{it.item, it.level, kGrid[it.bag], it.col, it.row};
-        if ((c.grid != 1 || is_class(gd.items[std::size_t(c.item)], "ENHANCER")) && fits(gd, cells_, c)) cells_[i] = c;
-    }
-    for (std::size_t i = 0; i < cells_.size(); ++i) {
-        if (cells_[i].grid >= 0) continue;
-        Cell c{u.inv.bag[i].item, u.inv.bag[i].level};
-        const bool enh = is_class(gd.items[std::size_t(c.item)], "ENHANCER");
-        if ((enh && place_first_fit(gd, cells_, 1, c)) || place_first_fit(gd, cells_, 0, c) || place_first_fit(gd, cells_, 2, c))
-            cells_[i] = c, store_cell(u.inv.bag[i], c);
-    }
+    for (std::size_t i = 0; i < cells_.size(); ++i)
+        if (const auto& it = u.inv.bag[i]; it.bag >= 0) cells_[i] = {it.item, it.level, kGrid[it.bag], it.col, it.row};
 }
 
 void CharacterWindow::inventory(Ui& ui, game::Mission& m, Unit& u) {
@@ -362,7 +361,7 @@ void CharacterWindow::inventory(Ui& ui, game::Mission& m, Unit& u) {
 
     auto instance = [&](const Spot& s) -> const game::ItemInstance& { return s.src == 10 ? u.inv.bag[std::size_t(s.bag)] : *slot_items[s.src]; };
     for (const Spot& s : spots) {
-        if (held_.item && held_.src == s.src && held_.bag == s.bag) continue;   // on the pointer
+        if (held_.item && held_.owner == u.id && held_.src == s.src && held_.bag == s.bag) continue;   // on the pointer
         const game::ItemInstance& it = instance(s);
         const ItemDef& d = gd.items[std::size_t(it.item)];
         icon(ui, d, {s.rect.x, s.rect.y}, !held_.item && hot == &s);
@@ -376,15 +375,18 @@ void CharacterWindow::inventory(Ui& ui, game::Mission& m, Unit& u) {
 
     // Input (FUN_006d8ac0): left press picks an item up, release after a drag (or the next press) drops it; right
     // button = put it back / use the item under the pointer (potions, armour). PadWindows: South picks up / drops,
-    // West (X / Square) = the right button.
+    // West (X / Square) = the right button. Only while the shown unit is reachable (0x6d8c21: +0x2f == 0, not
+    // task-locked, inside the minimap view: World::inventory_reachable); an item held from another commander
+    // (portrait switch) only goes to a portrait or back (right button).
     const UiInput& in = ui.input();
     const bool south = pad && in.mouse_released, west = pad && in.pad.button == SDL_GAMEPAD_BUTTON_WEST;
+    const bool live = w.inventory_reachable(u, view_.x, view_.y), mine = held_.owner == u.id;
     if (held_.item) {
         const ItemDef& d = gd.items[std::size_t(held_.item)];
         if (inside(mouse, kWeaponArea) && (d.type == 8 || d.type == 9 || d.type == 10)) ui.fill(kWeaponArea, hi);
         if (inside(mouse, kRangedArea) && (d.type == 0xb || d.type == 0xc)) ui.fill(kRangedArea, hi);
         if (inside(mouse, kAmmoArea) && is_ammo(d.type)) ui.fill(kAmmoArea, hi);
-        for (int g = 0; g < 3; ++g) {
+        for (int g = 0; g < 3 && mine; ++g) {
             const glm::ivec2 o = kGridOrigin[g], n = grid_size(g);
             if (!inside(mouse, {float(o.x), float(o.y), float(n.x * 40), float(n.y * 40)})) continue;
             Cell c{held_.item, held_.level, g, int(std::lround((mouse.x - o.x - d.width * 20.0f) / 40.0f)),
@@ -396,19 +398,16 @@ void CharacterWindow::inventory(Ui& ui, game::Mission& m, Unit& u) {
         const glm::ivec2 sz = ui.texture_size(name);
         if (TextureHandle t = ui.texture(name))
             ui.image(t, {mouse.x - d.width * 20.0f - 8, mouse.y - d.height * 20.0f - 8, float(sz.x), float(sz.y)});
-        if (in.right_pressed || west) held_ = {};
-        else if (south) drop(m, u, mouse);
-        else if (in.mouse_released && held_.dragging) {
+        if (in.mouse_released && held_.dragging) {   // end of a drag
             held_.dragging = false;
-            if (glm::length(mouse - held_.at) > 4.0f) drop(m, u, mouse);
-        } else if (in.mouse_pressed && !held_.dragging) {
-            drop(m, u, mouse);
-        }
+            if (live && glm::length(mouse - held_.at) > 4.0f) drop(m, u, mouse);
+        } else if (live && (in.right_pressed || west)) held_ = {};
+        else if (live && (south || in.mouse_pressed)) drop(m, u, mouse);
     } else if (hot) {
         const game::ItemInstance& it = instance(*hot);
         const ItemDef& d = gd.items[std::size_t(it.item)];
-        if (in.mouse_pressed || south) held_ = {hot->src, hot->bag, it.item, it.level, mouse, !pad};
-        else if ((in.right_pressed || west) && hot->src == 10) w.use_item(u, hot->bag);
+        if (live && (in.mouse_pressed || south)) held_ = {hot->src, hot->bag, u.id, it.item, it.level, mouse, !pad};
+        else if (live && (in.right_pressed || west) && hot->src == 10) w.use_item(u, hot->bag);
         else {
             tip(d.name, item_tip(ui, d, it.level));
             if (pad) tip_at_ = {hot->rect.x, hot->rect.y + hot->rect.w};   // PadWindows: below the whole item
@@ -426,6 +425,7 @@ bool CharacterWindow::drop(game::Mission& m, Unit& u, glm::vec2 p) {
     World& w = m.world();
     const GameData& gd = m.data();
     const ItemDef& d = gd.items[std::size_t(held_.item)];
+    if (held_.owner != u.id) return false;                           // held from another commander
     if (d.usable_unit >= 0 && d.usable_unit != u.cls) return false;   // +0x255 UsableUnit
     const int ranged_type = u.inv.ranged.item ? gd.items[std::size_t(u.inv.ranged.item)].type : 0;
     const int ammo_type = u.inv.ammo.item ? gd.items[std::size_t(u.inv.ammo.item)].type : 0;
@@ -449,6 +449,51 @@ bool CharacterWindow::drop(game::Mission& m, Unit& u, glm::vec2 p) {
     }
     if (ok) held_ = {};
     return ok;
+}
+
+// Party portraits while the window is open. FUN_006f7780: a left press on a portrait (FUN_006ffd90: the circle of
+// radius 36 around (DAT_009de66c[8 - n + i] - 800 + W, H - 0x3a)) shows that commander (rank > 3: +0x6af; the CSELECT
+// blink restarts). FUN_006d8ac0 0x6db54a: a left release there with an item on the pointer hands it to him
+// (World::transfer_item, IE_* sound); when that fails a dragged item goes back, a clicked one stays on the pointer.
+// A release on no portrait and outside (0, 0)-(800, 600) drops a CanDrop item beside the shown unit
+// (World::discard_item = 0x512830; the same keep / go-back rule when it fails). Both need the shown unit reachable
+// (0x6d8c21). The HOLD / RESUME button over a portrait keeps its own presses (as in ui_rts). PadWindows: the
+// portraits join the focus ring after the page; South on one = press + release; North drops the held item.
+void CharacterWindow::party(Ui& ui, game::Mission& m, HudModel& hud, bool dragged) {
+    static constexpr int kCentreX[8] = {115, 207, 299, 391, 483, 575, 667, 759};   // DAT_009de66c
+    const int n = std::min(int(hud.party.size()), 8);
+    const glm::vec2 window_mouse = ui.mouse();
+    const Anchor keep = ui.current_frame();
+    ui.frame(Anchor::BottomRight);
+    const bool pad = ui.pad_focus();
+    const glm::vec2 mouse = ui.mouse();
+    int at = -1;
+    bool hold = false;
+    for (int i = 0; i < n; ++i) {
+        const glm::vec2 c{float(kCentreX[8 - n + i] + 224), 768.0f - 0x3a};
+        const bool focused = ui.hover({c.x - 36, c.y - 36, 72, 72});
+        if (pad ? focused : glm::length(mouse - c) <= 36.0f)
+            at = i, hold = hud.party[std::size_t(i)].name != hud.player.name && inside(mouse, {c.x - 46, 678, 24, 28});
+    }
+    ui.frame(keep);
+    World& w = m.world();
+    const UiInput& in = ui.input();
+    Unit* t = at < 0 ? nullptr : w.unit(hud.party[std::size_t(at)].id);
+    if (t && t->deleted) t = nullptr;
+    if (t && t->rank > 3 && !hold && (in.mouse_pressed || (pad && in.mouse_released))) unit = t->id;
+    const bool north = pad && in.pad.button == SDL_GAMEPAD_BUTTON_NORTH;
+    if (!held_.item || !(in.mouse_released || north)) return;
+    Unit* from = w.unit(held_.owner);
+    Unit* shown = w.unit(unit);
+    if (!from || !shown || !w.inventory_reachable(*shown, view_.x, view_.y)) return;
+    const ItemDef& d = m.data().items[std::size_t(held_.item)];
+    bool done = false;
+    if (t && !north) done = w.transfer_item(*from, held_.src, held_.bag, *t, view_.x, view_.y);
+    else if (north || (!pad && (window_mouse.x < 0 || window_mouse.y < 0 || window_mouse.x > 800 || window_mouse.y > 600)))
+        done = w.discard_item(*from, held_.src, held_.bag, *shown);
+    else return;
+    if (done) item_sound(ui, d), held_ = {};
+    else if (dragged) held_ = {};
 }
 
 void CharacterWindow::combos(Ui& ui, game::Mission& m, Unit& u) {
@@ -674,19 +719,15 @@ void CharacterWindow::shop(Ui& ui, game::Mission& m) {
         gold += int(float(gd.items[std::size_t(it.item)].price) * sell_ratio_);
         if (--it.quantity < 1) u->inv.bag.erase(u->inv.bag.begin() + sell), cells_.erase(cells_.begin() + sell);
     }
-    // FUN_006c5a00: price check (BUY 8), room check (BUY 9), then the item joins the bag and gold drops.
+    // FUN_006c5a00: price check (BUY 8), room check (BUY 9: World::buy_item, personal grid only), then gold drops.
     // Cost = Price (HYPOTHESIS: the exe's FPU expression is not recovered); one purchase = the item's Quantity.
     if (buy >= 0) {
         Stock& s = stock_[std::size_t(buy)];
         const ItemDef& d = gd.items[std::size_t(s.item)];
-        const int q = std::max(1, d.quantity);
-        bool stacks = u->inv.ammo.item == s.item;
-        for (const auto& it : u->inv.bag) stacks |= it.item == s.item && it.level == s.level && it.quantity + q <= std::max(1, d.max_quantity);
-        Cell c{s.item, s.level};
         if (gold < d.price) shop_msg_ = ui.text("BUY", 8);
-        else if (!stacks && !place_first_fit(gd, cells_, 0, c)) shop_msg_ = ui.text("BUY", 9);
-        else if (w.give_item(*u, d.code, s.level, q)) {
-            if (cells_.size() < u->inv.bag.size()) cells_.push_back(c), store_cell(u->inv.bag.back(), c);
+        else if (!w.buy_item(*u, s.item, s.level, std::max(1, d.quantity))) shop_msg_ = ui.text("BUY", 9);
+        else {
+            layout(gd, *u);
             gold -= d.price;
             if (s.quantity > 0) --s.quantity;
             stock_left_[shop_facility_][std::size_t(buy)] = s.quantity;

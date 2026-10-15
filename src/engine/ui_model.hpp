@@ -163,6 +163,7 @@ struct HudUnit {                  // player panel / party portrait / unit name b
     // Drawn at 0x80ffffff (half alpha) when +0x2f (control) / task-locked (+0x2e1) or outside the minimap view (0x717a90).
     bool busy = false;
     glm::vec2 world{0.0f};        // original world x/y (minimap view test)
+    int id = 0;                   // party: unit recno (character window portrait clicks, FUN_006ffd90)
 };
 
 struct HudMapIcon {

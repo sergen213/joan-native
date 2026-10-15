@@ -283,6 +283,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         usable.push_back(kv.str("UsableUnit"));
         it.use_immediately = kv.i("UseImmediately") != 0;
         it.show_armory = kv.i("ShowArmoryInterface") != 0;
+        it.can_drop = kv.i("CanDrop", 1) != 0;
         it.width = kv.i("Width", 1), it.height = kv.i("Height", 1);
         it.defense = kv.i("Defense"), it.price = kv.i("Price"), it.pickable = kv.i("Pickable") != 0;
         it.description = kv.str("Description"), it.detail_file = kv.str("DetailDescriptionFilename");

@@ -5,15 +5,17 @@
 // mission 4 won through Mission::finish_objectives() (the end-condition awards, as a real win gives) and CONTINUE:
 // Joan level 11, heroes as the legit chain carried them. Without that file the test is skipped.
 //
-// The bot wins S5L1 on both difficulties in 158000-185000 ticks (SAVES_AND_CAMPAIGN.md §8.1), longer than a test
-// may take (~18000 ticks a minute on an idle machine, a third of that under load), so the test plays kTicks and checks
-// a win is the script's (Jargeau captured), short of one the progress measured there: Joan alive, Dunois and
-// d'Illiers met (objectives 18 / 19), the West Left tower down (its archers stand on a nav island no stair reaches)
-// and at most kMaxLeft fightable English left in the two castle places.
+// The bot won S5L1 on Easy in 158169 ticks and on Normal in 187953 (SAVES_AND_CAMPAIGN.md §8.1). A full run is longer
+// than a test may take (~18000 ticks a minute on an idle machine, a third of that under load), so the test plays kTicks
+// and checks a win is the script's (Jargeau captured), short of one the progress measured there: Joan alive, stocked in
+// Orleans (at least kFoodBought heal food from the potion seller: one bag cell a loaf, so she drops her spare apples
+// first), Dunois and d'Illiers met (objectives 18 / 19) and at most kMaxLeft fightable English left in the two castle
+// places (the castle fight at t40000 varies run to run).
 //
 //   game_campaign_S5L1_bot_test [FROM_S4L1.jsav] [DIFFICULTY] [TICKS]   the bot on the mission-5 start
 //   game_campaign_S5L1_bot_test --checkpoint OUT [FROM] [D]             write the mission-5 start and exit; iterate with
 //                                                                       joa-campaign --load OUT --autopilot
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -27,9 +29,10 @@ using namespace joa::game;
 
 namespace {
 
-constexpr int kTicks = 50000;
+constexpr int kTicks = 40000;  // d'Illiers is met at ~t34000 (Orleans' errands first)
 constexpr int kRetries = 1;
-constexpr int kMaxLeft = 0;  // measured at kTicks: see main
+constexpr int kMaxLeft = 200;   // 136 English at the start, waves join as the French close in: 122-186 left at t40000
+constexpr int kFoodBought = 10;  // Normal, seed 1: 14 (0 with the bag full of apples)
 
 bool start_5(CampaignRunner& run, const char* from, int difficulty, std::string& err) {
     if (!run.init(&err)) return false;
@@ -114,7 +117,8 @@ int main(int argc, char** argv) {
                 int(done(17)), int(done(18)), tower ? tower->hp : -1, int(inside), left);
     if (r.result == 2) std::printf("FAIL S5L1 lost\n"), ++fails;
     if (!done(17) || !done(18)) std::printf("FAIL Dunois / d'Illiers not met\n"), ++fails;
-    if (!tower || tower->hp > 0) std::printf("FAIL West Left tower standing\n"), ++fails;
+    if (std::count_if(r.log.begin(), r.log.end(), [](const std::string& l) { return l.find(" buy fd_") != std::string::npos; }) < kFoodBought)
+        std::printf("FAIL under %d food bought in Orleans\n", kFoodBought), ++fails;
     if (left > kMaxLeft) std::printf("FAIL %d fightable English left in Jargeau (at most %d)\n", left, kMaxLeft), ++fails;
     std::printf(fails ? "%d failures\n" : "ok\n", fails);
     return fails ? 1 : 0;

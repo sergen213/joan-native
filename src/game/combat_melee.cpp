@@ -221,6 +221,7 @@ int World::on_attack_message(Unit& d, const Trigger& t) {
         emit(Ev::Hit, d.id, 0, int(dmg), "KEG");
         if (!d.mount) knockdown(d);   // HYPOTHESIS: same reaction as explosive arrows
         else set_action(d, H_DROP);   // 0x75d540 case 0x4000: mounted -> Unit_set_action(0x4e)
+        if (hit_danger) hit_danger(d);   // 0x4fd980(1) before every death check below
         if (dead(d)) unit_die(d, 0);  // Unit_dieNoKiller 0x64f320
         return 1;
     }
@@ -235,6 +236,7 @@ int World::on_attack_message(Unit& d, const Trigger& t) {
         d.knock_ms = 0;
         set_action(d, DNATKED);
         if (a->id == player_) ++combo_hits, combo_hits_ts = now_;
+        if (hit_danger) hit_danger(d);
         if (dead(d)) unit_die(d, a->id);
         return 2;
     }
@@ -269,6 +271,7 @@ int World::on_attack_message(Unit& d, const Trigger& t) {
             d.vel.y += std::sin(dir) * float(h) * f;
             if (v > 0) d.vel.z += float(v) * f, d.airborne = true;
         }
+        if (hit_danger) hit_danger(d);
         if (dead(d)) unit_die(d, a->id);
         return 1;
     }
@@ -296,6 +299,7 @@ int World::on_attack_message(Unit& d, const Trigger& t) {
             d.vel.z += 500.0f * f, d.airborne = true;
         }
         if (t.type != 0x2000) set_balance(d, d.balance - c.arr_fall);
+        if (hit_danger) hit_danger(d);
         if (dead(d)) unit_die(d, a->id);
         return 1;
     }

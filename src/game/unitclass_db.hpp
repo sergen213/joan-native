@@ -88,6 +88,7 @@ struct ItemDef {
     int usable_unit = -1;                // UsableUnit unit class index, -1 any
     bool use_immediately = false;        // +0x23d UseImmediately (POTION)
     bool show_armory = false;            // +0x1e8 ShowArmoryInterface
+    bool can_drop = true;                // +0x25c CanDrop (ItemRes_parse default 1; _stricmp keys)
     int width = 1, height = 1;           // +0x24 / +0x26 Width / Height: bag-grid footprint (0x4577a0)
     int defense = 0;                     // +0x56 Defense (ARMOR: armour level reached, 0x6d8ac0)
     int price = 0;                       // +0x2e Price (GOLD: value per piece, Unit_auto_pickup 0x49da30)

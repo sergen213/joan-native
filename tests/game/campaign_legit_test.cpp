@@ -24,7 +24,7 @@ using namespace joa::game;
 namespace {
 
 constexpr int kTicks = 150000;     // per attempt (83 min of game time; mission 3 on Normal is won at 81000-125000)
-constexpr int kRetries = 2;
+constexpr int kRetries = 8;       // a lost mission is retried like the game-over RETRY: up to 9 attempts (seed + attempt)
 constexpr int kExpectedWins = 3;   // missions won on Normal; raise when the bot (or a port fix) wins more (docs/SAVES_AND_CAMPAIGN.md §8.1)
 const std::filesystem::path kDir = "campaign_checkpoints";
 

@@ -7,6 +7,7 @@
 #include "game/items_pickup.hpp"
 #include "game/multimap_nav.hpp"
 #include "game/orders_queue.hpp"
+#include "game/script_bind.hpp"
 #include "game/script_host.hpp"
 
 namespace joa::game {
@@ -199,6 +200,7 @@ bool Mission::start(const CampaignMission& cm, std::uint32_t seed, std::string* 
     }
     install_interact(*this);
     install_auto_pickup(*this);
+    install_hit_danger(*this);
     for (const auto& n : nodes) {
         auto uni = read_blocks(vfs_, dir + "\\" + n.name + ".uni");
         if (!uni) continue;

@@ -419,8 +419,9 @@ void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
                 threat |= d2(p.pos, u.pos) < (u.target == p.id ? 200.0f : 100.0f) && std::fabs(u.pos.z - p.pos.z) < 150;
         if (!threat || other_level) return shoot(f, p, foe);
     }
-    // A foe on another level (a wall top) out of reach of the sword: back off until the bow has an angle on it.
-    if (other_level) {
+    // A foe on another level (a wall top) out of reach of the sword: back off until the bow has an angle on it. Without
+    // arrows to shoot, close in instead (a wall walk the path reaches: Meung's crossbowmen; chase_ gives up on the rest).
+    if (other_level && (arrows(p, false) > 0 || arrows(p, true) > explosive_reserve)) {
         steer(f, p, {2 * p.pos.x - foe.pos.x, 2 * p.pos.y - foe.pos.y, p.pos.z}, false);
         return;
     }
@@ -474,8 +475,8 @@ void Autopilot::fight(InputFrame& f, Unit& p, const Unit& foe) {
     }
     // Close in. A foe the path mesh cannot bring the player to (behind mission 3's locked prison gate), or one chased for 30 s
     // in all without getting within 150 (mission 3: the G Defend Place hill guards above the dock road), is left for 60 s.
-    if (d <= 150) chase_.erase(foe.id);
-    if (d > 85) {
+    if (d <= 150 && !other_level) chase_.erase(foe.id);
+    if (d > 85 || other_level) {
         steer(f, p, foe.pos, false);
         if ((d2(path_.back(), foe.pos) > 150 && d2(p.pos, path_.back()) < 100) || ++chase_[foe.id] > 900)
             give_up(foe.id), chase_.erase(foe.id);
@@ -523,8 +524,9 @@ bool Autopilot::load_ammo(Unit& p, bool explosive) {
     if (p.inv.ammo.item && p.inv.ammo.quantity > 0 && ammo_kind(w, p.inv.ammo.item) == int(explosive)) return true;
     for (std::size_t i = 0; i < p.inv.bag.size(); ++i)
         if (ammo_kind(w, p.inv.bag[i].item) == int(explosive) && p.inv.bag[i].quantity > 0) return w.equip(p, int(i));
-    // Plain wanted, only explosive left: keep shooting (not into the plan's explosive_reserve).
-    return p.inv.ammo.item && p.inv.ammo.quantity > 0 && !explosive && arrows(p, true) > explosive_reserve;
+    // Plain wanted, only explosive left (in the slot or the bag): keep shooting, not into the plan's explosive_reserve.
+    if (explosive || arrows(p, true) <= explosive_reserve) return false;
+    return (p.inv.ammo.item && p.inv.ammo.quantity > 0) || load_ammo(p, true);
 }
 
 // Bow (range mode, Z): the camera aims at the target's middle (the release locks the nearest enemy within
@@ -567,7 +569,7 @@ void Autopilot::shop(Unit& p) {
     const std::vector<ShopStock> stock = shop_stock(m_, m_.ui().buy_shop);
     auto buy = [&](const ShopStock& s) {
         const ItemDef& d = gd.items[std::size_t(s.item)];
-        if (s.quantity == 0 || gold - d.price < shop_gold_keep || !w.give_item(p, d.code, s.level, std::max(1, d.quantity))) return false;
+        if (s.quantity == 0 || gold - d.price < shop_gold_keep || !w.buy_item(p, s.item, s.level, std::max(1, d.quantity))) return false;
         gold -= d.price;
         log.push_back(std::to_string(m_.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
         return true;
@@ -585,12 +587,13 @@ void Autopilot::shop(Unit& p) {
         for (const ItemInstance& it : p.inv.bag) n += fits(it.item, explosive) ? it.quantity : 0;
         return n;
     };
-    auto arrows = [&](bool explosive) {
+    auto arrows = [&](bool explosive, int max) {
         for (const ShopStock& s : stock)
             if (fits(s.item, explosive))
-                while (count(explosive) < (explosive ? shop_explosive_max : shop_plain_max) && buy(s)) {}
+                while (count(explosive) < max && buy(s)) {}
     };
-    arrows(true);
+    arrows(true, shop_explosive_max);
+    arrows(false, shop_plain_first);
     for (const ShopStock& s : stock) {
         const ItemDef& d = gd.items[std::size_t(s.item)];
         if (d.item_class == "ARMOR" && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.defense > p.armor_level && buy(s))
@@ -600,7 +603,7 @@ void Autopilot::shop(Unit& p) {
                     break;
                 }
     }
-    arrows(false);
+    arrows(false, shop_plain_max);
 }
 
 // Character screen (F1, the player's hero): every attribute point into HIT_POINT (the walkthroughs' rule; STR/DEF buy
@@ -741,6 +744,10 @@ InputFrame Autopilot::decide() {
                              (talk_news_[prompt_id_] < news_ && tick_ - talked_[prompt_id_] > 300) ||
                              (((prompt_id_ == talk_key_ && tick_ - talk_seen_ <= 1) || prompt_id_ == plan_talk) && tick_ - talked_[prompt_id_] > 300)) &&
                             !(talker && following(*talker));
+    // Siege crew walking to its weapon is recruitable (Unit_find_recruitable_unit 0x48dfb0 has no task test), but R
+    // there takes the man the player just assigned (S7L1's trebuchet lost its third F man to Joan this way).
+    const Unit* recruit = prompt_kind_ == "recruit" ? w.unit(prompt_id_) : nullptr;
+    const bool crew_prompt = recruit && m_.ai().curr_task(*recruit) == task::LARGE_WEAPON_PUSH;
     // A gate is toggled only on purpose, never in passing: closed (gate_ below) or opened to get through (travel).
     const int prompt_item = prompt_kind_ == "item" ? m_.objects().modify_item(prompt_id_) : 0;
     const MapItem* pit = m_.objects().item(prompt_item);
@@ -748,7 +755,7 @@ InputFrame Autopilot::decide() {
     const bool ladder_prompt = pit && pit->cls == 11;  // only on purpose (the hunt's climb): R at its top took the player back down
     const bool open_it = gate_prompt && prompt_item == open_gate_ && pit->state == 0 && tick_ - travel_tick_ <= 1;
     const bool close_it = gate_prompt && prompt_item == opened_gate_ && pit->state == 1 && tick_ - shut_tick_ <= 1;
-    if (prompt_ && !ladder_prompt && fresh_talk && tick_ - last_interact_ > 20 && prompt_kind_ != "mount" && prompt_kind_ != "bribe" &&
+    if (prompt_ && !ladder_prompt && !crew_prompt && fresh_talk && tick_ - last_interact_ > 20 && prompt_kind_ != "mount" && prompt_kind_ != "bribe" &&
         (!gate_prompt || prompt_item == gate_ || open_it || close_it) && prompt_kind_ != "recruit_screen" && prompt_kind_ != "workshop") {
         goal = "interact " + prompt_kind_;
         if (tick_ - prompt_tick_ < 3) return f;
@@ -810,15 +817,18 @@ InputFrame Autopilot::decide() {
     // close by, or one that is attacking the player. While hurt (< 70 %) an enemy that has not noticed
     // the player yet is left alone: rest first. (Mission 2: leashing Joan to the Bastard lost on citizens in
     // 6/6 seeds; roaming with the citizen-killer priority below kept 4-13 of 18 alive.)
-    const bool fresh = hp_pct >= 70;
+    const bool fresh = hp_pct >= rest_pct;
     const Unit* foe = nullptr;
     const Unit* lurker = nullptr;  // nearest unaware enemy within 600
-    // Reachable: not given up on (a foe the path mesh did not bring the player to, or one chased too long). A component test
-    // (same nav level, other path-mesh component) dropped every mission 2 attacker (kills 0, the Bastard lost); the hunt
-    // below ranks by regions instead.
+    // Reachable: not given up on (a foe the path mesh did not bring the player to, or one chased too long), or after the
+    // player within 150 on her level (mission 4: Talbot, given up on up his hill, came down and beat Joan while the bot
+    // walked to his marker and rested beside him). A component test (same nav level, other path-mesh component) dropped
+    // every mission 2 attacker (kills 0, the Bastard lost); the hunt below ranks by regions instead.
     const bool bow = p.inv.ranged.item && p.inv.ammo.item && p.inv.ammo.quantity > 0;
     const int here = region(p.pos);
-    const auto reachable = [&](const Unit& u) { return !unreached(u); };
+    const auto reachable = [&](const Unit& u) {
+        return !unreached(u) || (u.target == p.id && d2(p.pos, u.pos) < 150 && std::fabs(u.pos.z - p.pos.z) < 150);
+    };
     // A kept target more than 250 off (a wall archer the bow duels) is dropped while someone within 120 is after the player:
     // mission 6 stood shooting a tower archer while eight melee units beat Joan to death.
     const bool pressed = std::any_of(w.units().begin(), w.units().end(), [&](const Unit& u) {
@@ -954,7 +964,7 @@ InputFrame Autopilot::decide() {
     const bool follows = ally && m_.ai().curr_task(*ally) == task::FOLLOW_UNIT && m_.ai().curr_task_para(*ally, 1) == p.id;
     if (!fresh && p.retreat != -1) {
         goal = "rest hp " + std::to_string(hp_pct) + "%";
-        if (food > 10 && tick_ - last_heal_ > 30) f.press(IN_HEAL_ITEM), last_heal_ = tick_;
+        if (food > rest_food && tick_ - last_heal_ > 30) f.press(IN_HEAL_ITEM), last_heal_ = tick_;
         if (follows && d2(p.pos, ally->pos) > 250) steer(f, p, ally->pos, false);
         return f;
     }
@@ -1155,26 +1165,38 @@ bool Autopilot::loot(InputFrame& f, const Unit& p, float radius) {
     int best_key = 0;
     float best_d = radius;
     bool box = false;
+    // Floor items only when the pickup would take them (Unit_auto_pickup 0x49da30): gold, MISSION items, red food that
+    // fits the HP missing, else what the bag has room for (World::give_item 0x495f40, tried on a copy). With a full bag
+    // the bot walked over items it could not take (S5L1: 45000 ticks beside dropped apples).
+    const auto takes = [&](int item, int level, int quantity) {
+        const ItemDef& d = gd.items[std::size_t(item)];
+        if (d.item_class == "GOLD" || d.item_class == "MISSION" || (d.type == 0x15 && d.damage < w.max_hp(p) - p.hp)) return true;
+        Unit u = p;
+        return w.give_item(u, d.code, level, quantity) > 0;
+    };
     // `far`: a MISSION item (mission 1's Imperial Scroll, dropped by the messenger when he falls: "You must retrieve
     // the letter from the stricken French archer") is fetched from anywhere, before anything else lying around.
-    auto consider = [&](int key, Vec3 pos, bool is_box, bool far = false) {
+    // `item` 0: a box.
+    auto consider = [&](int key, Vec3 pos, int item, int level, int quantity, bool far = false) {
+        const bool is_box = item == 0;
         if ((!far && std::fabs(pos.z - p.pos.z) > (is_box ? 60.0f : 150.0f)) || skip_.count(key)) return;
         const float d = far ? 0.0f : d2(p.pos, pos);
         if (d >= best_d) return;
         for (const Unit& u : w.units())  // left alone while an enemy stands next to it
             if (alive(w, u) && u.m.active && w.hostile_to_player(u) && !u.no_react && d2(u.pos, pos) < 500) return;
+        if (!is_box && !takes(item, level, quantity)) return;
         best_d = d, best_pos = pos, best_key = key, box = is_box;
     };
     for (int r = 1; r <= o.size(); ++r) {
         const MapItem* it = o.item(r);
         if (!it) continue;
-        if (it->cls == 10 && it->stage > 0 && it->content) consider(-r, it->pos, true);  // BOX with something inside
+        if (it->cls == 10 && it->stage > 0 && it->content) consider(-r, it->pos, 0, 0, 0);  // BOX with something inside
         else if (it->on_floor && it->res > 0 && it->res < int(gd.items.size()) && gd.items[std::size_t(it->res)].pickable)
-            consider(-r, it->pos, false);
+            consider(-r, it->pos, it->res, it->level, it->quantity);
     }
     for (const WorldItem& it : w.items())
         if (!it.deleted && it.item > 0 && it.item < int(gd.items.size()) && gd.items[std::size_t(it.item)].pickable)
-            consider(it.id, it.pos, false, gd.items[std::size_t(it.item)].item_class == "MISSION");
+            consider(it.id, it.pos, it.item, it.level, it.quantity, gd.items[std::size_t(it.item)].item_class == "MISSION");
     if (!best_key) return false;
     // 30 s spent on a target in all (not reached / not taken): given up. Counted per target: two or three boxes out of
     // reach that take turns as the nearest (S7L1: barrels behind St-Pierre's inner fence) never reset each other's time.

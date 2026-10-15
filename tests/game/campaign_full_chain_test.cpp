@@ -82,10 +82,13 @@ int main() {
             Unit* u = find_class(m.world(), cls[h]);
             if (!rec || !u) continue;
             seen += std::string(" ") + h;
-            Unit now = *u;  // items the mission scripts hand out on top (S4L1 gives Joan arrows) are allowed
+            // Items the mission scripts hand out on top are allowed: new bag items, and ammo in a slot the stored hero
+            // left empty (S4L1 gives Joan 30 ARROW_EXPLOSIVE; Unit_add_item 0x495f40 puts them on her empty ammo slot).
+            Unit now = *u;
             std::erase_if(now.inv.bag, [&](const ItemInstance& it) {
                 return std::none_of(rec->unit.inv.bag.begin(), rec->unit.inv.bag.end(), [&](const ItemInstance& r) { return r.item == it.item; });
             });
+            if (!rec->unit.inv.ammo.item) now.inv.ammo = {};
             if (carried(now) != carried(rec->unit))
                 std::printf("FAIL %s %s not carried: level %d/%d xp %d/%d str %d/%d pts %d,%d/%d,%d\n  now  %s\n  rec  %s\n",
                             m.info().stem().c_str(), h, u->level, rec->unit.level, u->xp, rec->unit.xp, u->str, rec->unit.str,

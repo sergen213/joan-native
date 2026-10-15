@@ -319,19 +319,53 @@ bool AiSystem::rts_assign(std::span<const int> sel, int target, bool confirmed, 
     if (!T) return false;
     const auto& tt = w_.data().units[std::size_t(T->cls)];
     if (T->m.can_attach && !tt.attach_points.empty()) {  // A: siege crew -> LARGE_WEAPON_PUSH
-        bool any = false;
+        // Only these three classes (captains and other LIGHT_INFANTRY codes are not crew); leaders are not skipped.
+        auto crewman = [&](const Unit& u) {
+            const std::string& c = w_.data().units[std::size_t(u.cls)].code;
+            return !w_.dead(u) && (c == "ENGLISH_LIGHT_INFANTRY" || c == "FRENCH_LIGHT_INFANTRY" || c == "MER_LIGHT_INFANTRY");
+        };
+        auto& crew = T->m.crew;
+        auto& res = T->m.reserved;
+        const std::size_t n = std::min(crew.size(), res.size());
+        int empty = 0, reserved = 0, assigned = 0;  // counted once, before the loop
+        for (std::size_t k = 0; k < n; ++k) empty += !w_.unit(crew[k]), reserved += w_.unit(res[k]) != nullptr;
+        const int now = w_.now();
         for (int id : sel) {
             Unit* u = w_.unit(id);
-            if (!u || w_.dead(*u) || is_leader(*u)) continue;
-            const std::string& code = w_.data().units[std::size_t(u->cls)].code;
-            if (code.find("LIGHT_INFANTRY") == std::string::npos) continue;
+            if (!u || !crewman(*u)) continue;
+            if (empty - reserved <= assigned) {
+                // No unreserved free point left: take one from a reserver that is not a selected crewman and did not
+                // think this tick (the men assigned by this call reserved theirs in set_task's immediate think).
+                bool freed = false;
+                for (std::size_t k = 0; k < n && !freed; ++k) {
+                    Unit* r = w_.unit(res[k]);
+                    if (!r || now <= r->think_ts || (crewman(*r) && std::find(sel.begin(), sel.end(), r->id) != sel.end())) continue;
+                    clear_task(*r);
+                    stop_all_order(*r);
+                    res[k] = crew[k] = 0;
+                    r->m.slot = r->m.vehicle = 0;
+                    freed = true;
+                }
+                if (!freed) break;
+            }
             const bool mfull = all_attached(*T, 'M') == 1;
             if (mfull && all_attached(*T, 'F') == 1) break;
+            if (u->m.vehicle && u->m.slot) {  // manning another weapon (slot 0 is not checked, as the original)
+                if (Unit* v = w_.unit(u->m.vehicle)) {
+                    const auto s = std::size_t(u->m.slot);
+                    if (s < v->m.crew.size()) v->m.crew[s] = 0;
+                    if (s < v->m.reserved.size()) v->m.reserved[s] = 0;
+                    w_.stop(*v);
+                }
+                u->m.vehicle = u->m.slot = 0;
+                st(*u).push_slot = -1;
+                u->special = 0;
+            }
             leave_team(*u);
             set_task(*u, {task::LARGE_WEAPON_PUSH, rts_reset(*this, *u), target, mfull ? 1 : 0, 0, 0, 0});
-            any = true;
+            ++assigned;
         }
-        return any;
+        return assigned != 0;
     }
     std::vector<Unit*> cand;
     bool officer = false;

@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
 
 #include "formats/vfs_fs.hpp"
 #include "game/autopilot_player.hpp"
+#include "game/mission_ui.hpp"
 
 namespace joa::game {
 
@@ -76,7 +78,7 @@ struct PlanS5L1 final : MissionPlan {
     bool use_waypoint(Autopilot& ap, int slot, Vec3) override {
         World& w = ap.mission().world();
         if (const Unit* p = w.unit(w.player_id()); p && bailey(ap.mission(), p->pos)) entered = true;
-        return slot != 1 || !entered;
+        return (slot != 1 || !entered) && !in_town(ap);
     }
 
     // Hurt (< 70 %) the generic bot stands to regenerate, also under the arrows of tower and wall archers it cannot reach
@@ -113,15 +115,141 @@ struct PlanS5L1 final : MissionPlan {
         return n;
     }
 
-    // Out of food below 30 % the generic bot retreats to the nearest French general: Dunois, back at his camp 15000 off.
-    // Normal's Joan ate the ~31 food she starts with by t70000 and was killed on that walk, twice. (Orleans' potion seller
-    // is no help: the walk to him stopped at the shut Orleans East Gate.) She falls back to the siege camp before the west
-    // walls instead and rests there to 60 %, defending only against a foe on her.
+    // A bag cell for one more loaf (food takes a cell each, MaxQuantity 1; pickups fill the personal grid, then the
+    // troop grid: World::give_item / 0x495f40), or eaten at once on pickup (red food that fits the HP missing).
+    static bool takes(Mission& m, const Unit& p, int item) {
+        const ItemDef& d = m.data().items[std::size_t(item)];
+        if (d.type == 0x15 && d.damage < m.world().max_hp(p) - p.hp) return true;
+        Inventory b = p.inv;
+        b.layout(m.data());
+        ItemInstance it{item, 1, d.min_level};
+        return b.place(m.data(), it, 1) || b.place(m.data(), it, 2);
+    }
+
+    // Food boxes (crates and barrels holding bread, fish, chicken or meat, the last two a full heal): 18 in Orleans
+    // behind the East Gate at the start, 10 in the castle baileys, more along the way. The generic loot only breaks one
+    // within 1200 with no fight left; Normal's Joan ate her ~23 food by t70000 and was killed resting or retreating
+    // (the generic retreat walks 15000 to Dunois' camp). With no foe near and bag room (else they wait there), she
+    // fetches any within 3000 (8000 with fewer than 10 left) and walks over the food dropped; 40 s on one gives it up.
+    int forage_target = 0;
+    std::map<int, int> forage_spent;
+    bool forage(Autopilot& ap, InputFrame& f, Unit& p) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        MapObjects& o = m.objects();
+        const auto heal = [&](int res) {
+            return res > 0 && res < int(m.data().items.size()) && (m.data().items[std::size_t(res)].type == 0x15 || m.data().items[std::size_t(res)].type == 0x19);
+        };
+        const auto foe_near = [&](Vec3 q, float r) {
+            for (const Unit& u : w.units())
+                if (!u.deleted && !w.dead(u) && u.m.active && w.hostile_to_player(u) && !u.no_react && dist(u.pos, q) < r && std::fabs(u.pos.z - q.z) < 300)
+                    return true;
+            return false;
+        };
+        if (foe_near(p.pos, 700)) return false;
+        const float radius = food(m, p) < 10 ? 8000.0f : 3000.0f;
+        const MapItem* best = nullptr;
+        float bd = radius;
+        for (int r = 1; r <= o.size(); ++r) {
+            const MapItem* it = o.item(r);
+            if (!it || forage_spent[r] > 1200 || !((it->cls == 10 && it->stage > 0 && heal(it->content)) || (it->on_floor && heal(it->res))) ||
+                !takes(m, p, it->on_floor ? it->res : it->content))
+                continue;
+            if (const float d = dist(p.pos, it->pos); d < bd && !foe_near(it->pos, 500)) bd = d, best = it, forage_target = r;
+        }
+        if (!best) return false;
+        ++forage_spent[forage_target];
+        ap.goal = std::string("plan: food ") + (best->on_floor ? "pick up" : "box") + " #" + std::to_string(forage_target);
+        if (!best->on_floor && bd < 75 && std::fabs(best->pos.z - p.pos.z) < 60) {
+            const float a = w.rel_angle(p, best->pos);
+            f.mouse_dx = a / 0.18f;
+            if (std::fabs(a) < 20 && ap.tick() % 20 == 0) f.press(IN_ATTACK_A);
+        } else if (!go(ap, f, p, best->pos)) {
+            return false;
+        }
+        return true;
+    }
+
+    // ap.travel; false where the generic bot must take this tick (handoff): at a shut gate on the way (the Orleans gates)
+    // its interact opens it and closes it behind her, which a plan's decision hook skips. No second travel that tick (its
+    // gate choice is what the interact checks).
+    bool handoff = false;
+    bool go(Autopilot& ap, InputFrame& f, const Unit& p, Vec3 to) {
+        ap.travel(f, p, to);
+        if (!ap.goal.ends_with(" via gate") && !ap.goal.ends_with(" (close gate behind)")) return true;
+        MapObjects& o = ap.mission().objects();
+        for (int r = 1; r <= o.size(); ++r)
+            if (const MapItem* g = o.item(r); g && g->cls == 1 && dist(g->pos, p.pos) < 200) return handoff = true, false;
+        return true;
+    }
+
+    // Orleans at the start (behind its East Gate, which the generic walk to Dunois never opened): the potion seller's
+    // food and the weapon seller's arrows (Joan carries a bow and no arrow; the explosive ones break up the garrison's
+    // groups), then out by the East Gate. Joan has ~26000 gold and nothing else to spend it on before Jargeau's shops
+    // open at the capture; 5000 are kept (S9L1's spy wants 3000). The way points wait meanwhile; the talk (and the
+    // gates) are the generic interact, which comes before before_hunt. 100 s of walking to a seller gives him up.
+    static constexpr Vec3 kOrleansOut{20233, 30195, 0};
+    static bool in_orleans(Vec3 q) { return q.x > 16800 && q.x < 26000 && q.y > 30990 && q.y < 39800; }
+    static constexpr std::pair<const char*, const char*> kShops[] = {{"OrleanPotionShop", "Vilain Bouclier"}, {"OrleanWeaponShop", "Achard Gueinier"}};
+    int errand = 0, errand_spent = 0;  // kShops entry walked to, ticks spent on it
+    bool in_town(Autopilot& ap) const { return !entered && ap.mission().ticks() < 30000 && (errand < int(std::size(kShops)) || in_orleans(ap.mission().world().unit(ap.mission().world().player_id())->pos)); }
+    bool orleans(Autopilot& ap, InputFrame& f, Unit& p) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        ap.shop_explosive_max = 20, ap.shop_plain_max = 100, ap.shop_gold_keep = 5000;
+        ap.plan_talk = 0;
+        if (!in_town(ap)) return false;
+        for (; errand < int(std::size(kShops)); ++errand, errand_spent = 0) {
+            const Unit* s = nullptr;
+            for (const Unit& u : w.units())
+                if (!u.deleted && u.name == kShops[errand].second) s = &u;
+            if (!s || ++errand_spent > 3000) continue;
+            ap.goal = std::string("plan: shop ") + kShops[errand].first;
+            ap.plan_talk = s->id;
+            ap.travel(f, p, s->pos);
+            return true;
+        }
+        ap.goal = "plan: leave Orleans";
+        ap.travel(f, p, kOrleansOut);
+        return true;
+    }
+    void shop(Autopilot& ap, Unit& p) override {
+        Mission& m = ap.mission();
+        const Facility* fac = m.places().facility(m.ui().buy_shop);
+        if (!fac) return;
+        if (errand < int(std::size(kShops)) && fac->name == kShops[errand].first) ++errand, errand_spent = 0;
+        if (food_ms == m.ui().interface_ms) return;
+        food_ms = m.ui().interface_ms;
+        int& gold = m.state().gold;
+        std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
+        const auto heal = [&](const ShopStock& s) { const ItemDef& d = m.data().items[std::size_t(s.item)]; return d.type == 0x15 || d.type == 0x19 ? d.damage : 0; };
+        if (std::none_of(stock.begin(), stock.end(), heal)) return;
+        // Bag room first (one cell a loaf; the shop fills the personal grid only): the apples (blue EP food) beyond 5 and
+        // the spare melee weapons carried go on the floor (the inventory window's drop, World::discard_item).
+        for (int i = int(p.inv.bag.size()), apples = 0; i-- > 0;)
+            if (const ItemDef& d = m.data().items[std::size_t(p.inv.bag[std::size_t(i)].item)]; (d.type == 0x17 && ++apples > 5) || d.type == 9)
+                if (m.world().discard_item(p, 10, i, p)) ap.log.push_back(std::to_string(m.ticks()) + " drop " + d.code);
+        std::stable_sort(stock.begin(), stock.end(), [&](const ShopStock& a, const ShopStock& b) { return heal(a) > heal(b); });
+        for (const ShopStock& s : stock) {  // heal food, the best first, as many as the shop lists and the bag takes
+            const ItemDef& d = m.data().items[std::size_t(s.item)];
+            for (int n = 0; heal(s) && n < s.quantity && gold - d.price >= ap.shop_gold_keep &&
+                            m.world().buy_item(p, s.item, s.level, std::max(1, d.quantity));
+                 ++n)
+                gold -= d.price, ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
+        }
+    }
+    std::uint32_t food_ms = ~0u;
+
+    // Out of food below 30 % she falls back to the siege camp before the west walls and rests there to 60 %, defending
+    // only against a foe on her.
     static constexpr Vec3 kCamp{3200, 12600, 195};
     bool resting = false;
     bool first(Autopilot& ap, InputFrame& f, Unit& p) override {
         Mission& m = ap.mission();
         World& w = m.world();
+        handoff = false;
+        if (forage(ap, f, p)) return true;
+        if (handoff) return false;
         const int pct = p.hp * 100 / std::max(1, w.max_hp(p)), eat = food(m, p);
         resting = entered && !eat && (pct < 30 || (resting && pct < 60));
         if (!resting) return false;
@@ -207,13 +335,45 @@ struct PlanS5L1 final : MissionPlan {
         if (const int g = m.objects().find_by_name("JargeauMiddleGate"); !item && m.objects().item(g) && m.objects().item(g)->hp > 0 &&
                                                                          std::any_of(foes.begin(), foes.end(), [&](const Unit* u) { return bailey(m, u->pos) == 2; }))
             item = g;
+        // Fewer than 3 cannons within 8000 of the target manned or with a crew walking to them (the tower and wall archers
+        // shoot the crews: the West Left tower stood at 40 / 200, later 128 / 200, for the rest of the run once every crew
+        // was dead and the light infantry with them; the Bastard's cannons a map north keep their crews pushing in
+        // unloaded levels): the nearest French light infantry are assigned to the idle one nearest the target, as the
+        // mission tells ("Assign units to siege machines in RTS mode": Rts_cmd_assign 0x44f750 takes light infantry only).
+        std::vector<int> crew;
+        int gun = 0;
+        if (item) {
+            const Vec3 at = m.objects().item(item)->pos;
+            const auto near_gun = [&](int id) {
+                const Unit* c = w.unit(id);
+                return c && !c->deleted && !w.dead(*c) && c->nation == p->nation && m.data().units[std::size_t(c->cls)].unit_class == 8 && dist(c->pos, at) < 8000;
+            };
+            std::set<int> manned;  // cannons
+            for (const Unit& u : w.units()) {
+                if (m.ai().curr_task(u) == task::LARGE_WEAPON_PUSH && !u.m.vehicle && !w.dead(u) && near_gun(m.ai().curr_task_para(u, 1)))
+                    manned.insert(m.ai().curr_task_para(u, 1));
+                if (near_gun(u.id) && m.ai().rts_selectable(u)) manned.insert(u.id);
+            }
+            const Unit* idle = nullptr;
+            for (const Unit& u : w.units())
+                if (near_gun(u.id) && !manned.count(u.id) && (!idle || dist(u.pos, at) < dist(idle->pos, at))) idle = &u;
+            if (manned.size() < 3 && idle) {
+                for (const Unit& u : w.units())  // in a loaded level (the ones left in Orleans never move)
+                    if (!u.deleted && !w.dead(u) && u.m.active && u.nation == p->nation && m.data().units[std::size_t(u.cls)].code == "FRENCH_LIGHT_INFANTRY" &&
+                        m.ai().rts_selectable(u) && !u.no_react)  // task-locked (Louis Barbier's) take no order
+                        crew.push_back(u.id);
+                std::sort(crew.begin(), crew.end(), [&](int a, int b) { return dist(w.unit(a)->pos, idle->pos) < dist(w.unit(b)->pos, idle->pos); });
+                if (crew.size() > m.data().units[std::size_t(idle->cls)].attach_points.size()) crew.resize(m.data().units[std::size_t(idle->cls)].attach_points.size());
+                gun = idle->id;
+            }
+        }
         std::vector<int> guns;
         std::map<int, std::vector<int>> troops;  // castle foe -> troops sent at it
         for (const Unit& u : w.units()) {
             const UnitClass& c = m.data().units[std::size_t(u.cls)];
             if (u.deleted || w.dead(u) || u.id == p->id || u.nation != p->nation || c.hero || formats::iequals(c.code, "DUNOIS") ||
                 formats::iequals(c.code, "DLLLIER") || c.unit_class == 0 || c.unit_class == 9 ||
-                !m.ai().rts_selectable(u))
+                !m.ai().rts_selectable(u) || std::find(crew.begin(), crew.end(), u.id) != crew.end())
                 continue;
             if (c.unit_class == 8) {
                 if (item && !(m.ai().curr_task(u) == task::RTS_ATTACK_ITEM && m.ai().curr_task_para(u, 1) == item)) guns.push_back(u.id);
@@ -239,7 +399,6 @@ struct PlanS5L1 final : MissionPlan {
             for (std::size_t i = 0; i < near.size() && i < 4; ++i)
                 if (walk(m, u, near[i]->pos, 20000) < 1e5f) {
                     troops[near[i]->id].push_back(u.id), sent[u.id] = near[i]->id, sent_at[u.id] = {0, u.pos};
-                    if (ap.trace) std::printf("[plan %d] #%d %s (%.0f,%.0f,%.0f) task %d -> #%d (%.0f,%.0f,%.0f)\n", ap.tick(), u.id, c.code.c_str(), u.pos.x, u.pos.y, u.pos.z, tk, near[i]->id, near[i]->pos.x, near[i]->pos.y, near[i]->pos.z);
                     break;
                 }
         }
@@ -248,11 +407,13 @@ struct PlanS5L1 final : MissionPlan {
             std::sort(guns.begin(), guns.end(), [&](int a, int b) { return dist(w.unit(a)->pos, at) < dist(w.unit(b)->pos, at); });
             if (guns.size() > 3) guns.resize(3);
         }
-        if (guns.empty() && troops.empty()) return;
+        if (guns.empty() && troops.empty() && crew.empty()) return;
         rts(m, *p, [&](AiSystem& ai) {
+            if (!crew.empty()) ai.rts_assign(crew, gun, true);
             if (!guns.empty()) ai.rts_attack_item(guns, item);
             for (const auto& [t, ids] : troops) ai.rts_move(ids, w.unit(t)->pos, true);
         });
+        if (!crew.empty()) ap.log.push_back(std::to_string(m.ticks()) + " plan: " + std::to_string(crew.size()) + " crew to cannon #" + std::to_string(gun));
         std::size_t n = 0;
         for (const auto& [t, ids] : troops) n += ids.size();
         ap.log.push_back(std::to_string(m.ticks()) + " plan: " + std::to_string(guns.size()) + " cannons at " +
@@ -266,6 +427,7 @@ struct PlanS5L1 final : MissionPlan {
         Mission& m = ap.mission();
         World& w = m.world();
         const auto& end = m.state().end;
+        if (orleans(ap, f, p)) return true;
         if (end.empty() || end[0].finish == 1) return false;
         const Unit* t = w.unit(target);
         if (!t || !castle_foe(m, *t) || tower_of(m, *t) || ap.tick() - since > 5400) {

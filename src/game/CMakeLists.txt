@@ -44,8 +44,28 @@ if(TARGET game_campaign_legit_test)
   foreach(n RANGE 1 8)
     add_test(NAME game.campaign_legit_mission_${n} COMMAND game_campaign_legit_test ${n})
     set_tests_properties(game.campaign_legit_mission_${n} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
-                         TIMEOUT 300 FIXTURES_REQUIRED campaign_checkpoints)
+                         TIMEOUT 600 FIXTURES_REQUIRED campaign_checkpoints)  # mission 4: up to 9 lost attempts
   endforeach()
   # game.campaign_S5L1_bot starts from the chain's mission-4 checkpoint: ctest -R S5L1_bot -FS campaign_checkpoints.
   set_tests_properties(game.campaign_S5L1_bot PROPERTIES FIXTURES_REQUIRED campaign_checkpoints)
+  # game.campaign_S6L1_bot likewise (ctest -R S6L1_bot -FS campaign_checkpoints).
+  set_tests_properties(game.campaign_S6L1_bot PROPERTIES FIXTURES_REQUIRED campaign_checkpoints)
+  # game.campaign_S7L1_bot starts at La Charité's gates: game.campaign_S7L1_charite plays mission 7 there from the chain's
+  # mission-4 checkpoint and saves campaign_checkpoints/bot-S7L1-charite.jsav. Iterate: ctest -R S7L1_bot -FS 'campaign_.*'.
+  add_test(NAME game.campaign_S7L1_charite COMMAND game_campaign_S7L1_bot_test --charite campaign_checkpoints/bot-S7L1-charite.jsav)
+  set_tests_properties(game.campaign_S7L1_charite PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
+                       TIMEOUT 1500 FIXTURES_REQUIRED campaign_checkpoints FIXTURES_SETUP campaign_S7L1_charite)
+  set_tests_properties(game.campaign_S7L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED campaign_S7L1_charite)
+endif()
+
+# game.campaign_S9L1_bot starts from the best legit mission-6 start found at configure time: the bot's own S5L1 win +
+# CONTINUE (scratch hand-offs, Normal before Easy); without one the test forces missions 1-5 itself.
+if(TARGET game_campaign_S9L1_bot_test)
+  foreach(s work/MissionBot5d/bot-S9L1.jsav work/MissionBot5b/bot-S9L1-easy.jsav)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${s}")
+      set_tests_properties(game.campaign_S9L1_bot PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR};JOA_S9L1_START=${CMAKE_SOURCE_DIR}/${s}")
+      break()
+    endif()
+  endforeach()
+  set_tests_properties(game.campaign_S9L1_bot PROPERTIES TIMEOUT 600)
 endif()

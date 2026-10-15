@@ -4,8 +4,10 @@
 // liberated once Joan stands in it with no enemy left there (number_of_enemy_in_place; Meung / Beaugency count fightable
 // enemies only); Meung, Loches and Montargis only once Jargeau is held, Janville, Patay and Tours once Beaugency is.
 // The plan walks the bot to the nearest open place, hunts what stands in it, then stands inside.
+#include <algorithm>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <set>
 
 #include "game/autopilot_player.hpp"
@@ -32,9 +34,19 @@ constexpr Cap kCaps[] = {
 
 class PlanS9L1 final : public MissionPlan {
 public:
-    bool first(Autopilot& ap, InputFrame&, Unit& p) override { return army(ap, p), pick(ap, p), false; }
+    bool first(Autopilot& ap, InputFrame&, Unit& p) override {
+        ap.plan_talk = 0;  // set again by supplies() each tick it leads to a seller
+        // Buy screen: explosive arrows for the towns' bombards (siege weapons take only stone / explosive hits: unit.res
+        // TriggerType 0x6040), plain ones for the archers on walls and towers no path reaches, the spy's 3000 kept.
+        ap.shop_explosive_max = kExplosive, ap.shop_plain_max = kPlain, ap.shop_gold_keep = kSpyGold;
+        ap.explosive_reserve = kExplosiveKeep;
+        const Unit* b = bastard(ap.mission());
+        guard_ = b && ap.mission().ai().rts_selectable(*b) ? std::optional<Vec3>(b->pos) : std::nullopt;
+        return army(ap, p), pick(ap, p), false;
+    }
+    std::optional<Vec3> guard_;  // the Bastard once he is the player's (his attackers are fought first)
 
-    void shop(Autopilot& ap, Unit& p) override { buy_food(ap, p); }
+    void shop(Autopilot& ap, Unit& p) override { buy_food(ap, p), buy_sword(ap, p); }
 
     void after_tick(Autopilot& ap) override {
         if (!ap.trace || ap.tick() % ap.trace) return;
@@ -46,36 +58,66 @@ public:
                     m.state().gold, food(m.world(), *m.world().unit(m.world().player_id())));
     }
 
-    // Only the spy's house (8, Selles-en-Berry) and the final camp (9) lead; 4 / 5 mark Meung / Beaugency behind shut English
-    // gates all mission (the places below lead there), the others are side errands (Dunois, d'Illiers, the child, Chateauneut).
-    bool use_waypoint(Autopilot&, int slot, Vec3) override { return slot == 8 || slot == 9; }
+    // Only the final camp (9, Janville: the bosses beaten at Beaugency regroup there) leads; 4 / 5 mark Meung / Beaugency
+    // behind shut English gates all mission (the places below lead there), 8 the spy's house at Selles-en-Berry past
+    // Beaugency (Meung falls to the Bastard's cannons instead), the others are side errands (Dunois, d'Illiers, the child,
+    // Chateauneut).
+    bool use_waypoint(Autopilot&, int slot, Vec3) override { return slot == 9; }
 
-    float foe_weight(Autopilot& ap, const Unit&, const Unit& u) override {
+    float foe_weight(Autopilot& ap, const Unit& p, const Unit& u) override {
         Mission& m = ap.mission();
         const auto& c = m.data().units[std::size_t(u.cls)];
         if (c.special == 2) return 0;  // horses
         if (spy_walking(m) && in_box(m, "attackMeung", u.pos)) return 0;  // the spy only gets in with no French there
         const bool in = target_ && in_place(m, target_, u);
-        if (c.unit_class == 8) return in && !cap(target_).fightable ? 0.5f : 0.0f;  // siege weapons hold a town too
+        if (c.unit_class == 8) return 0;  // siege weapons: shot with explosive arrows (before_hunt), a sword does nothing
+        if (!walkable(ap, p, u)) return 0;  // tower tops: shot from a perch (before_hunt), not from wherever the fight is
+        if (guard_ && d2(u.pos, *guard_) < 1500) return 0.1f;  // the Bastard's attackers first
+        // Bosses (objectives 32 / 16 / 24 / 25) first when near: weighted from afar, Talbot 15000 off at Janville pulled
+        // Joan out of Meung's fight (the generic pick scales the distance by the weight).
+        for (const char* boss : {"LORD_TALBOT", "WILLIAM_GLASDALE", "JOHN_FASTOLF", "LORD_SCALES"})
+            if (c.code == boss && u.retreat != -1 && d2(p.pos, u.pos) < 1500) return 0.05f;
         return in ? 0.3f : 1.0f;
     }
 
     bool before_hunt(Autopilot& ap, InputFrame& f, Unit& p) override {
         Mission& m = ap.mission();
         World& w = m.world();
+        if (supplies(ap, f, p)) return true;
         pick(ap, p);
         const Place* pl = m.places().place(target_);
-        if (!pl) return false;
+        if (!pl) return meung(ap, f, p) || reinforce(ap, f, p);
         // An enemy still holding the place: hunt the nearest the bot can get at; the generic fight takes over in reach.
+        // Siege weapons and the foes no path reaches (archers on walls and towers) are shot (shoot_foe).
         const Unit* foe = nullptr;
+        const Unit* mark = nullptr;
         int left = 0;
-        for (const Unit& u : w.units())
-            if (counts(m, cap(target_), u) && (++left, !ap.unreached(u)) && (!foe || d2(p.pos, u.pos) < d2(p.pos, foe->pos))) foe = &u;
+        for (const Unit& u : w.units()) {
+            if (!counts(m, cap(target_), u)) continue;
+            ++left;
+            const bool siege = m.data().units[std::size_t(u.cls)].unit_class == 8;
+            if (!siege && !ap.unreached(u) && walkable(ap, p, u)) {
+                if (!foe || d2(p.pos, u.pos) < d2(p.pos, foe->pos)) foe = &u;
+            } else if (ap.tick() >= shot_skip_[u.id] && ap.arrows(p, siege) > 0 && (!mark || mark->id != shot_id_) &&
+                       (!mark || u.id == shot_id_ || d2(p.pos, u.pos) < d2(p.pos, mark->pos))) {
+                mark = &u;  // the one being shot at kept (walking to the nearest's perch made another the nearest)
+            }
+        }
         if (foe) {
+            // Headway: one foe fewer, or 200 closer to the nearest (the clock runs only while the hunt leads: fights and
+            // errands in between restart it). Without it for 60 s (behind a wall the path mesh crosses) that foe is left to
+            // the bow (Autopilot::give_up); for 3 min, the place is left (foes in turn out of reach).
+            const float d = d2(p.pos, foe->pos);
+            if (target_ != hunt_place_ || ap.tick() - hunt_seen_ > 300 || left < hunt_left_ || d < hunt_best_ - 200)
+                hunt_place_ = target_, hunt_left_ = left, hunt_best_ = d, hunt_tick_ = hunt_given_ = ap.tick();
+            hunt_seen_ = ap.tick();
+            if (ap.tick() - hunt_tick_ > 5400) return skip(ap, "no headway to its foes"), false;
+            if (ap.tick() - hunt_given_ > 1800) ap.give_up(foe->id), hunt_given_ = ap.tick();
             ap.goal = "capture " + pl->name + ": #" + std::to_string(foe->id) + " (" + std::to_string(left) + " left)";
             walk(ap, f, p, foe->pos);
             return true;
         }
+        if (mark) return shoot_foe(ap, f, p, *mark, left), true;
         if (left) return skip(ap, "unreached"), false;
         const Vec3 at = stand(ap, *pl);
         if (m.places().inside(target_, p.pos)) {
@@ -94,6 +136,29 @@ public:
 
 private:
     int target_ = 0, inside_since_ = -1, headway_ = 0, next_army_ = 0;
+    int hunt_place_ = 0, hunt_left_ = 0, hunt_tick_ = 0, hunt_given_ = 0, hunt_seen_ = -1000;  // hunt headway (before_hunt)
+    float hunt_best_ = 0;
+    // A foe the player can walk to: not on a nav island of a few polys no seam or ladder links to her region (Meung's tower
+    // tops: 2-poly islands at z 521, no ladder item or .pfd link, as Auxerre's), which only the bow reaches. The region
+    // test alone misjudged Blois' hilltop (another component, yet find_path leads up).
+    bool walkable(Autopilot& ap, const Unit& p, const Unit& u) {
+        if (std::fabs(u.pos.z - p.pos.z) < 150) return true;  // the ground beyond a shut gate: travel() opens it
+        const int b = ap.unit_region(u);
+        auto [it, fresh] = island_.try_emplace(b, false);
+        if (fresh)
+            if (const NavWorld* nav = ap.mission().nav(); nav && b >= 0) {
+                const NavLevel& l = nav->levels()[std::size_t(b / 100000)];
+                int n = 0;
+                for (const NavPoly& q : l.mesh.polys()) n += q.component == b % 100000;
+                it->second = n <= 4;
+            }
+        if (!it->second) return true;
+        const int a = ap.unit_region(p);
+        Vec3 end;
+        bool up;
+        return ap.linked(a, b) || ap.ladder_to(a, b, end, up);
+    }
+    std::map<int, bool> island_;  // region -> a nav island of 4 polys or fewer
 
     // Walk to g. The engine plans a goal on another level over the coarse world mesh (from Orleans straight over the
     // Loire) and travel() only detours a path that ends short: without headway for 20 s, by the level-seam route
@@ -114,6 +179,259 @@ private:
     int walk_headway_ = 0;
     bool walk_via_ = false;  // walking to the detour crossing via_
 
+    // Meung's gates (English; north 1500, south 3000 HP) take only La Hire's melee, explosives (~5 per arrow for Joan) and
+    // siege shots. The Bastard's four cannons are the player's to command via RTS once Joan meets him in meetOrlean (the
+    // cut scene sets event bit_3 11 and clears their control flags): with no other place open, Joan walks there, then
+    // sends every crewed cannon at the north gate (Rts_cmd_attack_item 0x44f1f0; re-given every 20 s, a weapon under fire
+    // drops it) and stands by them. pick() opens Meung once the gate is down.
+    bool meung(Autopilot& ap, InputFrame& f, Unit& p) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        Places& ps = m.places();
+        const Place* mp = ps.place(ps.place_by_name("Castle_Meung"));
+        const Place* jp = ps.place(ps.place_by_name("Castle_Jargeau"));
+        const int gate = m.objects().find_by_name("MeungNorthGate");
+        if (!mp || mp->captured || !jp || !jp->captured || gate_down(m, "MeungNorthGate") || gate_down(m, "MeungSouthGate")) return false;
+        if (!((m.vm().state().bits[3] >> 10) & 1u)) {  // event bit_3 11: the Bastard met
+            if (supplies(ap, f, p, true)) return true;
+            const Place* meet = ps.place(ps.place_by_name("meetOrlean"));
+            if (!meet) return false;
+            ap.goal = "Meung: meet the Bastard";
+            walk(ap, f, p, {(meet->box_min.x + meet->box_max.x) / 2, (meet->box_min.y + meet->box_max.y) / 2, p.pos.z});
+            return true;
+        }
+        return guns(ap, f, p, gate, "the north gate");
+    }
+    // Every crewed cannon of the Bastard's at map item `item` (Rts_cmd_attack_item 0x44f1f0; re-given every 20 s, a weapon
+    // under fire drops it); Joan stays by the guns. A crew walks to its attach point only near the player: MOVE_TO_TARGET
+    // ends within REACH (x2 at LOD > 1, beyond 2000 of the player) while attaching needs REACH_DT (0x535020), so a crew 23
+    // off its point far from Joan never mans the cannon (rts_selectable needs every point manned). False: no cannon left.
+    bool guns(Autopilot& ap, InputFrame& f, Unit& p, int item, const char* what) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        std::vector<int> ids;
+        Vec3 at{};  // the cannon nearest the player (a centroid of guns on two levels lies on neither)
+        int all = 0;
+        for (const Unit& u : w.units())
+            if (!u.deleted && !w.dead(u) && u.nation == p.nation && m.data().units[std::size_t(u.cls)].unit_class == 8 && u.name.starts_with("fCannon")) {
+                if (!all++ || d2(p.pos, u.pos) < d2(p.pos, at)) at = u.pos;
+                if (m.ai().rts_selectable(u)) ids.push_back(u.id);
+            }
+        const MapItem* g = m.objects().item(item);
+        ap.goal = "Meung: " + std::to_string(ids.size()) + "/" + std::to_string(all) + " cannons at " + what + " (hp " + std::to_string(g ? g->hp : 0) + ")";
+        if (!all) return false;
+        if (ap.tick() >= gun_tick_ && !ids.empty()) {
+            gun_tick_ = ap.tick() + 600;
+            std::erase_if(ids, [&](int id) { return m.ai().curr_task(*w.unit(id)) == task::RTS_ATTACK_ITEM && m.ai().curr_task_para(*w.unit(id), 1) == item; });
+            if (!ids.empty()) rts(m, p, [&](AiSystem& a) { a.rts_attack_item(ids, item); });
+        }
+        if (d2(p.pos, at) > 400) walk(ap, f, p, at);
+        return true;
+    }
+    int gun_tick_ = 0;
+
+    // Beaugency: once Meung is taken a Frenchman in getReinforcement (by its north gate) brings Glasdale, Fastolf and
+    // Scales with their troops (scenario bit 1; they follow the player) and Richemont; Glasdale's cut scene raises the
+    // north gate. Each boss beaten once retreats to Janville (bit 19, event_2 bits 30 / 31: Beaugency's capture needs all
+    // three) and is beaten there again for objectives 16 / 24 / 25. With no place open, Joan walks into getReinforcement.
+    bool reinforce(Autopilot& ap, InputFrame& f, const Unit& p) {
+        Mission& m = ap.mission();
+        Places& ps = m.places();
+        const Place* mp = ps.place(ps.place_by_name("Castle_Meung"));
+        const Place* r = ps.place(ps.place_by_name("getReinforcement"));
+        if (!mp || !mp->captured || !r || (m.vm().state().bits[0] & 1u)) return false;
+        ap.goal = "Beaugency: to getReinforcement";
+        walk(ap, f, p, {(r->box_min.x + r->box_max.x) / 2, (r->box_min.y + r->box_max.y) / 2, p.pos.z});
+        return true;
+    }
+
+    // A siege weapon (explosive arrows) or a foe no path reaches (plain arrows) holding the place: from a perch (perch()),
+    // then the bow. A perch where 15 s of shots do no harm (the prediction is marginal: the shooter's pose moves the launch
+    // point) is dropped for the next; one with no perch left is left for 5 min.
+    void shoot_foe(Autopilot& ap, InputFrame& f, Unit& p, const Unit& u, int left) {
+        World& w = ap.mission().world();
+        const auto& c = w.data().units[std::size_t(u.cls)];
+        const bool siege = c.unit_class == 8;
+        shot_id_ = u.id;
+        const Vec3 aim{u.pos.x, u.pos.y, u.pos.z + float(c.height) * (siege ? 0.5f : 0.8f)};
+        Perch& pc = perch(ap, p, u, aim, siege);
+        if (pc.i >= pc.spots.size()) {
+            shot_skip_[u.id] = ap.tick() + 9000, shot_id_ = 0, perch_.erase(u.id);
+            if (ap.trace) std::printf("[plan %d] leave #%d %s (hp %d)\n", ap.tick(), u.id, c.code.c_str(), u.hp);
+            return;
+        }
+        const Vec3 at = pc.spots[pc.i];
+        ap.goal = "capture " + ap.mission().places().place(target_)->name + ": shoot #" + std::to_string(u.id) + " " + c.code + " (" +
+                  std::to_string(left) + " left) from " + std::to_string(int(at.x)) + "," + std::to_string(int(at.y));
+        if (d2(p.pos, at) > 60) {
+            if (pc.since < 0) pc.since = ap.tick();  // walking there: 60 s at most
+            if (ap.tick() - pc.since > 1800) ++pc.i, pc.since = -1;
+            pc.at = -1;
+            return walk(ap, f, p, at);
+        }
+        // Released only while the arrow's flight from here is clear: the archers pace their tower top.
+        const float face = std::atan2(u.pos.y - p.pos.y, u.pos.x - p.pos.x);
+        const Vec3 p0{p.pos.x + std::cos(face) * 48, p.pos.y + std::sin(face) * 48, p.pos.z + 72};  // as perch()
+        const bool clear = lob_margin(ap.mission(), siege, p0, aim) >= 0.05f;
+        if (pc.at < 0 || u.hp < pc.hp) pc.at = ap.tick(), pc.hp = u.hp, pc.since = -1;
+        if (!clear) {  // waiting for an opening (the 15 s run only while it is clear), 30 s at most
+            pc.at = std::min(ap.tick(), pc.at + 1);
+            if (pc.since < 0) pc.since = ap.tick();
+        } else {
+            pc.since = -1;
+        }
+        if (ap.tick() - pc.at > 450 || (pc.since >= 0 && ap.tick() - pc.since > 900)) {
+            if (ap.trace) std::printf("[plan %d] no harm to #%d from (%.0f,%.0f,%.0f)\n", ap.tick(), u.id, at.x, at.y, at.z);
+            ++pc.i, pc.at = pc.since = -1;
+            return;
+        }
+        ap.load_ammo(p, siege);
+        ap.shoot_at(f, p, aim, p.action == SHTIDLE && clear);
+    }
+    int shot_id_ = 0;
+    std::map<int, int> shot_skip_;  // foe -> tick it is shot at again
+
+    // Where to shoot u from: walkable points within 1600 whose locked arrow (lob_margin) beats the structures by 0.1 s, the
+    // nearest the player first. Meung's tower tops (2-poly nav islands at z 521, no ladder or .pfd link; the towers are
+    // WALLs only stone breaks in this scenario, Wall_take_ranged 0x492b10) have a parapet up to 664 with 570..650
+    // embrasures: the archers (80 tall) are hit through those or by lobs (800+ off) dropping in. Kept while u stays put.
+    struct Perch {
+        Vec3 from{};
+        std::vector<Vec3> spots;
+        std::size_t i = 0;
+        int at = -1, hp = 0, since = -1;  // tick reached / u's hp then; tick the walk there began
+    };
+    Perch& perch(Autopilot& ap, const Unit& p, const Unit& u, Vec3 aim, bool explosive) {
+        Perch& pc = perch_[u.id];
+        if (!pc.spots.empty() && d2(pc.from, u.pos) < 50 && std::fabs(pc.from.z - u.pos.z) < 50) return pc;
+        pc = Perch{u.pos};
+        Mission& m = ap.mission();
+        const NavWorld* nav = m.nav();
+        if (!nav) return pc;
+        const int here = ap.unit_region(p);
+        // The launch point (World::launch_point: the ammo's bone) in the draw pose, relative to the feet: 48 forward, 72 up
+        // (Joan, measured at release). ponytail: Joan's bow pose only; read the SHTIDLE bone if another archer leads.
+        const float fwd = 48, side = 0, up = 72;
+        std::vector<std::pair<float, Vec3>> cand;
+        for (float x = u.pos.x - 1600; x <= u.pos.x + 1600; x += 50)
+            for (float y = u.pos.y - 1600; y <= u.pos.y + 1600; y += 50) {
+                if (std::hypot(x - u.pos.x, y - u.pos.y) > 1600) continue;
+                for (const float z0 : {0.0f, 250.0f, 500.0f, 750.0f, 1000.0f}) {
+                    const int poly = nav->find_poly_xy(x, y, z0);
+                    if (poly < 0) continue;
+                    const Vec3 q{x, y, nav->poly_height(poly, x, y)};
+                    if (std::fabs(q.z - z0) > 125) continue;
+                    const float face = std::atan2(u.pos.y - q.y, u.pos.x - q.x), c = std::cos(face), s = std::sin(face);
+                    const Vec3 p0{q.x + c * fwd - s * side, q.y + s * fwd + c * side, q.z + up};
+                    if (lob_margin(m, explosive, p0, aim) >= 0.1f && ap.linked(here, ap.region(q))) cand.push_back({d2(q, p.pos), q});
+                }
+            }
+        std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& c : cand) pc.spots.push_back(c.second);
+        if (ap.trace) std::printf("[plan %d] %zu perches for #%d\n", ap.tick(), pc.spots.size(), u.id);
+        return pc;
+    }
+    // How much later (s) than its arrival at `t` a locked arrow from p0 (World::spawn_projectile: solve_aim, lobbed at 800+)
+    // would first be stopped by a structure: Physics_sweep_structures 0x693750 casts a FT-ms ray along (vx, vy, vz - V0)
+    // from frame starts (again once FT has passed) and stops the arrow at its predicted hit. Negative: blocked.
+    static float lob_margin(Mission& m, bool explosive, Vec3 p0, Vec3 t) {
+        const ThrowConsts& tc = m.data().throwi[explosive ? 2 : 1];
+        const float K = World::kUnitsPerMetre, g = tc.gl * 9.81f, T = tc.ft * 0.001f, dt = World::kTickMs * 0.001f;
+        const float d = std::sqrt((t.x - p0.x) * (t.x - p0.x) + (t.y - p0.y) * (t.y - p0.y) + (t.z - p0.z) * (t.z - p0.z));
+        if (d > tc.mxd) return -1;
+        const Vec3 f = solve_aim(p0, t, tc.m, tc.mxd, tc.av, tc.gl, 0.25f);
+        const Vec3 v{f.x / (tc.m * 1000), f.y / (tc.m * 1000), f.z / (tc.m * 1000)};
+        const float vh = std::hypot(v.x, v.y) * K;
+        if (vh <= 0) return -1;
+        const float tt = std::hypot(t.x - p0.x, t.y - p0.y) / vh;
+        float margin = 1;
+        for (float s = 0; s < tt;) {
+            const Vec3 a{p0.x + v.x * s * K, p0.y + v.y * s * K, p0.z + (v.z * s - g * s * s / 2) * K}, r{v.x, v.y, v.z - g * s - tc.v0};
+            if (const StructureHit h = m.objects().structure_ray(0, a, {a.x + r.x * T * K, a.y + r.y * T * K, a.z + r.z * T * K}); h.item)
+                margin = std::min(margin, s + T * h.t - tt);
+            s = std::max(dt, dt * std::ceil((s + T - dt) / dt - 1e-4f));
+        }
+        return margin;
+    }
+    std::map<int, Perch> perch_;  // foe -> its perches
+
+    // Supplies: below kFoodLow food or kArrowsLow arrows of either kind (with the gold to spare above the spy's), the
+    // nearest French seller (Jargeau's; Meung's / Beaugency's once captured); talking opens the buy screen (Autopilot::shop
+    // + shop()). `stock_up` (before Meung: its walls hold ~40 archers and crossbowmen, its shops open only once it is
+    // taken) asks for half the stock. A seller visited or walked no closer to for 100 s is left for 5 min.
+    bool supplies(Autopilot& ap, InputFrame& f, const Unit& p, bool stock_up = false) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        if (!is_joan(m, p) || m.state().gold < kSpyGold + 1000) return false;
+        const int arrows = stock_up ? kPlain / 2 : kArrowsLow, bombs = stock_up ? kExplosive / 2 : kArrowsLow;
+        const bool ammo = p.inv.ranged.item && (ap.arrows(p, false) < arrows || ap.arrows(p, true) < bombs);
+        const bool eat = food(w, p) < (stock_up ? kFood / 2 : kFoodLow);
+        if (!ammo && !eat) return false;
+        const Unit* s = nullptr;
+        for (const Unit& u : w.units()) {
+            const std::string& code = m.data().units[std::size_t(u.cls)].code;
+            const bool weapons = code.starts_with("WEAPON_SHOPKEEPER"), potions = code.starts_with("POTION_SHOPKEEPER");
+            if ((weapons && ammo) || (potions && eat))
+                if (!u.deleted && u.m.can_interact && u.nation == p.nation && ap.tick() >= trip_skip_[u.id] &&
+                    (!s || d2(p.pos, u.pos) < d2(p.pos, s->pos)))
+                    s = &u;
+        }
+        if (!s) return false;
+        const float d = d2(p.pos, s->pos);
+        if (s->id != trip_id_ || d < trip_best_ - 200) trip_id_ = s->id, trip_best_ = d, trip_tick_ = ap.tick();
+        if (ap.tick() - trip_tick_ > 3000) {
+            trip_skip_[s->id] = ap.tick() + 9000, trip_id_ = 0;
+            return false;
+        }
+        ap.goal = "to the shop of " + s->name;
+        ap.plan_talk = s->id;
+        if (d < 400 && ammo && ap.tick() >= tidy_tick_) tidy_bag(ap, *w.unit(p.id)), tidy_tick_ = ap.tick() + 9000;  // the loot takes it back
+        walk(ap, f, p, s->pos);
+        return true;
+    }
+    // kFood: one bag cell per loaf (MaxQuantity 1, Unit_add_item 0x495f40); the 6x8 personal grid also holds the arrows.
+    // Room for the arrows before the buy screen opens (a shop purchase needs a free cell or stack room, FUN_006c5a00):
+    // the bot's loot fills the bag with whatever fits (one cell per apple; 30 apples and a crossbow left no room for
+    // arrows, so Meung's tower archers went unshot). Dropped (character window, World::discard_item): apples beyond 4,
+    // other launchers, swords no sharper than the one in hand.
+    void tidy_bag(Autopilot& ap, Unit& p) {
+        World& w = ap.mission().world();
+        const GameData& gd = w.data();
+        const ItemInstance& hand = p.inv.melee[0];
+        const int edge = hand.item ? gd.items[std::size_t(hand.item)].base_damage(hand.level) : 0;
+        int apples = 0;
+        for (std::size_t i = p.inv.bag.size(); i-- > 0;) {
+            const ItemInstance& it = p.inv.bag[i];
+            const ItemDef& d = gd.items[std::size_t(it.item)];
+            const bool junk = (d.type == 0x17 && ++apples > 4) || d.type == 0xb || d.type == 0xc || (d.type == 9 && d.base_damage(it.level) <= edge);
+            if (junk && w.discard_item(p, 10, int(i), p) && ap.trace)
+                std::printf("[plan %d] drop %s\n", ap.tick(), d.code.c_str());
+        }
+    }
+    static constexpr int kFoodLow = 12, kFood = 30, kArrowsLow = 8, kExplosive = 40, kPlain = 300, kExplosiveKeep = 12;
+    int trip_id_ = 0, trip_tick_ = 0, tidy_tick_ = 0;
+    float trip_best_ = 0;
+    std::map<int, int> trip_skip_;  // seller -> tick it is walked to again
+
+    // A sharper sword for Joan than the one in hand (Jargeau sells JOAN_SWORD_LV5); character_screen() puts it in hand.
+    void buy_sword(Autopilot& ap, Unit& p) {
+        Mission& m = ap.mission();
+        World& w = m.world();
+        trip_skip_[trip_id_] = ap.tick() + 9000;
+        const ItemInstance& hand = p.inv.melee[0];
+        int best = hand.item ? w.data().items[std::size_t(hand.item)].base_damage(hand.level) : 0;
+        for (const ItemInstance& it : p.inv.bag)
+            if (const ItemDef& d = w.data().items[std::size_t(it.item)]; d.type == 9) best = std::max(best, d.base_damage(it.level));
+        for (const ShopStock& s : shop_stock(m, m.ui().buy_shop)) {
+            const ItemDef& d = w.data().items[std::size_t(s.item)];
+            if (d.type == 9 && (d.usable_unit < 0 || d.usable_unit == p.cls) && d.base_damage(s.level) > best && s.quantity != 0 &&
+                m.state().gold - d.price >= kSpyGold && w.buy_item(p, s.item, s.level, 1)) {
+                m.state().gold -= d.price, best = d.base_damage(s.level);
+                ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(m.state().gold));
+            }
+        }
+    }
+
     // The army. The test start leaves Joan alone at Jargeau and the heroes with their squads at Orleans; units in a map
     // level the player is not near are deactivated (NavWorld::stream, Unit_deactivate 0x41fcc0) and stand still whatever
     // their orders, and the march between the two (over the eastern bridge and through the English villages) killed the
@@ -133,6 +451,11 @@ private:
         if (ap.tick() < next_army_ || m.ui().game_cut_scene || w.cut_scene || w.dead(p) || ap.hero_key(p) == 0) return;
         next_army_ = ap.tick() + 30;
         AiSystem& ai = m.ai();
+        // The Bastard (imperative 36; 147 HP) is the player's to command once met: walked into Meung's fights he was killed
+        // by its wall archers. He and his team are kept at his camp (meetOrlean); Joan takes on the foes near him first
+        // (foe_weight).
+        if (Unit* b = bastard(m); b && ai.rts_selectable(*b) && d2(b->pos, bastard_home(m)) > 400 && ai.curr_task(*b) != task::RTS_MOVE_TO)
+            rts(m, p, [&](AiSystem& a) { a.rts_move(a.rts_select_with_team(b->id), bastard_home(m), false); });
         for (Unit& h : w.units()) {  // the hurt fall back (also mid-fight)
             if (!commandable(m, p, h) || is_joan(m, h)) continue;
             const Vec3 home = camp_.try_emplace(h.id, h.pos).first->second;
@@ -154,17 +477,24 @@ private:
         }
         for (const Unit& u : w.units())
             if (!u.deleted && !w.dead(u) && w.hostile_to_player(u) && d2(u.pos, p.pos) < 600) return;
+        // A Joan sturdier than every hero (a played campaign's: level 21, 640 HP against their 106-206) plays alone: Jean
+        // following her into Saint-Aignan's fights was killed (imperative 17).
         const Unit* best = nullptr;
+        for (Unit& h : w.units())
+            if (commandable(m, p, h) && !is_joan(m, h) && w.max_hp(h) >= kSturdy && !resting_.count(h.id) && ap.hero_key(h) && (!best || h.hp > best->hp))
+                best = &h;
+        if (is_joan(m, p)) {
+            if (best && w.max_hp(*best) > w.max_hp(p) && m.switch_hero(ap.hero_key(*best)) && ap.trace)
+                std::printf("[plan %d] switch to %s to lead the army\n", ap.tick(), best->name.c_str());
+            return;
+        }
         for (Unit& h : w.units()) {
             if (!commandable(m, p, h) || is_joan(m, h) || w.max_hp(h) < kSturdy || resting_.count(h.id)) continue;
-            if (ap.hero_key(h) && (!best || h.hp > best->hp)) best = &h;
             if (d2(h.pos, p.pos) <= kRally && (ai.curr_task(h) != task::FOLLOW_UNIT || ai.curr_task_para(h, 1) != p.id)) {
                 rts(m, p, [&](AiSystem& a) { a.rts_assign(a.rts_select_with_team(h.id), p.id, false); });
                 if (ap.trace) std::printf("[plan %d] %s follows %s\n", ap.tick(), h.name.c_str(), p.name.c_str());
             }
         }
-        if (is_joan(m, p) && best && m.switch_hero(ap.hero_key(*best)) && ap.trace)
-            std::printf("[plan %d] switch to %s to lead the army\n", ap.tick(), best->name.c_str());
     }
     static constexpr float kRally = 4000;
     static constexpr int kSturdy = 150;
@@ -176,6 +506,15 @@ private:
                m.ai().rts_selectable(h);
     }
     static bool is_joan(Mission& m, const Unit& u) { return m.data().units[std::size_t(u.cls)].code == "JOAN_OF_ARC"; }
+    static Unit* bastard(Mission& m) {
+        for (Unit& u : m.world().units())
+            if (!u.deleted && !m.world().dead(u) && m.data().units[std::size_t(u.cls)].code == "ORLEAN") return &u;
+        return nullptr;
+    }
+    static Vec3 bastard_home(Mission& m) {
+        const Place* c = m.places().place(m.places().place_by_name("meetOrlean"));
+        return c ? Vec3{(c->box_min.x + c->box_max.x) / 2, (c->box_min.y + c->box_max.y) / 2, 0} : Vec3{};
+    }
     // One RTS round trip (Session::toggle_rts in and out) around `orders`, as the S6L1 plan.
     template <class F> static void rts(Mission& m, Unit& p, F&& orders) {
         World& w = m.world();
@@ -228,9 +567,10 @@ private:
             if (!pl || pl->captured || ap.tick() < skip_[r]) continue;
             if (kCaps[i].need)
                 if (const Place* n = ps.place(ps.place_by_name(kCaps[i].need)); !n || !n->captured) continue;
-            // Meung: once one of its gates is open or down (the spy opens the south gate, S9L1_tactic l.4485).
-            if (std::string_view(kCaps[i].place) == "Castle_Meung" && !gate_open(ap.mission(), "MeungSouthGate") &&
-                !gate_open(ap.mission(), "MeungNorthGate"))
+            // Meung: once one of its gates is down (the cannons, meung()); one the English open for a sortie shuts behind the
+            // player, who was then caught inside or out (the rest of the plan walks about outside its walls).
+            if (std::string_view(kCaps[i].place) == "Castle_Meung" && !gate_down(ap.mission(), "MeungSouthGate") &&
+                !gate_down(ap.mission(), "MeungNorthGate"))
                 continue;
             index_[r] = int(i);
             const Vec3 c{(pl->box_min.x + pl->box_max.x) / 2, (pl->box_min.y + pl->box_max.y) / 2, p.pos.z};
@@ -259,9 +599,9 @@ private:
             }
         return stand_[pl.recno] = best;
     }
-    static bool gate_open(Mission& m, std::string_view name) {
+    static bool gate_down(Mission& m, std::string_view name) {
         for (int r = 1; r <= m.objects().size(); ++r)
-            if (const MapItem* it = m.objects().item(r); it && it->cls == 1 && it->name == name) return it->state != 0 || it->hp <= 0;
+            if (const MapItem* it = m.objects().item(r); it && it->cls == 1 && it->name == name) return it->hp <= 0;
         return true;  // deleted (destroyed)
     }
     static bool in_box(Mission& m, std::string_view place, Vec3 q) { return m.places().inside(m.places().place_by_name(place), q); }
@@ -280,10 +620,10 @@ private:
             if (const int t = w.data().items[std::size_t(it.item)].type; t == 0x15 || t == 0x19) n += it.quantity;
         return n;
     }
-    // Buy screen open (a shop the generic bot talks to): food (types 0x15 / 0x19) up to 40, keeping the spy's 3000 gold
-    // (the click handler's purchase, as Autopilot::shop makes it). The plan sends no one shopping: every food trip (Joan and
-    // Jean to Jargeau's shop across the English villages, Jean to Orleans' that left him on its wall walkway with no way
-    // down for 55000 ticks) cost the run.
+    // Buy screen open (a shop the generic bot talks to): food (types 0x15 / 0x19) up to kFood, keeping the spy's 3000 gold
+    // (the click handler's purchase, as Autopilot::shop makes it). Only Joan goes shopping (supplies()): the award-only
+    // heroes' food trips (Jean to Jargeau's shop across the English villages, to Orleans' that left him on its wall walkway
+    // with no way down for 55000 ticks) cost the run.
     void buy_food(Autopilot& ap, Unit& p) {
         Mission& m = ap.mission();
         if (food_ms_ == m.ui().interface_ms) return;
@@ -293,7 +633,7 @@ private:
         for (const ShopStock& s : shop_stock(m, m.ui().buy_shop)) {
             const ItemDef& d = w.data().items[std::size_t(s.item)];
             if (d.type != 0x15 && d.type != 0x19) continue;
-            while (s.quantity != 0 && food(w, p) < 40 && gold - d.price >= kSpyGold && w.give_item(p, d.code, s.level, std::max(1, d.quantity)))
+            while (s.quantity != 0 && food(w, p) < kFood && gold - d.price >= kSpyGold && w.buy_item(p, s.item, s.level, std::max(1, d.quantity)))
                 gold -= d.price, ap.log.push_back(std::to_string(m.ticks()) + " buy " + d.code + " gold " + std::to_string(gold));
         }
         if (ap.trace) std::printf("[plan %d] shop: food %d gold %d\n", ap.tick(), food(w, p), gold);

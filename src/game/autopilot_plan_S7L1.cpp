@@ -103,21 +103,34 @@ public:
             ap.travel(f, p, gate_at_);
             return true;
         }
-        // Food: the potion shop opens with Saint-Pierre (objective 1); the HP food the bot lives on is bought there. The trip
-        // from La Charité is long and crosses enemy ground: it starts while 10 are left.
-        if (const EndCondition* c = objective(m, 1); c && c->finish == 1 && food(m, p) < 10 && m.state().gold > 4000)
-            if (const Unit* s = potion_seller(m); s && !ap.unreached(*s)) {
-                ap.goal = "to the potion seller";
-                ap.plan_talk = s->id;
-                ap.travel(f, p, s->pos);
-                return true;
+        // Supplies: the potion shop and Wardley's weapon shop next to it open with Saint-Pierre (objective 1). The HP food the
+        // bot lives on is bought there while 10 are left; bolts / arrows (La Charité's wall archers and tower crews are shot,
+        // not reached) while 10 are left, at most once in 30000 ticks (a shop out of stock is not walked to again and again).
+        // The trip from La Charité is long and crosses enemy ground; one that gains less than 200 in 3000 ticks is given up for
+        // a while (from a platform inside La Charité the bot walked the seam detours east of it for good).
+        if (const EndCondition* c = objective(m, 1); c && c->finish == 1 && m.state().gold > ap.shop_gold_keep + 500) {
+            const Unit* s = food(m, p) < 10 ? potion_seller(m)
+                            : ammo(m, p) < 10 && (!bolt_tick_ || ap.tick() - bolt_tick_ > 30000) ? named(m, "Wardley Orfroisier") : nullptr;
+            if (s && !ap.unreached(*s)) {
+                const float d = dist(p.pos, s->pos);
+                if (s->id != trip_id_ || d < trip_best_ - 200) trip_id_ = s->id, trip_best_ = d, trip_tick_ = ap.tick();
+                if (ap.tick() - trip_tick_ <= 3000) {
+                    ap.goal = "to the shop of " + s->name;
+                    ap.plan_talk = s->id;
+                    ap.travel(f, p, s->pos);
+                    return true;
+                }
+                ap.give_up(s->id), trip_id_ = 0;
             }
-        if (recruit_job(ap, f, p) || barrels(ap, f, p)) return true;
+        }
         // Capture objectives, each place's fightable enemies hunted down: Saint-Pierre (1, once Gough is dead; stragglers
-        // outside the walls, arbalest crews), Varzy (3), des champs du nord (14).
+        // outside the walls, arbalest crews, the Goughs' archers left on the monastery hill) first: it opens the shops, the
+        // only food source (barrel and recruit trips before it starved Joan to death with the hill archers alive). Then
+        // Varzy (3), des champs du nord (14).
         if (const EndCondition* c = objective(m, 1); c && c->finish != 1 && ((m.vm().state().bits[1] >> 20) & 1u) &&
                                                      hunt_in(ap, f, p, {"St Pierre", "St Pierre2", "St Pierre3"}))
             return true;
+        if (recruit_job(ap, f, p) || barrels(ap, f, p)) return true;
         if (const EndCondition* c = objective(m, 3); c && c->enabled && c->finish != 1 && hunt_in(ap, f, p, {"eng camp"})) return true;
         if (const EndCondition* c = objective(m, 14); c && c->enabled && c->finish != 1 && hunt_in(ap, f, p, {"eng 2 trigger"})) return true;
         return charite(ap, f, p);
@@ -132,8 +145,9 @@ public:
         Mission& m = ap.mission();
         const int cap = m.ai().max_troop_size(p);
         const bool urgent = crew_short_ && int(p.members.size()) < cap;
+        // Once La Charité's gates are open the barracks are a map away and fresh men die at the gates in minutes: no trips.
         if (!is(m, p, "JOAN_OF_ARC") || ap.tick() < recruit_tick_ || (!urgent && int(p.members.size()) * 2 > cap) ||
-            m.state().gold < ap.shop_gold_keep)
+            m.state().gold < ap.shop_gold_keep || ((m.vm().state().bits[1] >> 25) & 1u))
             return false;
         Places& pl = m.places();
         int fac = 0;
@@ -229,14 +243,11 @@ public:
                 crew_short_ = short_before;
                 if (ap.tick() >= siege_tick_ && rts_ok(m, p)) {
                     siege_tick_ = ap.tick() + 300;
-                    bool fresh = false;
-                    const std::vector<int> crew = trebuchet_crew(m, p, *treb, fresh);
+                    // Rts_cmd_assign takes the points still reserved by an earlier crew stuck on the way (AiSystem::rts_assign).
+                    const std::vector<int> crew = trebuchet_crew(m, p, *treb);
                     if (!crew.empty()) ap.log.push_back(std::to_string(m.ticks()) + " crew " + std::to_string(crew.size()) + " to the trebuchet");
                     const int sel[] = {treb->id};
                     rts(m, p, [&](AiSystem& ai) {
-                        // Nobody of an earlier crew near: its attach points may still be reserved by men stuck on the way
-                        // (nearest_attach_point skips reserved points), so the weapon is double-clicked (dismiss) first.
-                        if (fresh) ai.rts_dismiss_crew(treb->id);
                         if (!crew.empty()) ai.rts_assign(crew, treb->id, true);
                         ai.rts_attack_item(sel, wall);
                     });
@@ -267,28 +278,41 @@ public:
     }
 
     // A fight / hunt target the player gets nowhere with (a poleman on a wall walkway she backs away from for a bow
-    // angle that never comes): 30 s on it without its HP moving, it is given up on (Autopilot::give_up).
+    // angle that never comes): 30 s on it without its HP moving or the player getting 100 closer, it is given up on
+    // (Autopilot::give_up). The long walk up to La Charité's summit poleman is headway, not a stall.
     void after_tick(Autopilot& ap) override {
         int id = 0;
         for (const char* k : {"fight #", "hunt #", "boss #", "volley at #"})
             if (ap.goal.rfind(k, 0) == 0) id = std::atoi(ap.goal.c_str() + std::strlen(k));
-        const Unit* u = ap.mission().world().unit(id);
-        if (!u || id != stall_id_ || u->hp != stall_hp_) {
-            stall_id_ = id, stall_hp_ = u ? u->hp : 0, stall_tick_ = ap.tick();
+        World& w = ap.mission().world();
+        const Unit* u = w.unit(id);
+        const Unit* p = w.unit(w.player_id());
+        const float d = u && p ? dist(p->pos, u->pos) + std::fabs(p->pos.z - u->pos.z) : 0;
+        if (!u || id != stall_id_ || u->hp != stall_hp_ || d < stall_d_ - 100) {
+            stall_id_ = id, stall_hp_ = u ? u->hp : 0, stall_d_ = d, stall_tick_ = ap.tick();
             return;
         }
         if (ap.tick() - stall_tick_ > 900) ap.give_up(id), stall_id_ = 0;
     }
 
-    // Potion shop (buy screen open): HP food (item types 0x15 / 0x19) up to 60 carried, never below the plan's gold keep.
+    // Potion shop (buy screen open): HP food (item types 0x15 / 0x19) up to 120 carried, never below the plan's gold keep.
+    // Food takes a bag cell a piece (MaxQuantity 1, World::buy_item: personal grid only) and the loot fills the bag with
+    // apples (EP food, ~30 by La Charité): those beyond 5 go on the floor first (the inventory window's drop), as S5L1's.
+    // A shop selling ammo (the generic purchases bought it) is the weapon shop: its visit time stops further bolt trips.
     void shop(Autopilot& ap, Unit& p) override {
         Mission& m = ap.mission();
         World& w = m.world();
         const GameData& gd = m.data();
-        for (const ShopStock& s : shop_stock(m, m.ui().buy_shop)) {
+        const std::vector<ShopStock> stock = shop_stock(m, m.ui().buy_shop);
+        const auto heal = [&](const ShopStock& s) { const int t = gd.items[std::size_t(s.item)].type; return t == 0x15 || t == 0x19; };
+        if (std::any_of(stock.begin(), stock.end(), heal))
+            for (int i = int(p.inv.bag.size()), apples = 0; i-- > 0;)
+                if (gd.items[std::size_t(p.inv.bag[std::size_t(i)].item)].type == 0x17 && ++apples > 5) w.discard_item(p, 10, i, p);
+        for (const ShopStock& s : stock) {
             const ItemDef& d = gd.items[std::size_t(s.item)];
-            while ((d.type == 0x15 || d.type == 0x19) && s.quantity != 0 && food(m, p) < 60 && m.state().gold - d.price >= ap.shop_gold_keep &&
-                   w.give_item(p, d.code, s.level, std::max(1, d.quantity)))
+            if (d.type >= 0xd && d.type <= 0x12) bolt_tick_ = ap.tick();
+            while (heal(s) && s.quantity != 0 && food(m, p) < 120 && m.state().gold - d.price >= ap.shop_gold_keep &&
+                   w.buy_item(p, s.item, s.level, std::max(1, d.quantity)))
                 m.state().gold -= d.price;
         }
     }
@@ -314,11 +338,20 @@ private:
         }
         return n;
     }
+    // Arrows and bolts carried (projectile item types 0xd..0x12), the ammo slot and the bag.
+    static int ammo(Mission& m, const Unit& p) {
+        auto is_ammo = [&](int item) { const int t = m.data().items[std::size_t(item)].type; return t >= 0xd && t <= 0x12; };
+        int n = p.inv.ammo.item && is_ammo(p.inv.ammo.item) ? p.inv.ammo.quantity : 0;
+        for (const ItemInstance& it : p.inv.bag) n += is_ammo(it.item) ? it.quantity : 0;
+        return n;
+    }
     static const Unit* potion_seller(Mission& m) { return named(m, "Alfonse Potier"); }
 
     // A capture objective's place cleared by hand: the nearest fightable enemy (as fightable_enemy_exist_in_place: not unit
     // class 0 / 8 / 9, not special 2 / 3 / 7) in one of `places`, walked up to and shot at when in a clear line within
-    // 1500 (wall walkways, arbalest crews); 80 s on one without its death and it is given up on for a while.
+    // 1500 (wall walkways, arbalest crews); 80 s on one without its death and it is given up on for a while. clear_shot
+    // sees no rock and bolts drop: after 20 s of shots at one (La Charité's summit poleman, 1500 off over the hilltop) the
+    // bot walks to within 500 first.
     bool hunt_in(Autopilot& ap, InputFrame& f, Unit& p, std::initializer_list<const char*> places) {
         Mission& m = ap.mission();
         World& w = m.world();
@@ -341,7 +374,8 @@ private:
             return false;
         }
         ap.goal = "hunt #" + std::to_string(best->id) + " " + m.data().units[std::size_t(best->cls)].code;
-        if (dist(p.pos, best->pos) < 1500 && ap.clear_shot(p, *best)) ap.shoot(f, p, *best);
+        int& shots = shot_spent_[best->id];
+        if (dist(p.pos, best->pos) < (shots > 600 ? 500 : 1500) && ap.clear_shot(p, *best)) ap.shoot(f, p, *best), ++shots;
         else ap.travel(f, p, best->pos);
         return true;
     }
@@ -368,9 +402,9 @@ private:
     // The trebuchet shoots only with its F (front) attach points manned, and the RTS assign onto a siege weapon
     // (Rts_cmd_assign 0x44f750 branch A) takes light infantry only (the walkthrough: "assigning three infantrymen"). Joan's
     // light infantry within 2000 not yet manning or walking to it, one per free F point (French light infantry elsewhere
-    // are La Charité's prisoners or troops a map away; crew sent from afar got stuck at (30425,15345)). `fresh`: nobody
-    // near mans it or walks to it. Short of Joan's light infantry, crew_short_ sends her to recruit. Empty when manned.
-    std::vector<int> trebuchet_crew(Mission& m, const Unit& p, const Unit& treb, bool& fresh) {
+    // are La Charité's prisoners or troops a map away). Short of Joan's light infantry, crew_short_ sends her to recruit.
+    // Empty when manned.
+    std::vector<int> trebuchet_crew(Mission& m, const Unit& p, const Unit& treb) {
         World& w = m.world();
         AiSystem& ai = m.ai();
         crew_short_ = false;
@@ -380,14 +414,13 @@ private:
         int need = total, mine = 0;   // mine: Joan's light infantry anywhere
         std::vector<int> sel;
         for (const Unit& u : w.units()) {
-            if (u.deleted || w.dead(u) || u.nation != p.nation || m.data().units[std::size_t(u.cls)].code.find("LIGHT_INFANTRY") == std::string::npos)
+            if (u.deleted || w.dead(u) || u.nation != p.nation || m.data().units[std::size_t(u.cls)].code != "FRENCH_LIGHT_INFANTRY")
                 continue;
             mine += u.leader == p.id;
             if (dist(u.pos, treb.pos) > 2000) continue;
             if (u.m.vehicle == treb.id || (ai.curr_task(u) == task::LARGE_WEAPON_PUSH && ai.curr_task_para(u, 1) == treb.id)) --need;
             else if (u.leader == p.id) sel.push_back(u.id);
         }
-        fresh = need == total;
         if (int(sel.size()) > need) sel.resize(std::size_t(std::max(need, 0)));
         crew_short_ = mine < need;
         return sel;
@@ -473,12 +506,17 @@ private:
     static constexpr Vec3 kCouncillor{58900, 20020, 410};  // place "councillor stand"
     static constexpr Vec3 kWorkshopScene{23280, 7300, 0};  // place "workshop cutscene"
     int siege_tick_ = 0, recruit_tick_ = 0;  // next workshop order / trebuchet RTS order; next recruit visit
+    int bolt_tick_ = 0;                      // last weapon shop screen (ammo for sale)
+    int trip_id_ = 0, trip_tick_ = 0;        // shop being walked to; tick of the last 200 gained
+    float trip_best_ = 0;
     bool crew_short_ = false;                 // the trebuchet lacks crew Joan's troop could give: recruit light infantry
     int army_tick_ = 0, switch_tick_ = 0, gate_spent_ = 0;
     Vec3 gate_at_{};  // the inner gate La Hire is to break (0 none)
     std::map<int, int> barrel_spent_;  // gold barrel -> ticks spent going for it
     std::map<int, int> hunt_spent_;    // capture-hunt target -> ticks spent on it
+    std::map<int, int> shot_spent_;    // capture-hunt target -> ticks shot at from afar
     int stall_id_ = 0, stall_hp_ = 0, stall_tick_ = 0;
+    float stall_d_ = 0;   // player-target distance (+ height) when the stall clock last restarted
 };
 
 }  // namespace

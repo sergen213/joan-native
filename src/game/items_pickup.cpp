@@ -27,7 +27,7 @@ void install_auto_pickup(Mission& m) {
         MissionState& st = m.state();
         // One floor marker (+0 item, +2 quantity, +4 level) at `pos`; `marker` = World item id (> 0) or
         // -MapObjects recno. True = taken: the caller deletes the item (0x49f370).
-        const auto take = [&](int item, int level, int quantity, const Vec3& pos, int marker) {
+        const auto take = [&](int item, int level, int& quantity, const Vec3& pos, int marker) {
             if (item <= 0 || item >= int(gd.items.size())) return false;
             const ItemDef& d = gd.items[size_t(item)];
             const bool mission = d.item_class == "MISSION";
@@ -54,10 +54,13 @@ void install_auto_pickup(Mission& m) {
                 // DAT_00a596c4 += max(1, marker +6) x Price (+0x2e); marker +6 is 0 for every marker (0x456cd0).
                 st.gold += d.price;
                 if (player) m.emit(MissionEvent::Kind::Ui, item, d.price, "sms_pickup " + d.code);   // SMS 3
-            } else if (!w.give_item(u, d.code, level, quantity)) {   // 0x495f40 (fails: item stays)
+            } else if (const int got = w.give_item(u, d.code, level, quantity); !got) {   // 0x495f40: no room, stays
                 return false;
-            } else if (player) {
-                m.emit(MissionEvent::Kind::Ui, item, quantity, "sms_pickup " + d.code);   // SMS 3 (MessageName, +2)
+            } else {
+                if (player) m.emit(MissionEvent::Kind::Ui, item, got, "sms_pickup " + d.code);   // SMS 3 (MessageName, +2)
+                // 0x495f40 returns -rest for a stack that only partly fits and the marker is deleted anyway (the rest
+                // is lost); here the rest stays on the floor.
+                if (got < quantity) return quantity -= got, picked(), false;
             }
             picked();
             return true;
@@ -67,7 +70,7 @@ void install_auto_pickup(Mission& m) {
         // Map items with a floor marker (box drops FUN_00463ed0, script add_item 0x651ad0): same marker list.
         MapObjects& o = m.objects();
         for (int r = 1; r <= o.size(); ++r)
-            if (const MapItem* it = o.item(r); it && it->on_floor && take(it->res, it->level, it->quantity, it->pos, -r))
+            if (MapItem* it = o.item(r); it && it->on_floor && take(it->res, it->level, it->quantity, it->pos, -r))
                 o.del_item(m, r);
     };
 }

@@ -101,6 +101,10 @@ struct Projectile {
     }
 };
 
+// Aim_solve 0x496d40 (projectile_sim.cpp): the 1 ms force pulse (M * v * 1000) that lands a projectile launched at p0 on
+// t (THROWI M / MXD / AV / GL); horizontal shots of 800+ are lobbed to at least min_sin of normalised z.
+Vec3 solve_aim(Vec3 p0, Vec3 t, float m, float mxd, float av, float gl, float min_sin);
+
 // Item lying in the world (drops). Mission objects (gates, boxes) belong to the mission layer.
 struct WorldItem {
     int id = 0, item = 0, level = 0, quantity = 1;
@@ -228,6 +232,9 @@ public:
     std::function<bool(Unit&)> interact_item;
     // Unit_auto_pickup 0x49da30 (unit phase 0): floor items walked over (mission layer: items_pickup.cpp).
     std::function<void(Unit&)> auto_pickup;
+    // Unit_is_in_danger 0x4fd980(1), which Unit_onMessage 0x75d540 calls after every hit before the death check: a
+    // non-player hero below INDANGER eats from his bag, a soldier from his leader's (mission layer: script_bind_units.cpp).
+    std::function<void(Unit&)> hit_danger;
     // Physics_sweep_structures 0x693750 mesh test (mission layer: MapObjects::structure_ray). item == 0:
     // nearest map item on from->to (world units); item > 0: that item's event data (.item 0 if gone).
     std::function<StructureHit(int item, Vec3 from, Vec3 to)> structure_ray;
@@ -315,11 +322,36 @@ public:
 
     // items (items_inventory.cpp)
     bool use_recovery_item(Unit& u, bool energy);          // F3 0x43b490 / F4 0x43b990
-    bool recover(Unit& u, int item, bool force);           // potion effect 0x50b4f0 / 0x50ba00 / 0x50bcd0 (team share)
-    bool give_item(Unit& u, std::string_view code, int level, int quantity);
+    bool recover(Unit& u, int item, bool force, bool even_dead = false);   // potion effect 0x50b4f0 / 0x50ba00 / 0x50bcd0 (team share)
+    // Unit_add_item 0x495f40 (floor pickups 0x49da30, scripts 0x50fd90): placement as transfer_item below, with bag
+    // room; returns the pieces stored (0 = refused: no free slot / cell / stack room). `troop`: stacking items into
+    // the troop grid only (give_item_to_unit_troop).
+    int give_item(Unit& u, std::string_view code, int level, int quantity, bool troop = false);
+    // Shop purchase FUN_006c5a00: personal grid only, no equipping: a free cell for the footprint (FUN_006c9d20,
+    // column by column) or room in same-item stacks (FUN_006c9f10); stacks fill from the last one (0x457ba0), the
+    // rest takes the cell. False = no room (BUY 9).
+    bool buy_item(Unit& u, int item, int level, int quantity);
+    // 0x512830: `it` onto the floor beside `at` (random angle, class radius + 30 away: outside its pickup reach).
+    // Returns the floor item id, 0 when no floor was found in 10 tries (the original then destroys the item).
+    int drop_item(Unit& at, ItemInstance it);
+    // Character window: an item released outside the 800x600 window area (FUN_006d8ac0, CanDrop +0x25c) leaves
+    // `from` (src / bag_index as transfer_item) and lands beside `at` (the shown unit). False = kept.
+    bool discard_item(Unit& from, int src, int bag_index, Unit& at);
     bool equip(Unit& u, int bag_index);                    // move a bag weapon/armour into its slot
     bool use_item(Unit& u, int bag_index);                 // inventory right-click 0x6d8ac0 (potions, armour)
     bool unequip(Unit& u, int slot);                       // 0 melee0, 1 melee1, 2 ranged, 3 ammo -> bag
+    // Hand an item to a commander (character window FUN_006d8ac0 0x6db54a: an item on the pointer released on a party
+    // portrait). `src` 0..3 = melee0 / melee1 / ranged / ammo slot, 10 = bag item `bag_index`. Both units must be
+    // controllable (+0x2f == 0), not task-locked (+0x2e1) and inside the minimap view around the player
+    // (FUN_00717a90: |dx|, |dy| x view scale < 100 px; scale 0 = no minimap); `to` must be a general (rank +0x104 >= 4).
+    // Placement = Unit_add_item 0x495f40: a usable melee weapon fills empty melee slots, a usable bow / crossbow an
+    // empty ranged slot (ammo-compatible), ammo an empty compatible / same-item ammo slot up to MaxQuantity, an
+    // enhancer the enhancer grid (usable) then the bags, stacks merge into same item+level stacks, then first-fit
+    // new cells (personal, then troop). False (nothing moved) without room; a stack that only partly fits leaves the
+    // rest with the giver (the original drops that rest: walkthrough "disappearing inventory").
+    bool transfer_item(Unit& from, int src, int bag_index, Unit& to, float view_sx = 0, float view_sy = 0);
+    // The character window's input gate on its unit (0x6d8c21) and the portrait test above, without the rank.
+    bool inventory_reachable(const Unit& u, float view_sx = 0, float view_sy = 0) const;
 
     // player-side HUD state that gameplay reads
     int combo_hits = 0, combo_hits_ts = 0;                 // DAT_00a5ba62 (XP bonus)

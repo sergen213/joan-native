@@ -45,6 +45,14 @@ struct Inventory {
     // then ENHANCER-class bag items (duplicate ids: highest level only) that pass the applicability
     // test 0x4a42f0 on unit `req` (the recno argument; skipped without a world, e.g. bare inventories).
     int bonus(const GameData& gd, int effect, const World* w = nullptr, const Unit* req = nullptr) const;
+    // Bag grids (containers +0x12 / +0x16 / +0x1a = ItemInstance::bag 0 enhancers 4x1, 1 personal 6x8, 2 troop 6x4).
+    // fits: `it` at its bag/col/row overlaps no other placed bag item (bag 0 takes ENHANCER class only).
+    // place: FUN_004575a0 first fit (y outer, x inner) of `it` in `bag` (bag -1 when full).
+    // layout: placed items keep their cell while it is free (in bag order); the rest go first-fit, enhancers into bag
+    // 0 first, then personal, then troop (an item that fits nowhere keeps bag -1). The character window shows this.
+    bool fits(const GameData& gd, const ItemInstance& it) const;
+    bool place(const GameData& gd, ItemInstance& it, int bag) const;
+    void layout(const GameData& gd);
     template <class V> void visit(V& v) { v(weapon_mode), v(melee[0]), v(melee[1]), v(ranged), v(ammo), v(bag); }
 };
 

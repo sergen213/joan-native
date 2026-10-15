@@ -1171,6 +1171,10 @@ void MapObjects::save(ByteWriter& w) const {
 
 bool MapObjects::load_state(formats::ByteReader& r) {
     In in{r};
+    // The gates loaded so far (the map's) leave the path mesh first: one the save no longer has (destroyed, deleted after
+    // its fade-out) would keep its poly blocked.
+    for (MapItem& it : items_)   // replaced below
+        if (!it.deleted && it.cls == GATE) it.blocking = false, gate_nav(it);
     std::uint32_t n = r.u32();
     if (n > r.remaining()) return false;
     items_.assign(n, MapItem{});

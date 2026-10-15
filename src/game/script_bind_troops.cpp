@@ -98,10 +98,10 @@ void free_prisoner(Mission& m, Unit& u) {
 
 namespace {
 
-// Unit_add_item 0x50fd90 (troop = 4th arg). Inventory placement goes through World::give_item.
-// ponytail: the grid-bag placement / overflow-to-floor of FUN_00495f40 and its troop flag are
-// World::give_item's simplified model (always fits).
-int unit_add_item(Mission& m, Unit& u, int item, int quantity, int level) {
+// Unit_add_item 0x50fd90 (troop = 4th arg = 0x495f40 param 8). What does not fit (0x495f40: 0 = all, -n = n
+// pieces) is dropped beside the unit in MaxQuantity pieces (0x512830, stops when a piece finds no floor); the call
+// still returns 1.
+int unit_add_item(Mission& m, Unit& u, int item, int quantity, int level, bool troop) {
     World& w = m.world();
     const ItemDef& d = m.data().items[size_t(item)];
     if (d.item_class == "POTION" && d.use_immediately) {  // class 7, +0x23d
@@ -112,7 +112,8 @@ int unit_add_item(Mission& m, Unit& u, int item, int quantity, int level) {
         return 1;
     }
     if (level < d.min_level || level > d.max_level) return 0;
-    w.give_item(u, d.code, level, quantity);
+    for (int rest = quantity - w.give_item(u, d.code, level, quantity, troop); rest > 0; rest -= std::max(1, d.max_quantity))
+        if (!w.drop_item(u, {item, std::min(rest, std::max(1, d.max_quantity)), level})) break;
     return 1;
 }
 
@@ -123,7 +124,7 @@ Value give_item(Mission& m, const BuiltinCall& c, bool troop) {
     const int item = m.data().item_index(c.s(0));
     if (!item) return I(0);
     const int quantity = std::int16_t(c.i(2)), level = std::int16_t(c.i(1));
-    const int r = unit_add_item(m, *u, item, quantity, level);
+    const int r = unit_add_item(m, *u, item, quantity, level, troop);
     if (r && u->id == m.world().player_id()) {
         const ItemDef& d = m.data().items[size_t(item)];
         m.emit(MissionEvent::Kind::Ui, item, quantity, "sms_given " + d.code);  // FUN_006e5700(SMS 4 "You have been given %1s!")

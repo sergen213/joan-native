@@ -286,6 +286,7 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
             h.portrait = party_portrait(m, u);
             h.holding = m.ai().is_holding(u);
             h.selected = id == w.player_id();
+            h.id = id;
             party_effects(m, u, h);  // HudGaps
             hud.party.push_back(std::move(h));
             party_.push_back(id);
