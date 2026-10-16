@@ -1,8 +1,9 @@
 #version 460
 // Denoiser for the ray-traced shadow (signal 0) and reflection (signal 1) images (docs/RAYTRACING.md), "SVGF lite":
 //  mode 0 temporal: reproject the previous accumulation through the camera motion (R.prev_view_proj), 4-tap
-//         bilinear with per-tap depth/normal/roughness validation, exponential average (1/len, floor 0.1),
-//         reflection history clamped to the 3x3 raw neighbourhood (mean +- 2 sigma). a = history length.
+//         bilinear with per-tap depth/normal/roughness validation, exponential average (1/len, floor 0.15 shadow,
+//         0.1 reflection), history clamped to the 3x3 raw neighbourhood (mean +- 2 sigma) so a unit's shadow does
+//         not trail where it left (Kabus 22 docs/RAYTRACING.md). a = history length.
 //  mode 1 a-trous: 3x3 B-spline kernel at `step` (1, 2, 4), weights from the G-buffer depth, normal, roughness
 //         and a luminance distance whose tolerance shrinks with the history length.
 // Images (u_img): 0 shadow raw, 1/2 shadow accumulation, 3/4 shadow filter ping-pong, 5..9 the same for reflections.
@@ -65,7 +66,7 @@ void main() {
         if (wsum > 1e-3) {
             h /= wsum;
             len = h.a;
-            if (u_push.signal == 1u) {  // clamp the reflection history to the current neighbourhood
+            {  // clamp the history to the current neighbourhood
                 vec3 m1 = vec3(0.0), m2 = vec3(0.0);
                 float k = 0.0;
                 for (int y = -1; y <= 1; ++y)
@@ -82,7 +83,7 @@ void main() {
             }
         }
         len = min(len + 1.0, 64.0);
-        vec4 o = mix(h, c, max(1.0 / len, 0.1));
+        vec4 o = mix(h, c, max(1.0 / len, u_push.signal == 0u ? 0.15 : 0.1));
         imageStore(u_img[dst], px, vec4(o.rgb, len));
         return;
     }
