@@ -64,7 +64,9 @@ int main() {
                               "aspect=21:9\nmode=fullscreen\n[controller]\ndeadzone=0.25\nsensitivity=1.5\n[paths]\ngame_dir=\n";
         Options o;
         CHECK(parse({"--width", "800", "--settings", ini.c_str()}, o).empty());
-        CHECK(o.width == 800 && o.height == 720);  // flag wins; height=0 keeps default
+        CHECK(o.width == 800 && o.height == 720 && !o.desktop_size);  // flag wins; height=0 keeps default
+        Options desktop;
+        CHECK(parse({"--settings", ini.c_str()}, desktop).empty() && desktop.desktop_size && desktop.width == 1920);
         CHECK(o.mode == WindowMode::Fullscreen && std::fabs(o.aspect - 21.0f / 9.0f) < 1e-6f);
         CHECK(std::fabs(o.deadzone - 0.25f) < 1e-6f && std::fabs(o.sensitivity - 1.5f) < 1e-6f);
         CHECK(o.game_dir.empty() && o.settings == ini.string());

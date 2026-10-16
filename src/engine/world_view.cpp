@@ -195,6 +195,7 @@ void WorldView::sync(const game::World& world, const game::Snapshot& prev, const
         const auto pi = before.find(v.id);
         const game::UnitView& pv = pi == before.end() ? v : *pi->second;
         a.p0 = {pv.pos.x, pv.pos.y, pv.pos.z}, a.p1 = {v.pos.x, v.pos.y, v.pos.z};
+        a.speed = glm::length(glm::vec2(a.p1 - a.p0)) * 1000.0f / std::max(tick_ms, 1.0f);
         a.yaw0 = pv.yaw_deg, a.yaw1 = v.yaw_deg;
         if (!a.character) continue;
         Character& c = *a.character;
@@ -296,6 +297,12 @@ void WorldView::on_events(const std::vector<game::GameEvent>& events, const game
                             glm::radians(v->second->yaw_deg), 0.0f, 5.0f, e.unit);
             break;
         }
+        case game::Ev::Death:
+        case game::Ev::Knockdown: {  // interactive water: a body falling in it
+            const game::Vec3& p = v->second->pos;
+            splash(to_engine(p.x, p.y, p.z), e.type == game::Ev::Death ? 1.0f : 0.8f, 150.0f);
+            break;
+        }
         default: break;
         }
     }
@@ -315,6 +322,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     lighting_.clear_color = glm::vec4(glm::convertSRGBToLinear(lighting_.fog_color), 1.0f);
 
     time_s_ += dt;
+    std::erase_if(ripples_, [&](const glm::vec4& r) { return time_s_ - r.z > 3.0f; });
     sky_->build(eye, time_s_, draws);
     scene_->build(view_proj, eye, draws);
     for (Node& n : nodes_) {
@@ -346,6 +354,9 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         float rx = 0, ry = 0;
         if (a.root) game::root_offset(*a.root, ms, rx, ry);
         c.pose(ms, rx, ry);
+        // ponytail: wading / weapon ripples within 2500 units of the eye only, so far units do not push the
+        // player's rings out of the kMaxWaterRipples budget; a per-distance priority if crowds ever wade nearby.
+        if (glm::distance(eye, at) < 2500.0f) wade(id, a, t);
         // Hardware-skinned units get one point light (Shader_build_vertex_shader clamps the skinned light
         // counts to 1 point + 1 directional): the first light of their sector.
         const std::size_t first = draws.size();

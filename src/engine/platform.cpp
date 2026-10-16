@@ -22,9 +22,13 @@ Platform::Platform(const Options& o, bool hidden) {
         throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     }
     if (o.mode == WindowMode::Fullscreen) {
+        // Launcher width/height 0 = desktop resolution (docs/LAUNCHER.md): the closest mode to the 1280x720 default was a
+        // 720p swapchain stretched over the display (blurry on a 4K panel).
         SDL_DisplayMode mode;
         const SDL_DisplayID display = SDL_GetDisplayForWindow(window_);
-        if (SDL_GetClosestFullscreenDisplayMode(display, o.width, o.height, 0.0f, true, &mode))
+        const SDL_DisplayMode* desktop = o.desktop_size ? SDL_GetDesktopDisplayMode(display) : nullptr;
+        const int w = desktop ? desktop->w : o.width, h = desktop ? desktop->h : o.height;
+        if (SDL_GetClosestFullscreenDisplayMode(display, w, h, desktop ? desktop->refresh_rate : 0.0f, true, &mode))
             SDL_SetWindowFullscreenMode(window_, &mode);
         SDL_SetWindowFullscreen(window_, true);
     } else if (o.mode == WindowMode::Borderless) {

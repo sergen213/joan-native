@@ -16,9 +16,10 @@ namespace joa::engine {
 
 struct RemasterFrame {  // std140; field meanings in remaster_common.glsl
     glm::mat4 view_proj, inv_view_proj, prev_view_proj, view, shadow_matrix;
-    glm::vec4 sun_dir, sun_color, ambient, fog_color, fog_range, camera_pos, shadow_params, screen, jitter, flags, ssao, env, exposure;
+    glm::vec4 sun_dir, sun_color, ambient, fog_color, fog_range, camera_pos, shadow_params, screen, jitter, flags, ssao, env, exposure, water;
+    glm::vec4 ripples[kMaxWaterRipples];
 };
-static_assert(sizeof(RemasterFrame) == 528);
+static_assert(sizeof(RemasterFrame) == 544 + 16 * kMaxWaterRipples);
 
 // Temporal state kept by a backend between frames.
 struct RemasterHistory {

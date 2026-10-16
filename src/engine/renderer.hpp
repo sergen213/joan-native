@@ -188,6 +188,8 @@ struct UiTriangles {
     TextureHandle texture;  // empty = white
 };
 
+inline constexpr int kMaxWaterRipples = 32;
+
 struct FrameData {
     FrameView view;
     Lighting lighting;
@@ -195,6 +197,9 @@ struct FrameData {
     std::span<const UiQuad> ui;
     std::span<const UiVertex> ui_vertices;
     std::span<const UiTriangles> ui_triangles;
+    // Stylised water ripple rings (`water=enhanced`, pbr_shade.glsl shade_water): engine-space world x, z, start time t0
+    // in Material::water's time base (WorldView::time_s_), strength (0, 1]. At most kMaxWaterRipples, at most 3 s old.
+    std::span<const glm::vec4> ripples;
     float dt = 0.0f;  // seconds since the previous frame (remaster auto exposure smoothing); 0 = unknown, taken as 1/30 s
 };
 

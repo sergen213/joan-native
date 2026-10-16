@@ -98,6 +98,10 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     const bool snap = !h.valid || glm::distance(f.view.camera_position, h.camera) >= kMotionTeleport;
     const float lo = g.auto_exposure ? 0.5f : 1.0f, hi = g.auto_exposure ? 4.0f : 1.0f;
     r.exposure = glm::vec4(1.0f - std::exp(-dt / 0.5f), snap ? 1.0f : 0.0f, base * lo, base * hi);
+    // Water ripple rings (pbr_shade.glsl water_ripples): the newest kMaxWaterRipples.
+    const std::size_t ripples = std::min(f.ripples.size(), std::size_t(kMaxWaterRipples));
+    std::copy(f.ripples.end() - long(ripples), f.ripples.end(), r.ripples);
+    r.water = glm::vec4(float(ripples), 0.0f, 0.0f, 0.0f);
 
     h.prev_view_proj = unjittered;
     h.size = scene;

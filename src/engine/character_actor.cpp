@@ -123,6 +123,14 @@ void Character::build(const glm::mat4& transform, std::vector<DrawItem>& draws) 
     for (std::size_t i = first; i < draws.size(); ++i) draws[i].material.volume_caster = true;
 }
 
+glm::vec3 Character::attachment_tip(std::size_t i, const glm::mat4& transform) const {
+    const Attached& a = attached_[i];
+    const glm::vec3 c = a.model->center;
+    const glm::vec3 tip = glm::length(c) > 1e-3f ? c + glm::normalize(c) * a.model->radius : c;
+    const glm::mat4 bone = a.bone < bones_.size() ? kToEngine * to_mat4(bones_[a.bone]) * glm::transpose(kToEngine) : glm::mat4(1.0f);
+    return glm::vec3(transform * bone * glm::vec4(tip, 1.0f));
+}
+
 void Character::build_shadow(const glm::mat4& transform, glm::vec3 sun, ShadowKind kind, std::vector<DrawItem>& draws) {
     if (kind == ShadowKind::Model) {
         if (!shadow_model_) return;

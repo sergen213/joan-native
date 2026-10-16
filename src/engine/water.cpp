@@ -147,6 +147,7 @@ WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 
         const int dir = int(b.number("TextureDirection"));
         Surface s;
         s.centre = {float(b.number("X")) + origin.x, float(b.number("Y")) + origin.y, float(b.number("Z"))};
+        s.half = {w * 0.5f, len * 0.5f};
 
         // Material (FUN_004f5210 with config+0x9d = 1, +0x9e = 1): WaterName "ice" -> icelake + texteff
         // "ice"; a Reflection texture + a texteff material named WaterName -> that material with the
@@ -242,6 +243,14 @@ WaterField::~WaterField() {
 
 int WaterField::bump_count() const {
     return int(std::count_if(surfaces_.begin(), surfaces_.end(), [](const Surface& s) { return s.embm; }));
+}
+
+std::optional<float> WaterField::surface_height(glm::vec3 p) const {
+    std::optional<float> h;
+    for (const Surface& s : surfaces_)  // engine x, -z = original X, Y
+        if (s.draw.material.water >= 0.0f && std::abs(p.x - s.centre.x) <= s.half.x && std::abs(-p.z - s.centre.y) <= s.half.y)
+            h = std::max(h.value_or(s.centre.z), s.centre.z);
+    return h;
 }
 
 void WaterField::build(float time_s, glm::vec3 eye, std::vector<DrawItem>& draws) {

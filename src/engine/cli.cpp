@@ -109,8 +109,10 @@ std::string apply_settings_ini(std::string_view ini, Options& o) {
             if (!renderer_from(v, o.renderer)) return "settings: bad renderer.backend";
         } else if (key == "display.width" && number(v, i)) {
             if (i > 0) o.width = i;
+            else o.desktop_size = true;
         } else if (key == "display.height" && number(v, i)) {
             if (i > 0) o.height = i;
+            else o.desktop_size = true;
         } else if (key == "display.aspect") {
             if (!parse_aspect(v, o.aspect)) return "settings: bad display.aspect";
         } else if (key == "display.mode") {
@@ -184,8 +186,10 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
             if (!value(v) || !renderer_from(v, o.renderer)) return "--renderer expects gl|vulkan";
         } else if (a == "--width") {
             if (!value(v) || !number(v, o.width) || o.width <= 0) return "--width expects a positive integer";
+            o.desktop_size = false;
         } else if (a == "--height") {
             if (!value(v) || !number(v, o.height) || o.height <= 0) return "--height expects a positive integer";
+            o.desktop_size = false;
         } else if (a == "--aspect") {
             if (!value(v) || !parse_aspect(v, o.aspect)) return "--aspect expects W:H, a ratio, or auto";
         } else if (a == "--frames") {

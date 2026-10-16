@@ -38,6 +38,9 @@ public:
     bool attach(const Model* model, std::string_view bone, const formats::Mesh* shadow = nullptr);
     std::size_t attachments() const { return attached_.size(); }
     void clear_attachments() { attached_.clear(); }
+    // World point of attachment i's far end (its bounding-sphere point furthest from the bone: a blade or bow tip) with
+    // the unit's `transform`, after pose() (interactive water: weapons dipping in, world_view_water.cpp).
+    glm::vec3 attachment_tip(std::size_t i, const glm::mat4& transform) const;
     // Model-space bounds of the current pose (engine axes); valid after pose().
     float height() const { return height_; }
     void build(const glm::mat4& transform, std::vector<DrawItem>& draws) const;

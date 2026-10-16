@@ -5,6 +5,7 @@
 // docs/reverse-engineering/RENDERING_PIPELINE.md section 5.
 #include "engine/assets_cache.hpp"
 
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -25,6 +26,9 @@ public:
 
     // Animates the bump frame (time_s) and the per-vertex reflection coordinates (eye, engine space).
     void build(float time_s, glm::vec3 eye, std::vector<DrawItem>& draws);
+    // Engine-space height (Y) of the remaster-shaded surfaces (not ice) over engine position p's x/z, the highest
+    // where several overlap; nullopt off the water (interactive ripples, world_view_water.cpp).
+    std::optional<float> surface_height(glm::vec3 p) const;
 
 private:
     struct Surface {
@@ -32,6 +36,7 @@ private:
         MeshHandle handle;
         DrawItem draw;
         glm::vec3 centre{0.0f};  // original coordinates (Z up)
+        glm::vec2 half{0.0f};    // WIDTH / 2, LENGTH / 2
         bool embm = false;
     };
     AssetCache& assets_;

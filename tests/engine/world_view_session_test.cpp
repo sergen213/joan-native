@@ -6,6 +6,7 @@
 #include "engine/session.hpp"
 #include "engine/world_view.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 using namespace joa;
@@ -113,6 +114,28 @@ int main() {
     tick({});
     CHECK(!find(s.current(), victim) && !view.actor(victim));
     CHECK(view.unit_stats().actors == int(s.current().units.size()));
+
+    // Interactive water ripples. S1L1 "Water 4" pond: CreateWater X 10687, Y 14139, 250 x 473, Z 242, bed ~215.
+    CHECK(view.water_height(to_engine(10687.0f, 14139.0f, 0.0f)) == 242.0f && !view.water_height(to_engine(10687.0f, 14500.0f, 0.0f)));
+    CHECK(view.ripples().empty());  // Joan ran and fought on dry ground
+    game::Unit& joan = *w.unit(w.player_id());
+    joan.pos = {10680.0f, 14160.0f, w.terrain()->height(10680.0f, 14160.0f)};
+    for (int i = 0; i < 20; ++i) tick({});
+    const std::size_t standing = view.ripples().size();
+    for (int i = 0; i < 8; ++i) {
+        game::InputFrame f;
+        f.held.set(game::IN_FORWARD);
+        tick(f);
+    }
+    float strongest = 0;
+    for (const glm::vec4& rp : view.ripples()) strongest = std::max(strongest, rp.w);
+    std::fprintf(stderr, "pond: bed %.0f ripples standing=%zu wading=%zu strongest=%.2f\n", joan.pos.z, standing, view.ripples().size(), strongest);
+    CHECK(standing >= 1 && view.ripples().size() > standing && strongest >= 0.25f);
+    // An item dropped into the pond: a 0.8 ring where it lands.
+    CHECK(w.add_item("SMALLRED", 0, 1, {10650.0f, 14000.0f, w.terrain()->height(10650.0f, 14000.0f)}) != 0);
+    tick({});
+    CHECK(std::any_of(view.ripples().begin(), view.ripples().end(),
+                      [](const glm::vec4& rp) { return rp.w == 0.8f && rp.x == 10650.0f && rp.y == -14000.0f; }));
 
     // Mission 2: S3L1 = S3L1_1 + S3L1_2 (.wor CreateNode), node 2 at Y 14080.
     CHECK(s.new_game(2, 1, &err));

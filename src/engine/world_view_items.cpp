@@ -63,12 +63,19 @@ void WorldView::sync_items(const game::World& world, const game::Snapshot& prev,
         const auto b = before.find(p.id);
         s.p0 = b != before.end() ? glm::vec3(b->second->pos.x, b->second->pos.y, b->second->pos.z) : pos - vel * tick_s;
         s.p1 = pos;
+        splash_segment(s.p0, s.p1, 1.0f);  // interactive water: through the surface this tick
         next.emplace(p.id, std::move(s));
     }
     // A projectile gone from the world leaves its item's impact emitter (EmitterName slot 3: explosion_arrow,
     // CannonImpact) where it was last seen. HYPOTHESIS (slot naming; the spawn site is not decoded).
-    for (const auto& [id, s] : shots_)
-        if (!next.contains(id)) spawn_item_emitter(s.item, 3, {s.p1.x, s.p1.y, s.p1.z});
+    // Interactive water: one gone above the water within a tick's travel of it hit the surface (the game deletes it
+    // on the bed under it within the tick that crossed the surface).
+    for (const auto& [id, s] : shots_) {
+        if (next.contains(id)) continue;
+        spawn_item_emitter(s.item, 3, {s.p1.x, s.p1.y, s.p1.z});
+        const glm::vec3 e = to_engine(s.p1.x, s.p1.y, s.p1.z);
+        if (const auto h = water_height(e); h && e.y > *h && e.y - *h < glm::distance(s.p0, s.p1) + 30.0f) splash({e.x, *h, e.z}, 1.0f, 0.0f);
+    }
     shots_ = std::move(next);
 
     // Floor items (Unit_dropItem 0x406631: ItemArray_create = model level 0, the item.res Model; placed at
@@ -89,6 +96,7 @@ void WorldView::sync_items(const game::World& world, const game::Snapshot& prev,
         auto [d, fresh] = drops_.try_emplace(key);
         d->second.pos = {pos.x, pos.y, pos.z}, d->second.yaw = yaw, d->second.item = item;
         if (!fresh) return;
+        if (time_s_ > 0.0f) splash(to_engine(pos.x, pos.y, pos.z), 0.8f, 150.0f);  // dropped in the water (not the map's own)
         const auto look = db_.item(code(item), 0);
         if (!look) return;
         d->second.path = look->model;
@@ -160,6 +168,7 @@ void WorldView::sync_map_items(const game::World& world) {
                 }
             }
         }
+        if (it->stage < a.stage) splash(to_engine(o.at.x, o.at.y, o.at.z), 1.0f, 150.0f);  // broken in the water
         a.stage = it->stage;
         a.t0 = a.t1, a.t1 = float(now - a.start);
         a.fade = it->fade_until ? std::clamp(float(it->fade_until - now) / 2000.0f, 0.0f, 1.0f) : 1.0f;

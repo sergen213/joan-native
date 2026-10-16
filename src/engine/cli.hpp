@@ -14,6 +14,7 @@ enum class PresentMode { Fifo, Relaxed, Mailbox, Immediate };  // Vulkan swapcha
 struct Options {
     RendererKind renderer = RendererKind::OpenGL;
     int width = 1280, height = 720;  // logical window size (fullscreen: requested mode)
+    bool desktop_size = false;       // settings width/height 0 (no --width/--height): fullscreen at the desktop mode
     WindowMode mode = WindowMode::Windowed;
     float aspect = 0.0f;             // > 0 forces this aspect (letter/pillarbox); 0 = window aspect
     std::string game_dir;
