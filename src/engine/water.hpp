@@ -39,6 +39,7 @@ private:
     std::vector<TextureHandle> bump_frames_;
     float frame_ms_ = 30.0f;
     TextureHandle pool_;
+    TextureHandle normal_;  // remaster water normal map + height (water_normal_map of Lake1.bmp)
 };
 
 }  // namespace joa::engine

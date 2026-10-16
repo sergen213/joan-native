@@ -62,6 +62,25 @@ WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::M
         n.water = std::make_unique<WaterField>(*assets_, sn.map.name, sn.map.origin);
     }
     effects_ = std::make_unique<ParticleSystem>(*assets_, "");
+    // Tie each .stg object the game turned into a map item to that item (same res code, same position); one
+    // without a live item was deleted before this view (a loaded save) and is hidden.
+    std::vector<bool> linked(std::size_t(objects_->size()) + 1);
+    for (std::size_t i = 0; i < scene_->objects().size(); ++i) {
+        const PlacedObject& o = scene_->objects()[i];
+        const int res = objects_->res_by_code(o.code);
+        if (!objects_->is_map_item(res)) continue;
+        int recno = 0;
+        for (int r = 1; r <= objects_->size() && !recno; ++r)
+            if (const game::MapItem* it = objects_->item(r); it && !linked[std::size_t(r)] && it->res == res &&
+                                                             glm::distance(glm::vec3(it->pos.x, it->pos.y, it->pos.z), o.at) < 0.5f)
+                recno = r;
+        if (!recno) {
+            scene_->hide(i);
+            continue;
+        }
+        linked[std::size_t(recno)] = true;
+        map_actors_.push_back({recno, res, objects_->item(recno)->stage, i});
+    }
 
     // Attack-script emitter slots (Resource/animscr.res, AnimScript_parse 0x419320): EmitterFlag 1, then
     // TerrainEmitterFlag and 6 x (EmitterFileName, Start/EndTime, [MinSeparateDist], X, Y, Z, LockType,
@@ -209,6 +228,7 @@ void WorldView::sync(const game::World& world, const game::Snapshot& prev, const
     }
     unit_stats_.actors = int(std::count_if(actors_.begin(), actors_.end(), [](const auto& kv) { return kv.second.character != nullptr; }));
     sync_items(world, prev, cur);
+    sync_map_items(world);
 }
 
 void WorldView::spawn_slot(const std::string& script, std::size_t slot, const game::UnitView& at) {
@@ -341,6 +361,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
             c.build_shadow(t, sun, Character::ShadowKind::Model, draws), ++shadow_stats_.models;
     }
     build_items(alpha, draws);
+    build_map_items(alpha, draws);
     build_rings(draws);
     effects_->follow(frames_);
     effects_->build(dt, view.view, view_proj, draws);

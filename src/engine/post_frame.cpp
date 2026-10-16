@@ -17,7 +17,7 @@ float halton(std::uint32_t i, std::uint32_t base) {
 }  // namespace
 
 glm::ivec2 scene_size(const GraphicsSettings& g, glm::ivec2 output) {
-    const float s = std::clamp(g.render_scale, 0.5f, 2.0f);
+    const float s = g.upscale == Upscaler::Fsr3 ? fsr_render_scale(g.fsr_quality) : std::clamp(g.render_scale, 1.0f / 3.0f, 2.0f);
     return glm::max(glm::ivec2(glm::round(glm::vec2(output) * s)), glm::ivec2(1));
 }
 
@@ -55,10 +55,16 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     const Lighting& l = f.lighting;
     const glm::mat4 unjittered = f.view.projection * f.view.view;
     glm::vec2 jitter(0.0f);
-    const bool taa = g.aa == AntiAliasing::Taa;
+    // FSR 3 (upscale == Fsr3 only while the renderer runs it) replaces TAA: its own Halton(2,3) sequence of
+    // 8 * (output/scene)^2 phases (ffxFsr3UpscalerGetJitterOffset), pixel offset (x right, y down) -> GL NDC.
+    const bool fsr3 = g.upscale == Upscaler::Fsr3, taa = g.aa == AntiAliasing::Taa && !fsr3, temporal = taa || fsr3;
     if (taa) {
         const std::uint32_t i = h.frame % 8 + 1;
         jitter = (glm::vec2(halton(i, 2), halton(i, 3)) - 0.5f) * 2.0f / glm::vec2(scene);
+    } else if (fsr3) {
+        const float ratio = float(output.x) / float(scene.x);
+        const std::uint32_t i = h.frame % std::max(1u, std::uint32_t(8.0f * ratio * ratio)) + 1;
+        jitter = glm::vec2(halton(i, 2) - 0.5f, 0.5f - halton(i, 3)) * 2.0f / glm::vec2(scene);
     }
     if (scene != h.size) h.valid = false;
     r.view_proj = glm::translate(glm::mat4(1.0f), glm::vec3(jitter, 0.0f)) * unjittered;
@@ -72,7 +78,7 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     r.ambient = glm::vec4(l.ambient, g.ibl ? 1.0f : 0.0f);
     r.fog_color = glm::vec4(l.fog_color, g.volumetric_fog ? g.fog_density : 0.0f);
     // Per-frame noise rotation only when something accumulates it (TAA, RT denoiser); else it would flicker.
-    const float noise_frame = taa || g.rt.any() ? float(h.frame % 64) : 0.0f;
+    const float noise_frame = temporal || g.rt.any() ? float(h.frame % 64) : 0.0f;
     r.fog_range = glm::vec4(l.fog_start, l.fog_end, g.preset == GraphicsPreset::Ultra ? 24.0f : 12.0f, noise_frame);
     r.camera_pos = glm::vec4(f.view.camera_position, g.ssao ? 1.0f : 0.0f);
     // World size of a shadow texel from the length of the matrix's x row: [0][0] alone shrank towards 0 for suns whose
@@ -81,9 +87,9 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     const float texel_world = shadows ? 2.0f / (row0 * float(g.shadow_map_size)) : 0.0f;
     r.shadow_params = glm::vec4(shadows ? 1.0f / float(g.shadow_map_size) : 0.0f, g.shadow_softness, g.shadow_distance, texel_world * 1.5f);
     r.screen = glm::vec4(glm::vec2(scene), 1.0f / glm::vec2(scene));
-    r.jitter = glm::vec4(jitter, taa && h.valid ? 1.0f : 0.0f, g.sharpness);
+    r.jitter = glm::vec4(jitter, taa && h.valid ? 1.0f : 0.0f, fsr3 ? 0.0f : g.sharpness);  // FSR 3 sharpens with its own RCAS
     r.flags = glm::vec4(g.pbr ? 1.0f : 0.0f, g.normal_maps ? 1.0f : 0.0f, g.particle_lighting ? 1.0f : 0.0f, g.hdr ? 1.0f : 0.0f);
-    r.ssao = glm::vec4(g.ssao_radius, g.ssao_intensity, taa ? -1.0f : 0.0f, 3000.0f);
+    r.ssao = glm::vec4(g.ssao_radius, g.ssao_intensity, temporal ? -1.0f : 0.0f, 3000.0f);
     r.env = glm::vec4(float(env_mips), f.view.projection[1][1], f.view.projection[0][0], float(output.x) / float(scene.x));
     // Auto exposure (post_exposure_adapt.glsl): time constant 0.5 s; snaps to its target without history (first frame,
     // resize, settings change) or on a camera cut, so short captures are deterministic; clamped to 0.5..4x the preset exposure

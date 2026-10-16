@@ -44,6 +44,11 @@ struct PlacedObject {
     float radius = 0.0f;
     std::uint8_t light_count = 0;  // lights of its scene sector (DrawItem::lights)
     std::array<std::uint16_t, kMaxDrawLights> lights{};
+    // .stg identity, so WorldView can tie the object to its game::MapItem: Path + ObjectFile (ItemRes code),
+    // original world position (node origin + X/Y, Z), model / AM2 game paths (AM1 props: the clip file).
+    std::string code, path, anim;
+    glm::vec3 at{0.0f};
+    bool hidden = false;  // map item deleted or drawn animated by WorldView: build() skips it
 };
 
 // .sca stage record (map/common.sca): Hoffman-Preetham scattering parameters.
@@ -93,6 +98,7 @@ public:
     const std::vector<Node>& nodes() const { return nodes_; }
     const WorldStats& stats() const { return stats_; }  // every node
     const std::vector<PlacedObject>& objects() const { return objects_; }
+    void hide(std::size_t object) { objects_[object].hidden = true; }  // permanent (see PlacedObject::hidden)
     // Stage lighting at the start clock; fog_color for a level view (WorldView recomputes it per frame
     // with fog_color()); point_lights = every scene light (flickering ones change in tick_lights()).
     Lighting lighting() const;

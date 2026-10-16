@@ -24,6 +24,7 @@ qt6-wayland
 vulkan-headers
 vulkan-icd-loader
 shaderc
+glslang
 glm
 ffmpeg
 mesa

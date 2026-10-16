@@ -1,7 +1,8 @@
 // Equipment visuals (headless, NullRenderer): unit.res model levels / item.res model levels picked by
 // UnitDb, Joan's body mesh following the armour item (0x6d8ac0 -> Unit_set_model_level 0x511060), carried
 // weapon swap, an arrow in flight drawn with its level-2 mesh pointing along its velocity, a dropped item
-// and a box's spilled content drawn on the floor and gone once walked over (Unit_auto_pickup 0x49da30),
+// and a box's spilled content drawn on the floor and gone once walked over (Unit_auto_pickup 0x49da30), the
+// broken box itself playing its "break" clip in place of its static .stg mesh, then gone with the map item,
 // MessageName formats (0x5a6660). Exit 77 without the original data.
 #include "check.hpp"
 #include "engine/hud_effects.hpp"
@@ -174,17 +175,39 @@ int main() {
                                                  !o.res(it->res)->open_with_interact)
             box = r;
     CHECK(box > 0);
+    // The box's own mesh is a static .stg object of the scene, tied to the map item by WorldView.
+    const std::vector<PlacedObject>& objs = view.scene().objects();
+    const auto box_obj = std::find_if(objs.begin(), objs.end(), [&](const PlacedObject& p) {
+        const game::Vec3 b = box ? o.item(box)->pos : game::Vec3{};
+        return std::hypot(p.at.x - b.x, p.at.y - b.y, p.at.z - b.z) < 0.5f;
+    });
+    CHECK(box_obj != objs.end() && !box_obj->hidden && view.map_item_clip(box).empty());
+    const int box_res = box ? o.item(box)->res : 0;
     const std::vector<int> placed = floor_items();
+    const auto spilled = [&] {
+        std::vector<int> v;
+        for (int r : floor_items())
+            if (std::find(placed.begin(), placed.end(), r) == placed.end()) v.push_back(r);
+        return v;
+    };
     int spill = 0;
     for (int i = 0; i < 300 && box && !spill; ++i) {
         game::Trigger t;
         t.type = 2, t.target_kind = 2, t.target_id = o.item(box) ? o.item(box)->modify : 0, t.src_kind = 1, t.sender = joan.id;
         if (o.item(box)) o.on_trigger(m, t);  // an ally's arrow (Box vtbl 0x9d37cc, type 2)
         tick();
-        for (int r : floor_items())
-            if (std::find(placed.begin(), placed.end(), r) == placed.end()) spill = r;
+        if (!spilled().empty()) spill = spilled().front();
     }
     CHECK(spill > 0);
+    // Broken (stage 1 -> 0, 0x48a1f0): the static box gives way to its AM1 playing the stage AnimName "break";
+    // once the clip is over the item is deleted (dead 0x48b900) and nothing of it is drawn. Content dropped once.
+    std::fprintf(stderr, "box %d stage %d clip '%s'\n", box, o.item(box) ? o.item(box)->stage : -1, view.map_item_clip(box).c_str());
+    CHECK(o.item(box) && o.item(box)->stage == 0 && lower(view.map_item_clip(box)) == "break" && box_obj != objs.end() && box_obj->hidden);
+    int wait = 0;
+    for (; wait < 300 && o.item(box) && o.item(box)->res == box_res; ++wait) tick();
+    std::fprintf(stderr, "box %d deleted after %d ticks, spilled %zu\n", box, wait, spilled().size());
+    CHECK((!o.item(box) || o.item(box)->res != box_res) && view.map_item_clip(box).empty() && box_obj->hidden);
+    CHECK(spilled().size() == 1);
     if (spill > 0) {
         const game::MapItem& it = *o.item(spill);
         const std::string code = w.data().items[std::size_t(it.res)].code;

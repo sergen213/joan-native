@@ -58,7 +58,7 @@ Settings Settings::parse(const std::string& text) {
         else if (key == "graphics.anisotropy") ranged(s.anisotropy, v, 1, 16);
         else if (key == "graphics.render_scale") ranged(s.render_scale, v, 0.5, 2.0);
         else if (key == "graphics.sharpness") ranged(s.sharpness, v, 0.0, 1.0);
-        else if (section == "graphics") s.graphics_extra += trim(line.substr(0, eq)) + "=" + v + "\n";
+        else if (section == "graphics") s.graphics_extra.emplace_back(trim(line.substr(0, eq)), v);
         else if (key == "display.width") number(s.width, v, 0, 16384);
         else if (key == "display.height") number(s.height, v, 0, 16384);
         else if (key == "display.aspect") pick(s.aspect, v, {"auto", "4:3", "16:9", "16:10", "21:9"});
@@ -90,7 +90,8 @@ std::string Settings::serialize() const {
     for (const auto& [k, v] : {std::pair<const char*, const std::string&>{"aa", aa}, {"msaa", msaa}, {"anisotropy", anisotropy},
                                {"render_scale", render_scale}, {"sharpness", sharpness}})
         if (!v.empty()) o << k << "=" << v << "\n";
-    o << graphics_extra << "\n"
+    for (const auto& [k, v] : graphics_extra) o << k << "=" << v << "\n";
+    o << "\n"
       << "[display]\nwidth=" << width << "\nheight=" << height << "\naspect=" << aspect << "\nmode=" << mode << "\n\n"
       << "[controller]\ndeadzone=" << deadzone << "\nsensitivity=" << sensitivity << "\n\n"
       << "[update]\nchannel=" << channel << "\n\n"

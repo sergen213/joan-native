@@ -2,7 +2,8 @@
 // Shared by gl_equip_visuals / vk_equip_visuals: mission 1 rendered through WorldView with a real backend
 // (hidden window, 640x360), equipment changed through the game layer between captures:
 //   armour LV1 (joan_armorC) vs LV3 (joan_armorB) and Warbrand vs Flamberge differ in Joan's region,
-//   an arrow in flight shows against the same view without it, a floor item shows and is gone after pickup.
+//   an arrow in flight shows against the same view without it, a floor item shows and is gone after pickup,
+//   a broken box shows its "break" clip instead of the intact crate and is gone afterwards.
 // Captures land in $JOA_TEST_OUT (equip_<tag>_*.png). Exit 77 without the original data / driver.
 #include "check.hpp"
 #include "engine/camera.hpp"
@@ -34,6 +35,14 @@ inline int diff_px(const Image& a, const Image& b, int x0, int y0, int x1, int y
             n += std::abs(a.rgba[i] - b.rgba[i]) + std::abs(a.rgba[i + 1] - b.rgba[i + 1]) + std::abs(a.rgba[i + 2] - b.rgba[i + 2]) > 60;
         }
     return n;
+}
+// Mean position of the pixels diff_px counts over the whole image (x, y, count).
+inline glm::vec3 diff_centroid(const Image& a, const Image& b) {
+    glm::vec3 s{0.0f};
+    for (int y = 0; y < a.height; ++y)
+        for (int x = 0; x < a.width; ++x)
+            if (diff_px(a, b, x, y, x + 1, y + 1)) s += glm::vec3(float(x), float(y), 1.0f);
+    return s.z > 0 ? glm::vec3(s.x / s.z, s.y / s.z, s.z) : s;
 }
 
 inline int run(RendererKind kind, const char* tag) {
@@ -174,6 +183,50 @@ inline int run(RendererKind kind, const char* tag) {
         const int item_d = diff_px(item, picked, 260, 120, 380, 260);
         std::fprintf(stderr, "floor item: %d px differ around the view centre\n", item_d);
         CHECK(item_d > 100);
+
+        // A breakable box (MapObjects box, Treasure set) broken by an ally's arrow: intact, mid "break" clip, gone
+        // (its bread lying where it stood).
+        game::MapObjects& o = m.objects();
+        int box = 0;
+        for (int r2 = 1; r2 <= o.size() && !box; ++r2)
+            if (const game::MapItem* it = o.item(r2); it && it->cls == 10 && it->content && it->modify && !o.res(it->res)->open_with_interact)
+                box = r2;
+        CHECK(box > 0);
+        if (g_failures) return test_result();
+        const game::Vec3 bp = o.item(box)->pos;
+        CameraPose at_box, above;
+        at_box.target = above.target = to_engine(bp.x, bp.y, bp.z + 15.0f);
+        at_box.eye = to_engine(bp.x + 90.0f, bp.y + 40.0f, bp.z + 55.0f);
+        above.eye = to_engine(bp.x + 10.0f, bp.y, bp.z + 260.0f);  // (near) straight down: height hides no x/y offset
+        const Image intact = render(at_box, "box");
+        const Image intact_top = render(above, "box_top");
+        game::Trigger t;
+        t.type = 2, t.target_kind = 2, t.target_id = o.item(box)->modify, t.src_kind = 1, t.sender = joan.id;
+        o.on_trigger(m, t);
+        tick(5);
+        CHECK(o.item(box) && o.item(box)->stage == 0);
+        const Image breaking = render(at_box, "box_breaking");
+        for (int i = 0; i < 100 && o.item(box) && o.item(box)->cls == 10; ++i) tick(1);
+        const Image gone = render(at_box, "box_gone");
+        const int break_d = diff_px(intact, breaking, 200, 100, 440, 300), gone_d = diff_px(intact, gone, 200, 100, 440, 300);
+        std::fprintf(stderr, "box: intact vs breaking %d px, intact vs gone %d px\n", break_d, gone_d);
+        CHECK(break_d > 2000 && gone_d > 2000);  // 640x360 GL / RADV: 15100 / 13418
+        // The spilled content is drawn where the box stood (0x48a1f0: ItemArray_create + FUN_0041ff50(box +0x56..+0x5e)),
+        // seen from above: its pixels centre on the crate's. Picked up, both views return to the bare ground.
+        int spill = 0;
+        for (int r2 = 1; r2 <= o.size() && !spill; ++r2)
+            if (const game::MapItem* it = o.item(r2); it && it->on_floor && it->pos.x == bp.x && it->pos.y == bp.y && it->pos.z == bp.z) spill = r2;
+        CHECK(spill > 0);
+        if (g_failures) return test_result();
+        const Image spill_top = render(above, "box_spill_top");
+        o.item(spill)->pos = joan.pos;
+        tick(1);
+        CHECK(!o.item(spill));
+        const Image empty_top = render(above, "box_empty_top");
+        const glm::vec3 crate = diff_centroid(intact_top, empty_top), food = diff_centroid(spill_top, empty_top);
+        std::fprintf(stderr, "box from above: crate centre (%.1f, %.1f) %d px, spilled item centre (%.1f, %.1f) %d px\n", crate.x, crate.y,
+                     int(crate.z), food.x, food.y, int(food.z));
+        CHECK(crate.z > 500 && food.z > 50 && glm::distance(glm::vec2(crate), glm::vec2(food)) < 8.0f);
     }
     return test_result();
 }

@@ -37,6 +37,27 @@ int main() {
     CHECK(enh.msaa == 4 && ultra.msaa == 1 && enh.anisotropy == 8 && orig.msaa == 1 && orig.anisotropy == 8 && !orig.original_post());
     CHECK(ultra.shadow_map_size == 4096 && ultra.shadow_softness > enh.shadow_softness && ultra.shadow_distance > enh.shadow_distance);
     CHECK(ultra.aa == AntiAliasing::Taa && ultra.sharpness > 0.0f);
+    // Ultra anti-aliases with FSR 3 native AA (TAA above is its fallback); frame generation stays opt-in.
+    CHECK(ultra.upscale == Upscaler::Fsr3 && ultra.fsr_quality == FsrQuality::Native && !ultra.frame_generation);
+    CHECK(scene_size(ultra, {1920, 1080}) == glm::ivec2(1920, 1080) && ultra.original_post());
+    {  // upscale=fsr3 + quality modes + frame generation (needs fsr3 and the remaster path)
+        Options o;
+        CHECK(apply_settings_ini("[renderer]\npreset=enhanced\n[graphics]\nupscale=fsr3\nfsr_quality=performance\nframe_generation=1\n", o).empty());
+        GraphicsSettings g = o.graphics.resolve();
+        CHECK(g.upscale == Upscaler::Fsr3 && g.fsr_quality == FsrQuality::Performance && g.frame_generation);
+        CHECK(scene_size(g, {1920, 1080}) == glm::ivec2(960, 540));
+        fsr3_fallback(g);  // OpenGL / unsupported device: FSR1 at the same scale, no frame generation
+        CHECK(g.upscale == Upscaler::Fsr1 && g.render_scale == 0.5f && !g.frame_generation && scene_size(g, {1920, 1080}) == glm::ivec2(960, 540));
+        Options o2;
+        CHECK(apply_settings_ini("[renderer]\npreset=enhanced\n[graphics]\nupscale=fsr1\nframe_generation=true\n", o2).empty());
+        CHECK(!o2.graphics.resolve().frame_generation);
+        Options o3;
+        CHECK(apply_settings_ini("[renderer]\npreset=original\n[graphics]\nupscale=fsr3\nframe_generation=true\n", o3).empty());
+        CHECK(!o3.graphics.resolve().frame_generation && o3.graphics.resolve().original_post());
+        Options o4;
+        CHECK(!apply_settings_ini("[graphics]\nfsr_quality=ultra\n", o4).empty());
+        CHECK(fsr_render_scale(FsrQuality::Native) == 1.0f && fsr_render_scale(FsrQuality::UltraPerformance) < 0.34f);
+    }
 
     // settings.ini: preset fixes the features unless custom.
     {
@@ -97,10 +118,16 @@ int main() {
         CHECK(!apply_settings_ini("[graphics]\naa=msaa\n", o6).empty());
         Options o7;  // Custom with every look feature off is the Original look + quality options
         CHECK(apply_settings_ini("[renderer]\npreset=custom\n[graphics]\npbr=false\nnormal_maps=false\nibl=false\nhdr=false\n"
-                                 "shadow_map_size=0\nssao=false\nvolumetric_fog=false\nparticle_lighting=false\naa=fxaa\n",
+                                 "shadow_map_size=0\nssao=false\nvolumetric_fog=false\nparticle_lighting=false\nwater=original\naa=fxaa\n",
                                  o7)
                   .empty());
         CHECK(!o7.graphics.resolve().remastered() && o7.graphics.resolve().aa == AntiAliasing::Fxaa);
+        Options o8;  // stylised water: Enhanced/Ultra default, `water=original` (custom) turns it off, other values rejected
+        CHECK(apply_settings_ini("[renderer]\npreset=custom\n[graphics]\nwater=original\n", o8).empty());
+        CHECK(!o8.graphics.resolve().water && preset_settings(GraphicsPreset::Enhanced).water && preset_settings(GraphicsPreset::Ultra).water &&
+              !preset_settings(GraphicsPreset::Original).water);
+        Options o9;
+        CHECK(!apply_settings_ini("[graphics]\nwater=wow\n", o9).empty());
     }
     // No settings: Original.
     {
@@ -163,6 +190,13 @@ int main() {
         g.aa = AntiAliasing::None;
         const RemasterFrame c = build_remaster_frame(g, f, {1920, 1080}, {1920, 1080}, 7, h);
         CHECK(c.jitter == glm::vec4(0.0f) && c.ssao.z == 0.0f && c.fog_range.w == 0.0f);  // no TAA: no jitter, static noise
+        // FSR 3: its own Halton jitter (within half a render pixel), no TAA history flag, no RCAS in the final pass.
+        g.upscale = Upscaler::Fsr3;
+        g.sharpness = 1.0f;
+        const RemasterFrame d = build_remaster_frame(g, f, {1280, 720}, {1920, 1080}, 7, h);
+        const RemasterFrame e = build_remaster_frame(g, f, {1280, 720}, {1920, 1080}, 7, h);
+        CHECK(std::fabs(e.jitter.x) <= 1.0f / 1280.0f && std::fabs(e.jitter.y) <= 1.0f / 720.0f && d.jitter.x != e.jitter.x);
+        CHECK(e.jitter.z == 0.0f && e.jitter.w == 0.0f && e.ssao.z == -1.0f);
         CHECK(a.shadow_matrix == b.shadow_matrix);  // same camera: same snapped frustum
         // Moving the camera by less than a shadow texel keeps the texel grid (no shimmer).
         const glm::mat4 s0 = fit_sun_shadow(f.view, {-0.4f, -1.0f, -0.3f}, 2500.0f, 2048);

@@ -132,6 +132,8 @@ public:
     const ObjRes* res(int id) const { return id >= 1 && id < int(res_.size()) ? &res_[id] : nullptr; }
     int res_by_code(std::string_view code) const;        // ItemRes_find_by_name 0x4a36c0 (0 none)
     int sell_list(std::string_view code) const;          // FUN_004ce900 (1-based, 0 none)
+    // The .stg CreateObject records the create=0 pass turns into items (0x4a4050 class, not grass type 6).
+    bool is_map_item(int res) const;
 
     // --- behaviour ---------------------------------------------------------------------------------
     void on_trigger(Mission& m, const Trigger& t);       // TriggerSys case 2 (+ vtbl[0x48] per class)

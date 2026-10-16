@@ -243,6 +243,10 @@ public:
             }
         if (g.msaa != gfx_.msaa) destroy_original_target();
         gfx_ = g;
+        if (g.upscale == Upscaler::Fsr3)  // FSR 3 / frame generation are Vulkan-only
+            std::fprintf(stderr, "joan-native: opengl: upscale=fsr3%s runs as FSR1 at the same render scale (Vulkan only)\n",
+                         g.frame_generation ? " + frame generation" : "");
+        fsr3_fallback(gfx_);
         if (gfx_.msaa > 1) {  // clamp to what the colour and depth formats support
             GLint max_samples = 1;
             glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
@@ -697,7 +701,7 @@ private:
     struct PbrProgram {
         GLuint program = 0;
         GLint model, normal_matrix, no_fog, pass, tint, alpha_cutoff, unlit, has_layer2, has_lightmap, bump_scale, maps, cls, blend, diffuse,
-            vertex_diffuse, light_count, light_pos_range, light_color, light_att, prev_model, prev_pose, a2c;
+            vertex_diffuse, light_count, light_pos_range, light_color, light_att, prev_model, prev_pose, a2c, water;
     };
     struct RemasterTargets {
         glm::ivec2 scene{0, 0}, output{0, 0};
@@ -711,6 +715,9 @@ private:
         // reference, depth).
         int samples = 1;
         GLuint ms_hdr = 0, ms_ambient = 0, ms_velocity = 0, ms_reference = 0, ms_depth = 0, fbo_opaque_ms = 0, fbo_trans_ms = 0, fbo_hdr_ms = 0;
+        // Stylised water (pbr_shade.glsl shade_water): the opaque scene's colour (MSAA: resolved) and depth, copied before the
+        // translucent pass.
+        GLuint water_color = 0, water_depth = 0, fbo_water = 0;
         GLuint fbo_ambient = 0, fbo_velocity = 0, fbo_reference = 0;  // single-attachment resolve destinations
     };
     // Image-quality post tail (any preset): FXAA/SMAA at scene size, EASU at output size.
@@ -731,7 +738,7 @@ private:
             {"u_ao_map", 7},  {"u_shadow", 8},  {"u_env", 9},         {"u_irradiance", 10}, {"u_hdr", 11},  {"u_ambient", 12}, {"u_depth", 13},
             {"u_ao", 14},     {"u_ldr", 15},    {"u_history", 16},    {"u_src", 17},  {"u_final", 19}, {"u_velocity", 20},
             {"u_aa_a", 21},   {"u_aa_b", 22},   {"u_area", 23},       {"u_search", 24}, {"u_exposure_prev", 25}, {"u_lum", 26},
-            {"u_exposure", 27}, {"u_reference", 28}};
+            {"u_exposure", 27}, {"u_reference", 28}, {"u_water_color", 29}, {"u_water_depth", 30}};
         for (const auto& [n, unit] : units)
             if (const GLint loc = glGetUniformLocation(p, n); loc >= 0) glUniform1i(loc, unit);
         if (const GLuint block = glGetUniformBlockIndex(p, "RemasterFrame"); block != GL_INVALID_INDEX) glUniformBlockBinding(p, block, 0);
@@ -745,7 +752,7 @@ private:
         pbr_ = {pbr_.program, u("u_model"), u("u_normal_matrix"), u("u_no_fog"), u("u_pass"), u("u_tint"), u("u_alpha_cutoff"), u("u_unlit"),
                 u("u_has_layer2"), u("u_has_lightmap"), u("u_bump_scale"), u("u_maps"), u("u_class"), u("u_blend"), u("u_diffuse"),
                 u("u_vertex_diffuse"), u("u_light_count"), u("u_light_pos_range"), u("u_light_color"), u("u_light_att"), u("u_prev_model"),
-                u("u_prev_pose"), u("u_a2c")};
+                u("u_prev_pose"), u("u_a2c"), u("u_water")};
         prog_ssao_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ssao, false);
         prog_ao_apply_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ao_apply, false);
         const std::string fog = gl_shaders::post_fog;
@@ -805,6 +812,9 @@ private:
         t.hdr = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_LINEAR);
         t.ambient = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_NEAREST);
         t.depth = make_texture(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, scene, GL_NEAREST);
+        t.water_color = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_LINEAR);
+        t.water_depth = make_texture(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, scene, GL_NEAREST);
+        t.fbo_water = make_fbo({t.water_color}, t.water_depth);
         t.ao = make_texture(GL_R8, GL_RED, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
         t.ldr = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
         for (GLuint& h : t.hist) h = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
@@ -875,11 +885,12 @@ private:
     void destroy_remaster_targets() {
         RemasterTargets& t = rt_;
         for (GLuint f : {t.fbo_opaque, t.fbo_trans, t.fbo_hdr, t.fbo_ao, t.fbo_ldr, t.fbo_hist[0], t.fbo_hist[1], t.fbo_opaque_ms, t.fbo_trans_ms,
-                         t.fbo_hdr_ms, t.fbo_ambient, t.fbo_velocity, t.fbo_reference, t.fbo_lum, t.fbo_exposure[0], t.fbo_exposure[1]})
+                         t.fbo_hdr_ms, t.fbo_ambient, t.fbo_velocity, t.fbo_reference, t.fbo_lum, t.fbo_exposure[0], t.fbo_exposure[1], t.fbo_water})
             if (f) glDeleteFramebuffers(1, &f);
         for (GLuint r : {t.ms_hdr, t.ms_ambient, t.ms_velocity, t.ms_reference, t.ms_depth})
             if (r) glDeleteRenderbuffers(1, &r);
-        for (GLuint x : {t.hdr, t.ambient, t.depth, t.ao, t.ldr, t.hist[0], t.hist[1], t.velocity, t.reference, t.lum, t.exposure[0], t.exposure[1]})
+        for (GLuint x : {t.hdr, t.ambient, t.depth, t.ao, t.ldr, t.hist[0], t.hist[1], t.velocity, t.reference, t.lum, t.exposure[0], t.exposure[1],
+                         t.water_color, t.water_depth})
             if (x) glDeleteTextures(1, &x);
         t = {};
     }
@@ -1046,8 +1057,10 @@ private:
         glUniform1i(pbr_.light_count, lights);
         const bool bump = mat.bump && mat.bump_scale != 0.0f;
         glUniform1f(pbr_.bump_scale, bump ? mat.bump_scale : 0.0f);
+        const bool water = mat.water >= 0.0f;
+        glUniform1f(pbr_.water, water && gfx_.water ? mat.water : -1.0f);
         MaterialMaps maps;
-        if (const auto mt = material_maps_.find(mat.albedo.id); mt != material_maps_.end()) maps = mt->second;
+        if (const auto mt = material_maps_.find(mat.albedo.id); mt != material_maps_.end() && (!water || gfx_.water)) maps = mt->second;
         if (is_terrain(mat)) maps.cls = MaterialClass::Terrain;
         glUniform1i(pbr_.cls, int(maps.cls));
         glUniform4i(pbr_.maps, maps.normal ? 1 : 0, maps.roughness ? 1 : 0, maps.metal ? 1 : 0, maps.ao ? 1 : 0);
@@ -1203,26 +1216,35 @@ private:
             bind_unit(13, 0);
         }
 
-        // Translucent back to front (same order as the Original path), depth writes only for depth_write blends.
+        // Translucent back to front (same order as the Original path), depth writes only for depth_write blends. Stylised
+        // water first: it is drawn opaque over a copy of the opaque scene (refraction, depth), every other blend over it.
+        const glm::vec3 cam = f.view.camera_position;
+        std::sort(blended_.begin(), blended_.end(), [&](const DrawItem* a, const DrawItem* b) {
+            if (const bool wa = gfx_.water && a->material.water >= 0.0f; wa != (gfx_.water && b->material.water >= 0.0f)) return wa;
+            const glm::vec3 pa(a->model[3]), pb(b->model[3]);
+            return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
+        });
+        if (gfx_.water && !blended_.empty() && blended_.front()->material.water >= 0.0f) {
+            resolve(ms ? rt_.fbo_hdr_ms : rt_.fbo_hdr, 0, rt_.fbo_water, scene);
+            resolve(rt_.fbo_opaque, -1, rt_.fbo_water, scene);  // MSAA: rt_.depth was resolved after the opaque pass
+            bind_unit(29, rt_.water_color);
+            bind_unit(30, rt_.water_depth);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, ms ? rt_.fbo_trans_ms : rt_.fbo_trans);
         glViewport(0, 0, scene.x, scene.y);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glUseProgram(pbr_.program);
-        const glm::vec3 cam = f.view.camera_position;
-        std::sort(blended_.begin(), blended_.end(), [&](const DrawItem* a, const DrawItem* b) {
-            const glm::vec3 pa(a->model[3]), pb(b->model[3]);
-            return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
-        });
-        // Depth-writing blends (alpha-tested hair, ...) also write their motion: o_motion (location 2) -> attachment 1; every
-        // draw blends its auto exposure reference (location 3) -> attachment 2.
+        // Depth-writing blends (alpha-tested hair, ..., and the stylised water: TAA reprojects and the volumetric fog measures
+        // its surface, not the bed) also write their motion: o_motion (location 2) -> attachment 1; every draw blends its auto
+        // exposure reference (location 3) -> attachment 2.
         const GLenum color_only[4] = {GL_COLOR_ATTACHMENT0, GL_NONE, GL_NONE, GL_COLOR_ATTACHMENT2},
                      with_motion[4] = {GL_COLOR_ATTACHMENT0, GL_NONE, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
         int motion = -1;
         for (const DrawItem* d : blended_) {
-            if (int(d->material.depth_write) != motion)
-                motion = d->material.depth_write, glDrawBuffers(4, motion ? with_motion : color_only);
-            glDepthMask(d->material.depth_write ? GL_TRUE : GL_FALSE);
+            const bool zwrite = d->material.depth_write || (gfx_.water && d->material.water >= 0.0f);
+            if (int(zwrite) != motion) motion = zwrite, glDrawBuffers(4, motion ? with_motion : color_only);
+            glDepthMask(zwrite ? GL_TRUE : GL_FALSE);
             glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
             draw_pbr(*d, 0);
         }
@@ -1266,9 +1288,10 @@ private:
         glEnable(GL_FRAMEBUFFER_SRGB);
     }
 
-    // Units cast their original stencil volumes instead (Material::volume_caster).
+    // Units cast their original stencil volumes instead (Material::volume_caster); water casts nothing.
     static bool casts_sun_shadow(const Material& m) {
-        return !m.unlit && !m.volume_caster && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m);
+        return !m.unlit && !m.volume_caster && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m) &&
+               m.water < 0.0f;
     }
 
     // Optional GPU timing of the scene (JOA_GPU_TIMING=1): timestamp pair around draw_scene*, read one frame late.

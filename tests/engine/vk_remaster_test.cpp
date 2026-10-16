@@ -1,4 +1,4 @@
-// Vulkan remaster presets: Original bit-identical after remastered frames; Enhanced / Ultra / FSR1 parity
+// Vulkan remaster presets: Original bit-identical after remastered frames; Enhanced / Ultra (TAA, upscale=none) / FSR1 parity
 // with OpenGL (same shaders in shaders/common, same CPU constants in post_frame.cpp / pbr_env.cpp); image-quality
 // keys on the Original look; validation clean. Thresholds: PSNR >= 40 dB, mean abs diff <= 1.0 (8-bit RGB).
 // RX 7900 XTX radeonsi vs RADV measured: Enhanced (4x MSAA) 44.8 dB / 0.34, Ultra 47.1 / 0.54, FSR1 67% 44.2 / 0.41,
@@ -50,6 +50,8 @@ int main() {
         // (measured 38.6 dB / 1.50 at 1.0, 47.7 dB / 0.44 at 0.3 with motion-vector TAA).
         Options go = demo_options(RendererKind::OpenGL, p), vo = demo_options(RendererKind::Vulkan, p);
         if (p == GraphicsPreset::Ultra) go.graphics.apply("graphics.sharpness", "0.3"), vo.graphics.apply("graphics.sharpness", "0.3");
+        // Ultra's FSR 3 is Vulkan-only (OpenGL runs it as FSR1): parity of the TAA path it falls back to, at native size.
+        if (p == GraphicsPreset::Ultra) go.graphics.apply("graphics.upscale", "none"), vo.graphics.apply("graphics.upscale", "none");
         try {
             gl = render(go, 6);
         } catch (const std::exception& e) {
@@ -74,6 +76,25 @@ int main() {
         const Image vk = render(o, 4);
         save(vk, "vk_remaster_fsr1_vk.png");
         parity("custom fsr1 67%", gl, vk, 40.0, 1.0);
+    }
+    // AMD FSR 3.1.4 (Ultra's upscaler) and frame generation: validation-clean full-size frames close to native TAA.
+    {
+        Options o = demo_options(RendererKind::Vulkan, GraphicsPreset::Ultra);
+        for (const char* k : {"raytracing.reflections", "raytracing.shadows", "raytracing.gi"}) o.graphics.apply(k, "false");
+        o.vk_validation = true;
+        Options taa = o;
+        taa.graphics.apply("graphics.upscale", "none");
+        const Image native = render(taa, 8);
+        for (const char* fg : {"false", "true"}) {
+            Options f = o;
+            CHECK(f.graphics.apply("graphics.frame_generation", fg).empty());
+            const Image vk = render(f, 8);
+            save(vk, *fg == 't' ? "vk_remaster_fsr3_fg_vk.png" : "vk_remaster_fsr3_vk.png");
+            const Diff d = diff(native.rgba, vk.rgba);
+            std::fprintf(stderr, "Ultra FSR 3 quality%s vs native TAA: mean abs diff %.3f, PSNR %.2f dB\n", *fg == 't' ? " + frame generation" : "",
+                         d.mad, d.psnr);
+            CHECK(vk.width == native.width && vk.height == native.height && d.psnr >= 25.0);
+        }
     }
     // Image-quality keys on the Original look (no remaster path): GL/Vulkan parity, and the image actually changes.
     const std::vector<std::vector<std::pair<const char*, const char*>>> quality = {

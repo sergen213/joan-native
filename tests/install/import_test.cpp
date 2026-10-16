@@ -141,9 +141,13 @@ int main() {
     CHECK(Settings::load(tmp / "missing.ini").serialize() == Settings{}.serialize());
     // [graphics] image-quality keys round-trip; unset = preset default (not written); other [graphics] lines survive.
     const auto gfx = Settings::parse("[graphics]\naa=smaa\nmsaa=4\nanisotropy=16\nrender_scale=1.5\nsharpness=0.25\nhd_packs=a, b\n"
-                                     "ssao=false\n[renderer]\npreset=original\n");
+                                     "ssao=false\nupscale=fsr3\nfsr_quality=performance\nframe_generation=true\n[renderer]\npreset=original\n");
     CHECK(gfx.aa == "smaa" && gfx.msaa == "4" && gfx.anisotropy == "16" && gfx.render_scale == "1.5" && gfx.sharpness == "0.25");
-    CHECK(gfx.graphics_extra == "hd_packs=a, b\nssao=false\n" && gfx.preset == "original");
+    CHECK((gfx.graphics_extra == decltype(gfx.graphics_extra){{"hd_packs", "a, b"}, {"ssao", "false"}, {"upscale", "fsr3"},
+                                                               {"fsr_quality", "performance"}, {"frame_generation", "true"}}) &&
+          gfx.preset == "original");
+    CHECK(gfx.serialize().find("sharpness=0.25\nhd_packs=a, b\nssao=false\nupscale=fsr3\nfsr_quality=performance\nframe_generation=true\n\n"
+                               "[display]") != std::string::npos);
     CHECK(Settings::parse(gfx.serialize()).serialize() == gfx.serialize());
     const auto bad_gfx = Settings::parse("[graphics]\naa=msaa\nmsaa=3\nanisotropy=0\nrender_scale=4\nsharpness=-1\n");
     CHECK(bad_gfx.aa.empty() && bad_gfx.msaa.empty() && bad_gfx.anisotropy.empty() && bad_gfx.render_scale.empty() && bad_gfx.sharpness.empty());

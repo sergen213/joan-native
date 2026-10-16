@@ -100,6 +100,31 @@ std::optional<TextureData> read_tga(const formats::Vfs& vfs, const std::string& 
     return t;
 }
 
+// Remaster water normal map from a Lake*.bmp height map (R): tangent-space normal (rgb = n * 0.5 + 0.5, slope scaled to an
+// RMS of 0.5) with the height in alpha (min..max -> 0..1: foam noise). Tiles like its source.
+TextureData water_normal_map(const TextureData& h) {
+    const int w = h.width, ht = h.height;
+    const auto at = [&](int x, int y) { return float(h.pixels[(std::size_t((y + ht) % ht) * std::size_t(w) + std::size_t((x + w) % w)) * 4]); };
+    std::vector<glm::vec2> g(std::size_t(w) * std::size_t(ht));
+    float lo = 255.0f, hi = 0.0f, sum = 0.0f;
+    for (int y = 0; y < ht; ++y)
+        for (int x = 0; x < w; ++x) {
+            const glm::vec2 d(at(x + 1, y) - at(x - 1, y), at(x, y + 1) - at(x, y - 1));
+            g[std::size_t(y) * std::size_t(w) + std::size_t(x)] = d * 0.5f;
+            sum += glm::dot(d, d) * 0.25f;
+            lo = std::min(lo, at(x, y)), hi = std::max(hi, at(x, y));
+        }
+    const float k = 0.5f / std::max(std::sqrt(sum / float(g.size())), 1e-3f);
+    TextureData t;
+    t.width = w, t.height = ht, t.format = PixelFormat::Rgba8Unorm, t.pixels.resize(g.size() * 4);
+    for (std::size_t i = 0; i < g.size(); ++i) {
+        const glm::vec3 n = glm::normalize(glm::vec3(-g[i] * k, 1.0f)) * 0.5f + 0.5f;
+        const float a = (float(h.pixels[i * 4]) - lo) / std::max(hi - lo, 1.0f);
+        for (int c = 0; c < 4; ++c) t.pixels[i * 4 + std::size_t(c)] = std::uint8_t(std::lround((c < 3 ? n[c] : a) * 255.0f));
+    }
+    return t;
+}
+
 }  // namespace
 
 WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 origin) : assets_(assets) {
@@ -133,7 +158,8 @@ WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 
         const std::vector<TexLayer> fx = reflection.empty() ? std::vector<TexLayer>{} : find_texteff(vfs, name);
         const auto bump = std::find_if(fx.begin(), fx.end(), [](const TexLayer& l) { return l.bump; });
         const TextureInfo* env = reflection.empty() ? nullptr : assets.texture(reflection);
-        if (lower(name) == "ice") {
+        const bool ice = lower(name) == "ice";
+        if (ice) {
             if (const TextureInfo* t = assets.texture("icelake")) m.albedo = t->handle;
             alpha = 1.0f;  // texteff "ice": AlphaOp arg1 = texture alpha
         } else if (bump != fx.end() && env) {
@@ -167,6 +193,12 @@ WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 
             if (!pool_)
                 if (const auto t = read_tga(vfs, "texture/misc/waterpool.tga")) pool_ = r.create_texture(*t);
             m.albedo = pool_;
+        }
+        if (!ice) {  // remaster water (Material::water): its normal map rides on the albedo's material maps
+            if (!normal_)
+                if (const auto t = read_bmp8(vfs, "texture/misc/lake1.bmp")) normal_ = r.create_texture(water_normal_map(*t));
+            if (normal_ && m.albedo) r.set_material_maps(m.albedo, {MaterialClass::Generic, normal_, {}, {}, {}});
+            m.water = 0.0f;
         }
 
         // Vertex grid (CONFIRMED): cell 800, or min(WIDTH, LENGTH) / 3 when either is below 800;
@@ -205,6 +237,7 @@ WaterField::~WaterField() {
     for (const Surface& s : surfaces_) r.destroy_mesh(s.handle);
     for (TextureHandle t : bump_frames_) r.destroy_texture(t);
     r.destroy_texture(pool_);
+    r.destroy_texture(normal_);
 }
 
 int WaterField::bump_count() const {
@@ -233,6 +266,7 @@ void WaterField::build(float time_s, glm::vec3 eye, std::vector<DrawItem>& draws
             }
             s.draw.material.bump = frame;
         }
+        if (s.draw.material.water >= 0.0f) s.draw.material.water = time_s;
         draws.push_back(s.draw);
     }
 }

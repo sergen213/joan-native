@@ -106,15 +106,25 @@ void main() {
         original = original_color(s);
         if (x.cls == kClassVegetation) ambient = vec3(0.0);  // no SSAO on thin foliage
 #ifdef RAY_TRACED
-        if (x.blend == 2 && d.bump != kNoTexture && RT.effects.x != 0.0) {  // bump-mapped water: inline mirror ray
-            vec4 w = rt_water(v_world, tex(d.bump, v_uv2).rg * d.bump_scale);
+        if (x.water < 0.0 && x.blend == 2 && d.bump != kNoTexture && RT.effects.x != 0.0) {  // bump-mapped water: inline mirror ray
+            vec2 b = tex(d.bump, v_uv2).rg * d.bump_scale;
+            vec4 w = rt_water(v_world, normalize(vec3(b.x * 4.0, 1.0, b.y * 4.0)));
             c = mix(c, w.rgb, w.a);
             base.a = mix(base.a, 1.0, w.a);
         }
 #endif
     }
+    float alpha = base.a;
+    if (x.water >= 0.0 && !unlit) {  // stylised water (renderer_vk.cpp: `water=enhanced` only), opaque over the scene copy
+        vec2 wa, wb;
+        water_uv(v_world, x.water, wa, wb);
+        vec4 flat_n = vec4(0.5, 0.5, 1.0, 0.5);
+        c = shade_water(v_world, x.normal != kNoTexture ? tex(x.normal, wa) : flat_n, x.normal != kNoTexture ? tex(x.normal, wb) : flat_n, x.water,
+                        gl_FragCoord.xy);
+        alpha = 1.0;
+    }
     float fog = no_fog ? 0.0 : v_fog;
-    o_color = vec4(apply_fog(c, fog), base.a);
+    o_color = vec4(apply_fog(c, fog), alpha);
     o_ambient = vec4(ambient * (1.0 - fog), 1.0);
     o_reference = vec4(luma(apply_fog(original, fog)), 0.0, 0.0, base.a);
 }

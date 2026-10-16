@@ -35,8 +35,8 @@ namespace joa::engine::vk {
     X(vkCmdEndRendering) X(vkCmdClearAttachments) X(vkCmdClearColorImage) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets)      \
     X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdPushConstants) X(vkCmdSetViewport) X(vkCmdSetScissor)             \
     X(vkCmdSetCullMode) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdCopyBuffer) X(vkCmdCopyBufferToImage)                          \
-    X(vkCmdCopyImageToBuffer) X(vkCmdBlitImage) X(vkCmdSetStencilReference) X(vkCmdFillBuffer)                              \
-    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkGetBufferDeviceAddress)                                                   \
+    X(vkCmdCopyImageToBuffer) X(vkCmdBlitImage) X(vkCmdSetStencilReference) X(vkCmdFillBuffer) X(vkCmdCopyImage)            \
+    X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkGetBufferDeviceAddress) X(vkCmdResolveImage)                              \
     /* VK_KHR_acceleration_structure (null unless ray tracing is enabled, docs/RAYTRACING.md) */                               \
     X(vkCreateAccelerationStructureKHR) X(vkDestroyAccelerationStructureKHR) X(vkGetAccelerationStructureBuildSizesKHR)        \
     X(vkCmdBuildAccelerationStructuresKHR) X(vkGetAccelerationStructureDeviceAddressKHR)                                      \

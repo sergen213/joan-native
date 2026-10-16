@@ -1,6 +1,7 @@
-// joa-launcher: Qt6 Widgets launcher. Links joa_install only (no engine code). Contract: docs/LAUNCHER.md.
+// joa-launcher: Qt6 Widgets launcher. Links joa_install and joa_update (no engine code). Contract: docs/LAUNCHER.md.
 #include "install/install.hpp"
 #include "install/settings.hpp"
+#include "update.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -24,6 +25,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressBar>
+#include <QScrollArea>
 #include <QPushButton>
 #include <QScreen>
 #include <QStandardPaths>
@@ -36,6 +38,7 @@
 #include <QThread>
 #include <algorithm>
 #include <csignal>
+#include <unistd.h>
 #include <utility>
 
 namespace {
@@ -60,13 +63,28 @@ void select(QComboBox* c, const QVariant& value) {
     c->setCurrentIndex(i < 0 ? 0 : i);
 }
 
+// [graphics] keys other than the image-quality ones live in Settings::graphics_extra; "" = key unset.
+std::string extraValue(const ji::Settings& s, const std::string& key) {
+    std::string value;
+    for (const auto& [k, v] : s.graphics_extra) if (k == key) value = v; // last one wins, like the engine
+    return value;
+}
+void setExtra(ji::Settings& s, const std::string& key, const std::string& value) {
+    std::erase_if(s.graphics_extra, [&](const auto& kv) { return kv.first == key; });
+    if (!value.empty()) s.graphics_extra.emplace_back(key, value);
+}
+
 class Launcher : public QMainWindow {
 public:
     Launcher() : paths_(ji::Paths::from_env()), settings_(ji::Settings::load(paths_.settings())) {
         setWindowTitle("Wars and Warriors: Joan of Arc — Native Launcher");
         auto* tabs = new QTabWidget;
         tabs->addTab(gameTab(), "Game");
-        tabs->addTab(graphicsTab(), "Graphics");
+        auto* graphics = new QScrollArea;  // the Custom group makes this tab taller than a 768 px screen
+        graphics->setWidget(graphicsTab());
+        graphics->setWidgetResizable(true);
+        graphics->setFrameShape(QFrame::NoFrame);
+        tabs->addTab(graphics, "Graphics");
         tabs->addTab(controllerTab(), "Controller");
         tabs->addTab(updatesTab(), "Updates");
         tabs_ = tabs;
@@ -129,11 +147,14 @@ private:
     QProgressBar* progress_ = nullptr;
     QPlainTextEdit* log_ = nullptr;
     QList<QWidget*> actions_; // disabled while a job runs
-    QPushButton *play_ = nullptr, *verify_ = nullptr, *repair_ = nullptr, *applyGame_ = nullptr, *applyLauncher_ = nullptr;
+    QPushButton *play_ = nullptr, *verify_ = nullptr, *repair_ = nullptr, *apply_ = nullptr;
     QCheckBox* wine_ = nullptr;
     QComboBox *backend_ = nullptr, *preset_ = nullptr, *resolution_ = nullptr, *aspect_ = nullptr, *mode_ = nullptr, *channel_ = nullptr;
     QCheckBox *rtReflections_ = nullptr, *rtShadows_ = nullptr, *rtGi_ = nullptr;
     QComboBox *aa_ = nullptr, *msaa_ = nullptr, *anisotropy_ = nullptr, *renderScale_ = nullptr, *sharpness_ = nullptr;
+    QGroupBox* custom_ = nullptr;
+    std::vector<std::pair<QComboBox*, std::string>> customKeys_; // Custom preset combos -> [graphics] key
+    std::vector<std::pair<QComboBox*, std::string>> qualityKeys_; // image-quality combos kept in graphics_extra (any preset)
     QDoubleSpinBox *deadzone_ = nullptr, *sensitivity_ = nullptr;
     QTextBrowser* notes_ = nullptr;
     QProcess updater_;
@@ -195,6 +216,21 @@ private:
         preset_ = combo({{"Original", "original"}, {"Enhanced", "enhanced"}, {"Ultra", "ultra"}, {"Custom", "custom"}});
         form->addRow("Renderer", backend_);
         form->addRow("Graphics preset", preset_);
+        // Custom preset look keys (read by the engine only with preset=custom); "Default (Enhanced)" = key unset.
+        custom_ = new QGroupBox("Custom preset options");
+        auto* cf = new QFormLayout(custom_);
+        const QList<QPair<QString, QString>> onOff = {{"Default (Enhanced)", ""}, {"On", "true"}, {"Off", "false"}};
+        for (const auto& [label, key] : {std::pair{"PBR materials", "pbr"}, {"Normal maps (HD packs)", "normal_maps"},
+                                         {"Image-based lighting", "ibl"}, {"HDR + tone mapping", "hdr"},
+                                         {"Ambient occlusion (SSAO)", "ssao"}, {"Volumetric fog", "volumetric_fog"},
+                                         {"Lit particles", "particle_lighting"}}) {
+            customKeys_.emplace_back(combo(onOff), key);
+            cf->addRow(label, customKeys_.back().first);
+        }
+        customKeys_.emplace_back(combo({{"Default (Enhanced)", ""}, {"Original stencil shadows", "0"}, {"Shadow map 1024", "1024"},
+                                        {"2048", "2048"}, {"4096", "4096"}, {"8192", "8192"}}), "shadow_map_size");
+        cf->addRow("Shadows", customKeys_.back().first);
+        form->addRow(custom_);
         auto* rt = new QGroupBox("Ray tracing (Vulkan only)");
         auto* rv = new QVBoxLayout(rt);
         rtReflections_ = new QCheckBox("Reflections");
@@ -217,6 +253,23 @@ private:
         qf->addRow("MSAA", msaa_);
         qf->addRow("Anisotropic filtering", anisotropy_);
         qf->addRow("Render scale", renderScale_);
+        // AMD FSR (upscale / fsr_quality / frame_generation keys, kept in graphics_extra): FSR 3 replaces TAA and the render
+        // scale on Vulkan; elsewhere it runs as FSR 1 at the same scale.
+        auto* upscale = combo({{"Preset default", ""}, {"Off", "none"}, {"AMD FSR 1", "fsr1"}, {"AMD FSR 3", "fsr3"}});
+        upscale->setToolTip("FSR 1: spatial upscale from the render scale. FSR 3: temporal upscaling + anti-aliasing (Vulkan, "
+                            "Enhanced/Ultra/Custom; Ultra uses it by default). OpenGL runs FSR 3 as FSR 1.");
+        auto* fsrQuality = combo({{"Preset default", ""}, {"Native AA (100%)", "native"}, {"Quality (67%)", "quality"},
+                                  {"Balanced (59%)", "balanced"}, {"Performance (50%)", "performance"},
+                                  {"Ultra performance (33%)", "ultra_performance"}});
+        fsrQuality->setToolTip("FSR 3 render resolution per axis; it sets the render scale.");
+        auto* frameGeneration = combo({{"Preset default (off)", ""}, {"Off", "false"}, {"On", "true"}});
+        frameGeneration->setToolTip("FSR 3 frame generation (Vulkan, needs FSR 3): an interpolated frame between rendered frames; "
+                                    "with vsync the game renders at half the refresh rate and shows every refresh.");
+        for (auto [c, key] : {std::pair{upscale, "upscale"}, {fsrQuality, "fsr_quality"}, {frameGeneration, "frame_generation"}})
+            qualityKeys_.emplace_back(c, key);
+        qf->addRow("Upscaler", upscale);
+        qf->addRow("FSR 3 quality", fsrQuality);
+        qf->addRow("Frame generation", frameGeneration);
         qf->addRow("Sharpening", sharpness_);
         form->addRow(quality);
         QList<QPair<QString, QString>> res = {{"Desktop", "0x0"}};
@@ -260,10 +313,8 @@ private:
         v->addWidget(updateStatus_);
         auto* row = new QHBoxLayout;
         row->addWidget(button("Check for Updates", &Launcher::checkUpdates));
-        applyGame_ = button("Update Game", &Launcher::updateGame);
-        applyLauncher_ = button("Update Launcher", &Launcher::updateLauncher);
-        row->addWidget(applyGame_);
-        row->addWidget(applyLauncher_);
+        apply_ = button("Update", &Launcher::update);
+        row->addWidget(apply_);
         row->addWidget(button("Roll Back Update", &Launcher::rollback));
         v->addLayout(row);
         v->addWidget(new QLabel("Release notes"));
@@ -286,6 +337,12 @@ private:
             if (c->findData(value) < 0) c->addItem(value, value);  // a hand-edited value stays selectable
             select(c, value);
         }
+        for (const auto* keys : {&customKeys_, &qualityKeys_})
+            for (const auto& [c, key] : *keys) {
+                const QString value = QString::fromStdString(extraValue(s, key));
+                if (c->findData(value) < 0) c->addItem(value, value);
+                select(c, value);
+            }
         const QString res = QString("%1x%2").arg(s.width).arg(s.height);
         if (resolution_->findData(res) < 0) resolution_->addItem(res, res);
         select(resolution_, res);
@@ -294,18 +351,22 @@ private:
         deadzone_->setValue(s.deadzone);
         sensitivity_->setValue(s.sensitivity);
         select(channel_, QString::fromStdString(s.channel));
-        syncRayTracing();
+        syncGraphics();
     }
 
-    void syncRayTracing() {
+    void syncGraphics() {
         const bool vulkan = backend_->currentData().toString() == "vulkan";
         for (auto* c : {rtReflections_, rtShadows_, rtGi_}) c->setEnabled(vulkan);
+        qualityKeys_[2].first->setEnabled(vulkan);  // frame generation is Vulkan-only
+        custom_->setVisible(preset_->currentData().toString() == "custom");
     }
 
     void connectSettings() {
         for (auto* c : {backend_, preset_, resolution_, aspect_, mode_, channel_, aa_, msaa_, anisotropy_, renderScale_, sharpness_})
             connect(c, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
         for (auto* c : {rtReflections_, rtShadows_, rtGi_}) connect(c, &QCheckBox::toggled, this, [this] { saveSettings(); });
+        for (const auto* keys : {&customKeys_, &qualityKeys_})
+            for (const auto& [c, key] : *keys) connect(c, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
         for (auto* d : {deadzone_, sensitivity_}) connect(d, &QDoubleSpinBox::valueChanged, this, [this] { saveSettings(); });
     }
 
@@ -321,6 +382,10 @@ private:
         s.anisotropy = anisotropy_->currentData().toString().toStdString();
         s.render_scale = renderScale_->currentData().toString().toStdString();
         s.sharpness = sharpness_->currentData().toString().toStdString();
+        // Custom keys are kept with every preset (the engine reads them only with custom), so switching presets loses
+        // nothing; the FSR keys apply to every preset.
+        for (const auto* keys : {&customKeys_, &qualityKeys_})
+            for (const auto& [c, key] : *keys) setExtra(s, key, c->currentData().toString().toStdString());
         const auto wh = resolution_->currentData().toString().split('x');
         s.width = wh.value(0).toInt();
         s.height = wh.value(1).toInt();
@@ -329,7 +394,7 @@ private:
         s.deadzone = deadzone_->value();
         s.sensitivity = sensitivity_->value();
         s.channel = channel_->currentData().toString().toStdString();
-        syncRayTracing();
+        syncGraphics();
         try { s.save(paths_.settings()); } catch (const std::exception& e) { append(QString("Cannot save settings: ") + e.what()); }
     }
 
@@ -356,14 +421,16 @@ private:
 
     void setBusy(bool busy) {
         for (auto* w : actions_) w->setEnabled(!busy);
-        if (!busy) { refreshStatus(); applyGame_->setEnabled(false); applyLauncher_->setEnabled(false); }
+        if (!busy) { refreshStatus(); apply_->setEnabled(false); }
     }
 
     ji::Options jobOptions() {
         ji::Options opt;
         opt.use_wine = wine_->isChecked();
+        // Desktop entry target: app/current survives updates (version dirs get pruned), then the AppImage, then this exe.
         opt.launcher_exec = fp(QCoreApplication::applicationFilePath());
         if (qEnvironmentVariableIsSet("APPIMAGE")) opt.launcher_exec = fp(qEnvironmentVariable("APPIMAGE"));
+        if (QFileInfo(installedLauncher()).isExecutable()) opt.launcher_exec = fp(installedLauncher());
         opt.progress = [this](int percent, const std::string& message) {
             QMetaObject::invokeMethod(this, [this, percent, msg = QString::fromStdString(message)] {
                 progress_->setValue(percent);
@@ -451,10 +518,9 @@ private:
         updater_.start(exe, args);
     }
     void checkUpdates() { runUpdater("check"); }
-    void updateGame() { runUpdater("apply"); }
-    void updateLauncher() { relaunchAfterApply_ = true; runUpdater("apply"); }
+    void update() { runUpdater("apply"); }
     void rollback() { runUpdater("rollback"); }
-    bool relaunchAfterApply_ = false;
+    QString installedLauncher() const { return qs(paths_.game_root.parent_path() / "app/current/bin/joa-launcher"); }
 
     void consumeUpdaterStderr() {
         updaterStderr_ += updater_.readAllStandardError();
@@ -475,7 +541,6 @@ private:
     void updaterFinished(int code, QProcess::ExitStatus status) {
         consumeUpdaterStderr();
         const auto obj = QJsonDocument::fromJson(updater_.readAllStandardOutput()).object();
-        const bool relaunch = std::exchange(relaunchAfterApply_, false);
         setBusy(false);
         if (status != QProcess::NormalExit || code != 0) {
             append("joa-updater failed: " + (obj["error"].toString().isEmpty() ? QString("exit code %1").arg(code) : obj["error"].toString()));
@@ -486,13 +551,12 @@ private:
             updateStatus_->setText(QString("Installed %1 — latest %2 %3").arg(obj["current"].toString(), obj["latest"].toString(),
                                                                             available ? "(update available)" : "(up to date)"));
             notes_->setMarkdown(obj["notes"].toString());
-            applyGame_->setEnabled(available);
-            applyLauncher_->setEnabled(available);
+            apply_->setEnabled(available);
         } else {
             append("joa-updater " + updaterCommand_ + ": done.");
-            if (relaunch) {
-                // joa-updater swaps $XDG_DATA_HOME/joan-native/app/current; prefer the new launcher there.
-                QString self = qs(paths_.game_root.parent_path() / "app/current/bin/joa-launcher");
+            // apply/rollback swapped app/current (game and launcher ship together): restart into it.
+            if (obj["from"].toString() != obj["to"].toString()) {
+                QString self = installedLauncher();
                 if (!QFileInfo(self).isExecutable())
                     self = qEnvironmentVariableIsSet("APPIMAGE") ? qEnvironmentVariable("APPIMAGE") : findTool("joa-launcher");
                 if (QProcess::startDetached(self, {})) QCoreApplication::quit();
@@ -501,9 +565,25 @@ private:
         }
     }
 };
+
+// An old AppImage keeps running its bundled binaries, so updates joa-updater installed into
+// $XDG_DATA_HOME/joan-native/app/current would never run: exec that launcher when it is newer.
+// It sees an equal version and stays (APPIMAGE remains set for relaunch/desktop-entry logic).
+void handOffToInstalledLauncher(char** argv) {
+    if (!std::getenv("APPIMAGE")) return;
+    try {
+        const auto app = ji::Paths::from_env().game_root.parent_path() / "app";
+        const auto exe = app / "current/bin/joa-launcher";
+        if (::access(exe.c_str(), X_OK) != 0 || joa::update::compare_versions(joa::update::active_version(app), JOA_VERSION) <= 0) return;
+        char* const self = std::exchange(argv[0], const_cast<char*>(exe.c_str()));
+        ::execv(exe.c_str(), argv);
+        argv[0] = self; // exec failed: carry on with this launcher
+    } catch (const std::exception&) {} // no/invalid installed version
+}
 } // namespace
 
 int main(int argc, char** argv) {
+    handOffToInstalledLauncher(argv);
     QApplication app(argc, argv);
     QApplication::setApplicationName("joa-launcher");
     QGuiApplication::setDesktopFileName("joan-native"); // Wayland app-id = desktop entry id

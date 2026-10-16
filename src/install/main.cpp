@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <unistd.h>
 
 namespace {
 using namespace joa::install;
@@ -78,10 +79,12 @@ int main(int argc, char** argv) {
         last = percent;
         std::cerr << "progress " << percent << " " << message << std::endl;
     };
-    // Desktop entry target, same rule as the launcher: the AppImage itself, else the sibling joa-launcher.
+    // Desktop entry target, same rule as the launcher: app/current (stable across updates), the AppImage, the sibling joa-launcher.
     std::error_code ec;
     const auto launcher = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path() / "joa-launcher";
-    if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage) opt.launcher_exec = appimage;
+    const auto installed = Paths::from_env().game_root.parent_path() / "app/current/bin/joa-launcher";
+    if (::access(installed.c_str(), X_OK) == 0) opt.launcher_exec = installed;
+    else if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage) opt.launcher_exec = appimage;
     else if (!ec && std::filesystem::exists(launcher)) opt.launcher_exec = launcher;
 
     json out;

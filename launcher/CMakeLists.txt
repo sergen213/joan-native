@@ -2,9 +2,12 @@
 if(NOT JOA_BUILD_LAUNCHER)
   return()
 endif()
+if(NOT JOA_BUILD_UPDATER)
+  message(FATAL_ERROR "JOA_BUILD_LAUNCHER needs JOA_BUILD_UPDATER (joa_update: AppImage hand-off to installed updates)")
+endif()
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Concurrent)
 add_executable(joa-launcher main.cpp)
-target_link_libraries(joa-launcher PRIVATE joa_install Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(joa-launcher PRIVATE joa_install joa_update Qt6::Widgets Qt6::Concurrent)
 target_compile_options(joa-launcher PRIVATE -Wall -Wextra)
 install(TARGETS joa-launcher RUNTIME DESTINATION bin)
 

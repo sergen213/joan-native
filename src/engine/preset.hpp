@@ -15,7 +15,16 @@ enum class GraphicsPreset { Original, Enhanced, Ultra, Custom };
 // Fxaa/Smaa: post passes on the tone-mapped LDR image (before the UI). Taa needs the remaster path's
 // per-object motion vectors: on the Original look resolve() turns it into Smaa.
 enum class AntiAliasing { None, Fxaa, Smaa, Taa };
-enum class Upscaler { None, Fsr1 };
+// Fsr3: AMD FSR 3.1.4 temporal upscaling (Vulkan remaster path; replaces TAA/FXAA/SMAA). Where it cannot run (OpenGL,
+// the Original look, a device without its shader features) it degrades to Fsr1 at the same render scale.
+enum class Upscaler { None, Fsr1, Fsr3 };
+// FSR 3 quality modes: render scale 1, 1/1.5, 1/1.7, 1/2, 1/3 per axis (AMD's ratios, as Kabus 22 `fsr=`).
+enum class FsrQuality { Native, Quality, Balanced, Performance, UltraPerformance };
+float fsr_render_scale(FsrQuality q);
+struct GraphicsSettings;
+// A renderer that cannot run FSR 3 (OpenGL, the Original look, unsupported device): FSR1 EASU at the FSR 3 quality
+// mode's render scale, no frame generation. No-op unless upscale == Fsr3.
+void fsr3_fallback(GraphicsSettings& g);
 enum class ProbeDensity { Low, Medium, High };  // GI probe spacing 192 / 128 / 96 units (docs/RAYTRACING.md)
 
 // Hardware ray tracing (Vulkan only, docs/RAYTRACING.md): settings.ini `[raytracing]`. Needs a remastered
@@ -50,8 +59,15 @@ struct GraphicsSettings {
     int anisotropy = 8;                    // 1..16 texture anisotropic filtering (any preset; 8 = the D3D8-era default kept so far)
     bool volumetric_fog = false;  // height fog + shadowed sun in-scattering (ray-marched)
     float fog_density = 1.0f;     // multiplier of the volumetric extinction
+    // `water=original|enhanced`: .stg water as the original blended bump/sphere map, or stylised (WoW: Forever-like depth
+    // colour, refraction, shoreline foam, scrolling normals, Fresnel sky/RT reflection, sun glints; pbr_shade.glsl).
+    bool water = false;
     bool particle_lighting = false;  // lit smoke, HDR emissive fire
     Upscaler upscale = Upscaler::None;
+    FsrQuality fsr_quality = FsrQuality::Quality;  // upscale=fsr3: resolve() sets render_scale from it
+    // FSR 3.1.4 frame generation: one interpolated frame presented between real frames (needs upscale=fsr3 on Vulkan;
+    // resolve() clears it otherwise, the Vulkan renderer when the device lacks the features).
+    bool frame_generation = false;
     float render_scale = 1.0f;  // scene resolution / output resolution, 0.5..2 (FSR1 EASU or bilinear when < 1, supersampling when > 1)
     float sharpness = 0.0f;     // RCAS strength 0..1 (0 = off), any preset
     std::vector<std::string> hd_packs;  // pack names under $XDG_DATA_HOME/joan-native/hd/ or absolute dirs, first wins

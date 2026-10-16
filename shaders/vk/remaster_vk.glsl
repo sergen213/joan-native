@@ -12,6 +12,7 @@ struct MaterialExtra {
     uint normal, rough, metal, ao;  // bindless slots, kNoTexture = none
     int cls;                        // MaterialClass
     int blend;                      // BlendMode
-    int pad0, pad1;
+    float water;                    // Material::water when `water=enhanced`, else -1
+    int pad1;
 };
 layout(set = 2, binding = 11, std430) readonly buffer Materials { MaterialExtra u_materials[]; };

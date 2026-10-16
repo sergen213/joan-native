@@ -173,7 +173,7 @@ Reference used: `work/reference/shots/s04_04_mission1_hud.png` (original S1L1 st
 | Sky | `sky_dome`: camera-centred hemisphere (radius 4000), unfogged, not a shadow receiver: fog colour at the horizon → (150,186,220) band → (118,160,206) zenith; `.day` CloudTexture1/2 as two alpha-blended layers. The original draws `model/sky01.smo` through `scatter.nvo` (oD0 = extinction·terrain reflectance·sun, oD1 = inscattering) — not reproduced | HYPOTHESIS, colours sampled from s04_04/s04_06 |
 | Shadows | stencil shadow volumes (`shadow_volume.cpp`, port of FUN_005e3040): welded `<am1>#S.AM1` (+ item `#s.SMO`), light-facing faces = near cap, silhouette edges extruded height+300 along the sun, no far cap; opaque pass writes stencil 128 on receivers (terrain/objects; units, sky 0); volumes front INCR / back DECR clamped (z-pass, 0x5f1cc0), then a full-screen black alpha-128 fill where 128 < stencil (0x5ee1d0) before the translucent pass; CONFIG.DAT 0x9C modes (volume within 1000 units, `ShadowModel` quad within 2000) | CONFIRMED order, ops, colour, cap/edge rules; HYPOTHESIS: extrusion length, units not receivers |
 | Dynamic grass | `grass_field`: 3×3-cell (192-unit) patches, ground texture covering ≥ half the cells → `DynGrass.res` `<tex>_M<scenario>` then `<tex>`: `model : count : percent : yaw : tilt`, `rand(100) < percent` → `max(1, count·density/100)` tufts, random yaw + tilt−(6..10)°, slope skip/sink, radius 2000 (CONFIG.DAT), one new patch per frame, alpha 255−128·(d−100)/(R−100) beyond 100 (FUN_00464740/00465a20/00466560) | CONFIRMED; `_M1` lookup HIGH; wind not done |
-| Water | `water.cpp`: `CreateWater` (FUN_004f5210) 800-unit grid around X,Y, vertex colour 65,51,80 a 0x80; texteff `BumpEnvWaterRiver`: BUMPENVMAP over `Lake1..65.bmp` (bump matrix 0.5, 30 ms/frame) then `spheremap` at uv = world reflection.xy + 0.5 (`Material::bump`) | CONFIRMED default (Reflection = Modulate, Bump = Yes); Reflection = High (planar RTT) not done |
+| Water | `water.cpp`: `CreateWater` (FUN_004f5210) 800-unit grid around X,Y, vertex colour 65,51,80 a 0x80; texteff `BumpEnvWaterRiver`: BUMPENVMAP over `Lake1..65.bmp` (bump matrix 0.5, 30 ms/frame) then `spheremap` at uv = world reflection.xy + 0.5 (`Material::bump`). Remaster `water=enhanced`: stylised shader (section "Remaster", `Material::water`) | CONFIRMED default (Reflection = Modulate, Bump = Yes); Reflection = High (planar RTT) not done |
 | Particles | `particles.cpp`: `.stg CreateParticle` + item `.pro` HasEmitter slots 0/1 → pscript event sequences (fade steps in seconds of age, random gravity, EmitRate carry, NumParticles cap, Loop≠0 burst), camera-facing quads, SRCALPHA + ONE/DESTALPHA → Additive, INVSRCALPHA → AlphaBlend (pemires.cpp 0x67f380/0x67faf0) | CONFIRMED sim; S1L1 11 emitters (9 torches, 2 waterfall); weather not active at mission start, not done |
 | Units | `script/scenario/<map>.sce` `load_unit/add_unit` + first `set_unit_pos/set_unit_dir` (degrees CCW from +X), then `<map>.uni` `CreateUnit` (UnitFile upper-cased = `unit/unit.res` record, X/Y on the terrain, HD same convention); AM1 faces +X | HIGH: Joan (115°) and Jean (295°) face each other, as in the capture; S1L1: 71 .uni units, all placed |
 | Unit look | `attach_items` `UnitDb`: unit.res `Model` (`unit/` + name), `Animation` → STD.SET `ANIMATE` {CODE, DBFNAME} → per-unit table, first row POSITION=STAND, MOVEMENT=IDLE, COMBO empty → `anim/<UPPERFILE>.am2` clip `UPPERNAME` (archers share `english_archer_share.am2`); bone names from `unit/<model>.AM3` | CONFIRMED tables; idle-row rule HIGH |
@@ -213,7 +213,7 @@ again between frames). Without a settings file the engine runs **Original**.
 - **Image-quality keys work with every preset** (section below): `aa`, `msaa`, `anisotropy`, `render_scale`, `upscale`,
   `sharpness` are applied on top of any preset (Original included) and never switch the renderer to the remaster path;
   the remaster path runs only for the look keys (`pbr`, `normal_maps`, `ibl`, `hdr`, `shadow_map_size`, `ssao`,
-  `volumetric_fog`, `particle_lighting`: `GraphicsSettings::remastered()`), which apply only with `custom`.
+  `volumetric_fog`, `particle_lighting`, `water`: `GraphicsSettings::remastered()`), which apply only with `custom`.
 - **Enhanced / Ultra** (Custom = Enhanced + keys). Every feature has its own key:
 
 | Feature | Key | Enhanced | Ultra | Implementation |
@@ -227,6 +227,7 @@ again between frames). Without a settings file the engine runs **Original**.
 | AA | `aa`, `msaa` | 4× MSAA | TAA | Halton(2,3) jitter; per-pixel motion vectors (RG16F MRT of the opaque and depth-writing blended mesh draws: previous minus current uv, both unjittered; previous model matrix per draw matched by mesh/index range/`DrawItem::object`/occurrence in `post_frame.cpp previous_models`, previous CPU-skinned pose kept by `update_mesh` as a second vertex stream; new or >256-unit jumps = camera-only), taken from the nearest-depth texel of the 3×3 neighbourhood; cleared background reprojects the far plane; 5-tap Catmull-Rom history, YCoCg variance clip (mean ± 1.25 σ), 10 % new sample rising to 30 % with the sub-pixel part (full at ¼ px) or speed (full at 8 px) of the motion; mesh texture LOD bias −1. Camera-only reprojection doubled the running hero and left her greaves semi-transparent; now opaque and single at 30 and 240 fps pacing (GL and Vulkan) |
 | Volumetric fog | `volumetric_fog`, `fog_density` | 12 steps | 24 steps | height fog below the camera with shadow-mapped HG(0.55) sun in-scattering, on top of the original linear fog |
 | Particle lighting | `particle_lighting` | on | on | alpha-blended smoke lit by ambient + shadowed sun; additive fire ×1.6 HDR |
+| Stylised water | `water=original\|enhanced` | enhanced | enhanced | World of Warcraft: Forever-style `.stg CreateWater` surfaces (not ice), `pbr_shade.glsl shade_water`: before the translucent pass the opaque HDR colour (MSAA: resolved) and depth are copied (GL blit into `water_color`/`water_depth`, units 29/30; Vulkan `RmTargets::opaque` — shared with the FSR 3 reactive-mask input — + `water_depth`, set-2 bindings 22/23); water draws first among the blended draws, writes alpha 1 over the copy plus its own depth and motion vectors (blend_zwrite pipeline / GL depth mask + motion buffer: TAA, FSR 3 and the volumetric fog see the surface, not the bed), so every other blend lands on top and FSR 3's reactive mask (opaque copy vs final HDR) marks it. Colour = refracted bed (uv offset by the ripple slope, scaled up with depth, cancelled where the offset sample lies above the surface) × per-channel absorption exp(−(0.008, 0.0026, 0.0019) × path) + in-scatter teal (0.05, 0.32, 0.30) → deep blue (0.006, 0.05, 0.11) over 20–260 units of bed depth, lit by the Original water's D3D light; Schlick-Fresnel sky (IBL env mip 0; Ultra RT: `rt_water` mirror ray about the rippled normal); GGX (α 0.07) sun glints shadowed by the sun map; shoreline foam over the first 40 units of depth broken by the height maps and lapping with time; reflection, glints and foam fade in over the first units so the waterline has no hard edge. Normals: two world-anchored layers (900 and 260 units per tile, crossing directions, 0.02/0.05 tiles/s) of a normal map made from the original `Lake1.bmp` height map (`water_normal_map`, height in alpha = foam noise), registered as the water albedo's `MaterialMaps::normal`. Water casts no sun shadow. No vertex waves (800-unit grid) |
 | Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0 | off, 1.0, 1.0 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX). Ultra RCAS 1.0 after TAA: a converged TAA image is ~0.5× the no-AA Laplacian variance (demo static view 0.49–0.59×); at 1.0 the running Joan crop (`work/gfxbug/run.txt` shots 130/160/185, 1080p, torso) is 1.07/0.90/1.11× (GL) and 1.07/0.92/1.13× (Vulkan) the `aa=none` frame at the old 0.3, 1.18/0.94/1.18× at 240 fps pacing; motion-vector TAA at 0.3 gives 0.33/0.32/0.45×, the old camera-only TAA 0.17/0.21/0.19× |
 
 `auto_exposure=false` (any remaster preset, like `sharpness`) pins the exposure to `exposure` — A/B comparisons and
@@ -252,7 +253,43 @@ with FXAA + `render_scale=2` + RCAS + 16× anisotropy (also: differs from plain 
 Remaster gaps: no soft particles (GL 3.3 cannot sample the attached
 depth); TAA motion vectors cover only the mesh passes (particles and non-depth-writing blends reproject with what lies behind them; the RT denoiser history is still camera-only); GL GPU timing (`JOA_GPU_TIMING=1`)
 uses timestamps that include driver submission bubbles; no bloom; the volumetric density is relative to the camera
-height (no absolute ground reference); the in-game options menu does not expose presets yet.
+height (no absolute ground reference); the in-game options menu does not expose presets yet. Stylised water: refraction
+sees only the opaque scene (blends below the surface are hidden), and the straight edges of the original water
+rectangles stay visible where they end above lower terrain.
+
+### FSR 3 (`upscale=fsr3`, `frame_generation`; Vulkan)
+
+AMD FidelityFX SDK v1.1.4 (FSR 3.1.4 upscaler, frame interpolation, optical flow, Vulkan backend) is vendored in
+`third_party/fidelityfx-sdk` (MIT; `README.md`: provenance from ETI Yami, glue in `joa/`, the 7 local patches). CMake
+compiles only the permutations the clamped capabilities request (glslangValidator; glslc strips the resource names the
+SDK binds by) into `joa_fsr3`; `tools/embed_fsr_shaders.py` writes the blob accessor. Wrapper: `src/engine/fsr_vk.cpp`
+(ported from IKV `src/fsr_vk.cpp`). Device needs `shaderStorageImageWriteWithoutFormat`, extended storage formats and
+compute subgroup quad ops (frame generation also subgroup arithmetic and `shaderStorageImageReadWithoutFormat`); the log
+prints `vulkan FSR 3.1.4 available|unavailable: <reason>`.
+
+Pipeline (`render_remaster` → `fsr_upscale`, render size from `fsr_quality`): FSR's Halton(2,3) jitter of
+8·(display/render)² phases replaces the TAA jitter (`build_remaster_frame`); the tone-mapped composite is the colour input;
+`post_fsr_inputs.frag` writes R32F device depth, full unjittered motion (the per-object TAA motion vectors where geometry
+was drawn, far-plane camera reprojection elsewhere) and the reactive mask (FSR's autogen formula between the opaque-only HDR
+copy taken before the translucent pass and the final HDR: smoke, fire, particles, water). FSR replaces TAA/FXAA/SMAA and
+MSAA (forced to 1); its RCAS takes `sharpness` and the final pass only copies. History resets on resize, settings changes,
+camera cuts (the auto-exposure snap) and after any frame without the pass. The HUD/UI is drawn at display resolution
+after the upscale. Only one upscaler call per frame: each call advances the SDK's 4-entry descriptor-view ring, so the
+SDK's own reactive-mask dispatch (a second call) freed views still in flight.
+
+Frame generation (`frame_generate`, ETI Yami / IKV present path): the HUD-less display image is copied as the
+interpolation source, FSR writes the frame halfway between the previous and this one, this frame's UI is drawn onto it,
+and `end_frame` presents it before the real frame (own acquire semaphore and command buffer per slot). With FIFO vsync
+(the default) each image shows for one refresh, so presentation runs at the refresh rate and rendering at half of it. No
+generated frame after a history reset. Logged at exit: `vulkan frame generation: N generated + M real frames presented`.
+
+Ultra uses **native AA** (render scale 1), not Kabus 22's quality mode. Measured on the real display (RX 7900 XTX RADV,
+1920×1080, Ultra with RT, `work/gfxbug/run.txt` shots 130/160/185, Joan crop Laplacian variance, `work/gfxbug/Fsr3/`):
+unsharpened TAA 702/836/1607; no AA at all 2427/3244/3750; FSR 3 native + RCAS 1.0 2580/3194/3490 (0.97–1.06× no AA,
+2.2–3.8× the TAA accumulation); FSR 3 quality (720p) 1320/1617/1687; the old Ultra TAA + RCAS 1.0 5338/4590/5493 reaches
+its number by over-sharpening (7.6× its own accumulation, above the aliased frame). Frame generation leaves the real
+frames unchanged (identical shots) and presented 189 generated + 190 real frames over the 190-frame script. Khronos
+validation (+synchronization) reports 0 errors for Ultra FSR 3 with and without frame generation (raster + RT).
 
 ### Image quality on every preset (`aa`, `msaa`, `anisotropy`, `render_scale`, `sharpness`)
 
@@ -270,6 +307,9 @@ none, scale 1, sharpness 0) keeps the direct faithful path (bit-identical, `engi
 | `anisotropy` | 1–16 | 8 / 8 / 8 | GL `GL_TEXTURE_MAX_ANISOTROPY` on mipmapped textures (updated in place when changed); Vulkan anisotropic samplers recreated and every mipmapped bindless slot rewritten |
 | `render_scale` | 0.5–2 | 1 / 1 / 1 | scene size = output × scale. < 1: EASU with `upscale=fsr1`, else bilinear. > 1 = supersampling: the final pass averages a 2×2 bilinear box per output pixel (exact 2×2 box at 2.0; RCAS then sharpens at output resolution) |
 | `sharpness` | 0–1 | 0 / 0 / 1.0 | RCAS in the final pass, usable without TAA |
+| `upscale` | none, fsr1, fsr3 | none / none / fsr3 | `fsr1`: EASU from `render_scale`. `fsr3`: AMD FSR 3.1.4 temporal upscaling (Vulkan remaster path, section "FSR 3"); on OpenGL, the Original look or a device without its features it runs as `fsr1` at the FSR 3 render scale (`fsr3_fallback`) |
+| `fsr_quality` | native, quality, balanced, performance, ultra_performance | quality / quality / native | FSR 3 render scale 1, 1/1.5, 1/1.7, 1/2, 1/3 per axis (replaces `render_scale` while `upscale=fsr3`) |
+| `frame_generation` | 0, 1 | 0 / 0 / 0 | FSR 3.1.4 frame generation (optical flow + frame interpolation): one generated frame presented before every real one. Needs `upscale=fsr3` and Vulkan (`resolve()` / the renderer clear it otherwise) |
 
 Original-look post path (`draw_scene_original_post` / `render_original_post`): the frame block of the remaster path is
 filled by `build_remaster_frame` (no jitter, no TAA), the scene goes through `draw_scene` unchanged into the scene target,

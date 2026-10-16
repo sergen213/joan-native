@@ -40,6 +40,78 @@ foreach(s ${JOA_VK_SHADERS})
   list(APPEND JOA_VK_SPIRV "${out}")
 endforeach()
 
+# AMD FidelityFX SDK v1.1.4 (third_party/fidelityfx-sdk/README.md: provenance, local patches): FSR 3.1.4 upscaler, frame
+# interpolation and optical flow for the Vulkan renderer (fsr_vk.cpp). Only the permutations joa_ffx_clamp_capabilities
+# lets the SDK request are compiled (FP32, wave32, render-size unjittered motion vectors, standard depth);
+# tools/embed_fsr_shaders.py turns them into the SDK's blob accessor. Build/link recipe from ETI Yami's CMakeLists.txt.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(JOA_FFX_DIR "${JOA_ROOT}/third_party/fidelityfx-sdk")
+set(JOA_FFX_GPU "${JOA_FFX_DIR}/include/FidelityFX/gpu")
+file(GLOB_RECURSE JOA_FFX_GPU_HEADERS CONFIGURE_DEPENDS "${JOA_FFX_GPU}/*.h")
+set(JOA_FFX_SPIRV "")
+# glslangValidator (as ETI Yami): glslc -Os strips the resource names the SDK binds its descriptors by
+# (ffxFsr3UpscalerContextCreate then fails with FFX_ERROR_INVALID_ARGUMENT).
+find_program(JOA_GLSLANG glslangValidator REQUIRED)
+# src/backends/vk/shaders/<effect>/<stem>.glsl -> ffx/<stem><suffix>.spv with the extra defines.
+function(joa_ffx_shader effect stem suffix)
+  set(source "${JOA_FFX_DIR}/src/backends/vk/shaders/${effect}/${stem}.glsl")
+  set(spirv "${CMAKE_CURRENT_BINARY_DIR}/ffx/${stem}${suffix}.spv")
+  add_custom_command(OUTPUT "${spirv}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/ffx"
+    COMMAND ${JOA_GLSLANG} -V --target-env vulkan1.2 -S comp -Os -DFFX_GPU=1 -DFFX_GLSL=1 -DFFX_HALF=0 ${ARGN}
+            "-I${JOA_FFX_GPU}" "-I${JOA_FFX_GPU}/${effect}" -o "${spirv}" "${source}"
+    DEPENDS "${source}" ${JOA_FFX_GPU_HEADERS} VERBATIM)
+  set(JOA_FFX_SPIRV ${JOA_FFX_SPIRV} "${spirv}" PARENT_SCOPE)
+endfunction()
+# Base defines from the SDK's CMakeCompile{FSR3Upscaler,Frameinterpolation,Opticalflow}Shaders.txt.
+set(JOA_FSR3_DEFINES
+  -DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF=0 -DFFX_FSR3UPSCALER_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF=0
+  -DFFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF=1 -DFFX_FSR3UPSCALER_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF=0
+  -DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2 -DFFX_FSR3UPSCALER_OPTION_REPROJECT_USE_LANCZOS_TYPE=0
+  -DFFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS=1 -DFFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS=0
+  -DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=0)
+foreach(pass IN ITEMS prepare_inputs luma_pyramid shading_change_pyramid shading_change prepare_reactivity luma_instability accumulate
+        rcas debug_view autogen_reactive)
+  foreach(sharpen 0 1)
+    foreach(hdr 0 1)
+      joa_ffx_shader(fsr3upscaler ffx_fsr3upscaler_${pass}_pass .h${hdr}s${sharpen} ${JOA_FSR3_DEFINES}
+        -DFFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=${hdr} -DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=${sharpen})
+    endforeach()
+  endforeach()
+endforeach()
+foreach(pass IN ITEMS reconstruct_and_dilate_pass setup_pass reconstruct_previous_depth_pass game_motion_vector_field_pass
+        optical_flow_vector_field_pass disocclusion_mask_pass pass compute_inpainting_pyramid_pass inpainting_pass
+        compute_game_vector_field_inpainting_pyramid_pass debug_view_pass)
+  joa_ffx_shader(frameinterpolation ffx_frameinterpolation_${pass} ""
+    -DFFX_FRAMEINTERPOLATION_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF=0 -DFFX_FRAMEINTERPOLATION_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF=0
+    -DFFX_FRAMEINTERPOLATION_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF=1 -DFFX_FRAMEINTERPOLATION_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF=0
+    -DFFX_FRAMEINTERPOLATION_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2 -DFFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS=1
+    -DFFX_FRAMEINTERPOLATION_OPTION_JITTER_MOTION_VECTORS=0 -DFFX_FRAMEINTERPOLATION_OPTION_INVERTED_DEPTH=0)
+endforeach()
+foreach(pass IN ITEMS prepare_luma_pass compute_luminance_pyramid_pass generate_scd_histogram_pass compute_scd_divergence_pass
+        compute_optical_flow_advanced_pass_v5 filter_optical_flow_pass_v5 scale_optical_flow_advanced_pass_v5)
+  joa_ffx_shader(opticalflow ffx_opticalflow_${pass} "" -DFFX_OPTICALFLOW_OPTION_HDR_COLOR_INPUT=0)
+endforeach()
+set(JOA_FFX_BLOBS "${CMAKE_CURRENT_BINARY_DIR}/ffx/ffx_shader_blobs.cpp")
+add_custom_command(OUTPUT "${JOA_FFX_BLOBS}"
+  COMMAND "${Python3_EXECUTABLE}" "${JOA_ROOT}/tools/embed_fsr_shaders.py" --output "${JOA_FFX_BLOBS}" ${JOA_FFX_SPIRV}
+  DEPENDS ${JOA_FFX_SPIRV} "${JOA_ROOT}/tools/embed_fsr_shaders.py" VERBATIM)
+set(JOA_FFX_UPSTREAM
+  "${JOA_FFX_DIR}/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp" "${JOA_FFX_DIR}/src/components/frameinterpolation/ffx_frameinterpolation.cpp"
+  "${JOA_FFX_DIR}/src/components/opticalflow/ffx_opticalflow.cpp" "${JOA_FFX_DIR}/src/backends/vk/ffx_vk.cpp"
+  "${JOA_FFX_DIR}/src/shared/ffx_assert.cpp" "${JOA_FFX_DIR}/src/shared/ffx_message.cpp"
+  "${JOA_FFX_DIR}/src/shared/ffx_breadcrumbs_list.cpp" "${JOA_FFX_DIR}/src/shared/ffx_object_management.cpp")
+add_library(joa_fsr3 STATIC ${JOA_FFX_UPSTREAM} "${JOA_FFX_DIR}/joa/joa_ffx_vulkan.cpp" "${JOA_FFX_BLOBS}")
+set_target_properties(joa_fsr3 PROPERTIES CXX_STANDARD 17)
+target_compile_definitions(joa_fsr3 PRIVATE VK_NO_PROTOTYPES)  # Vulkan resolved at runtime (joa_ffx_load_vulkan)
+# joa/ first: it shadows FidelityFX/host/ffx_types.h to size the opaque contexts for 4-byte wchar_t.
+# src/components: fsr_vk.cpp reaches the upscaler's private context for its shared resources (as IKV/Kabus 22 do).
+target_include_directories(joa_fsr3 SYSTEM PUBLIC "${JOA_FFX_DIR}/joa" "${JOA_FFX_DIR}/include" "${JOA_FFX_DIR}/src/components")
+target_include_directories(joa_fsr3 PRIVATE "${JOA_FFX_DIR}/src/shared" "${JOA_FFX_DIR}/src/backends/shared")
+target_link_libraries(joa_fsr3 PUBLIC Vulkan::Headers)
+target_compile_options(joa_fsr3 PRIVATE "-include${JOA_FFX_DIR}/joa/ffx_compat.h")
+set_source_files_properties(${JOA_FFX_UPSTREAM} PROPERTIES COMPILE_OPTIONS -w)
+
 file(GLOB JOA_ENGINE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 list(REMOVE_ITEM JOA_ENGINE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
 if(NOT JOA_DEV_OVERLAY)
@@ -49,6 +121,7 @@ add_library(joa_engine STATIC ${JOA_ENGINE_SRC} ${CMAKE_CURRENT_BINARY_DIR}/gl_s
 target_include_directories(joa_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vk_shaders" "${JOA_ROOT}/third_party")  # renderdoc/renderdoc_app.h
 target_include_directories(joa_engine PUBLIC "${JOA_ROOT}/src")
 target_link_libraries(joa_engine PUBLIC joa_formats joa_game SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
+target_link_libraries(joa_engine PRIVATE joa_fsr3)  # fsr_vk.cpp only
 target_compile_options(joa_engine PRIVATE -Wall -Wextra)
 
 if(JOA_DEV_OVERLAY)

@@ -266,6 +266,11 @@ int MapObjects::sell_list(std::string_view code) const {
     return 0;
 }
 
+bool MapObjects::is_map_item(int id) const {
+    const ObjRes* r = res(id);
+    return r && modify_class(r->cls) && r->type != 6;
+}
+
 // Length of a clip of the model shown at `stage` (FUN_004a3f20: stage model, else Model), from
 // ITEM\<dir>\anim\<model>.am2, else ANIM\<model>.am2.
 int MapObjects::clip_ms(int res_id, int stage, std::string_view clip) {
@@ -618,8 +623,8 @@ bool MapObjects::load(Mission& m, const formats::Vfs& vfs, const std::string& ma
             const std::string* path = b.get("Path");
             const std::string* file = b.get("ObjectFile");
             const int id = res_by_code((path ? *path : std::string()) + (file ? *file : std::string()));
+            if (!is_map_item(id)) continue;   // render-only scenery (create=1 pass)
             const ObjRes* r = res(id);
-            if (!r || !modify_class(r->cls) || r->type == 6) continue;   // render-only scenery (create=1 pass)
             const int ir = create(m, id);
             MapItem& it = items_[ir - 1];
             if (const std::string* nm = b.get("ObjectName")) it.name = nm->substr(0, 63);

@@ -98,6 +98,10 @@ struct Material {
     // Optional D3DTOP_BUMPENVMAP stand-in: albedo uv += bump_scale * bump(uv2).rg (bump repeats).
     TextureHandle bump{};
     float bump_scale = 0.0f;
+    // >= 0: an .stg CreateWater surface (water.cpp, not ice), value = its animation time in seconds. The remaster look with
+    // `water=enhanced` shades it as stylised water (pbr_shade.glsl shade_water: normal map = its MaterialMaps normal); the
+    // Original look and `water=original` ignore it.
+    float water = -1.0f;
 };
 
 // Fragment alpha-test threshold of a material in the colour passes, -1 = no test.

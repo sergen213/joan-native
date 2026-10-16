@@ -539,7 +539,9 @@ void WorldScene::load_objects(Node& n, const formats::BlockText& stg) {
             item_light->position = glm::vec3(t * glm::vec4(item_light->position, 1.0f));
             add_light(*item_light, sector_at(item_light->position), st);
         }
-        objects_.push_back({m, t, glm::vec3(t * glm::vec4(m->center, 1.0f)), m->radius * scale});
+        const float x = float(b.number("X")), y = float(b.number("Y")), z = float(b.number("Z"));
+        objects_.push_back({m, t, glm::vec3(t * glm::vec4(m->center, 1.0f)), m->radius * scale, 0, {}, *dir + *file, base + model_file, anim,
+                            {n.map.origin.x + x, n.map.origin.y + y, z}});
         ++st.placed;
     }
 }
@@ -550,7 +552,7 @@ void WorldScene::build(const glm::mat4& view_proj, glm::vec3 camera_pos, std::ve
     const float far2 = kWorldFar * kWorldFar;
     for (const PlacedObject& o : objects_) {
         const glm::vec3 d = o.center - camera_pos;
-        if (glm::dot(d, d) > far2 + o.radius * o.radius * 4.0f || !sphere_visible(planes, o.center, o.radius)) continue;
+        if (o.hidden || glm::dot(d, d) > far2 + o.radius * o.radius * 4.0f || !sphere_visible(planes, o.center, o.radius)) continue;
         for (const ModelPart& part : o.model->parts) {
             DrawItem& di = draws.emplace_back(DrawItem{o.model->mesh, part.material, o.transform, part.first_index, part.index_count});
             di.light_count = o.light_count;

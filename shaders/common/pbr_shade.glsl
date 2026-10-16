@@ -171,3 +171,66 @@ vec3 original_color(Surface s) {
 
 // Original linear vertex fog, mixed in gamma space like D3D8 (v_fog from the vertex shader).
 vec3 apply_fog(vec3 c, float fog) { return fog > 0.0 ? to_linear(mix(to_srgb(c), R.fog_color.rgb, fog)) : c; }
+
+// ---- Stylised water (`[graphics] water=enhanced`, docs/GRAPHICS_ROADMAP.md "Water") ----------------------------------
+// .stg CreateWater surfaces after World of Warcraft: Forever's water: saturated teal-to-deep-blue absorption over the bed
+// seen through the surface (the opaque scene and its depth, copied before the translucent pass, refracted by the ripples),
+// a soft shoreline foam band, two scrolling normal layers (water.cpp: the original Lake1.bmp height map), Fresnel sky (or
+// ray-traced) reflection and sun glints. Drawn opaque over the copy, so the waterline has no hard edge.
+TEX(22) sampler2D u_water_color;  // opaque HDR scene before the translucent pass
+TEX(23) sampler2D u_water_depth;  // its depth
+
+const mat2 kWaterRot = mat2(0.8, 0.6, -0.6, 0.8);
+// World-anchored uv of the two normal layers at time t (seconds): broad swell + finer ripples, crossing directions.
+void water_uv(vec3 p, float t, out vec2 a, out vec2 b) {
+    a = p.xz * (1.0 / 900.0) + t * vec2(0.016, 0.009);
+    b = kWaterRot * p.xz * (1.0 / 260.0) + t * vec2(-0.030, 0.041);
+}
+
+// na, nb: the water normal map at water_uv (rgb tangent normal, a height). Returns the linear HDR colour (drawn with alpha 1).
+vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
+    vec3 ta = na.xyz * 2.0 - 1.0, tb = nb.xyz * 2.0 - 1.0;
+    vec2 s = 0.4 * ta.xy / max(ta.z, 0.3) + 0.35 * (transpose(kWaterRot) * tb.xy) / max(tb.z, 0.3);
+    vec3 n = normalize(vec3(s.x, 1.0, s.y));
+    vec3 v = normalize(R.camera_pos.xyz - p);
+    float nv = max(dot(n, v), 1e-3), dist = distance(R.camera_pos.xyz, p);
+
+    // Bed under the surface: vertical depth (shoreline) and, along the refracted view, the path length through the water.
+    vec2 uv = pixel * R.screen.zw;
+    float depth = max(p.y - world_from_depth(uv, textureLod(u_water_depth, uv, 0.0).r).y, 0.0);
+    vec2 ruv = uv + s * (0.025 * smoothstep(0.0, 80.0, depth) / (1.0 + dist / 1500.0));
+    vec3 bed = world_from_depth(ruv, textureLod(u_water_depth, ruv, 0.0).r);
+    if (bed.y > p.y) {  // the offset sample is above the water (shore, a foreground object): look straight through
+        ruv = uv;
+        bed = world_from_depth(uv, textureLod(u_water_depth, uv, 0.0).r);
+    }
+    vec3 below = textureLod(u_water_color, ruv, 0.0).rgb;
+    float path = distance(p, bed), bed_depth = max(p.y - bed.y, 0.0);
+
+    // Absorption (red first: teal shallows) + in-scattered colour from teal to deep blue, lit like the Original water.
+    vec3 light = to_linear(min(R.ambient.rgb + R.sun_color.rgb * max(-R.sun_dir.y, 0.0), vec3(1.0)));
+    vec3 tr = exp(-vec3(0.0080, 0.0026, 0.0019) * path);
+    vec3 scatter = mix(vec3(0.05, 0.32, 0.30), vec3(0.006, 0.05, 0.11), smoothstep(20.0, 260.0, bed_depth)) * light;
+    vec3 c = below * tr + scatter * (1.0 - tr);
+
+    // Reflection (sky environment, or the ray-traced mirror ray) with Schlick Fresnel; sun glints on the ripples. Both
+    // fade in over the first units of depth so the waterline stays soft.
+    float edge = smoothstep(0.0, 10.0, depth);
+    vec3 r = reflect(-v, n);
+    r.y = abs(r.y);
+    vec3 sky = R.ambient.w != 0.0 ? textureLod(u_env, equirect_uv(r), 0.0).rgb : to_linear(R.fog_color.rgb);
+#ifdef RT_COMMON
+    if (RT.effects.x != 0.0) sky = rt_water(p, n).rgb;
+#endif
+    c = mix(c, sky, (0.02 + 0.98 * pow(1.0 - nv, 5.0)) * edge);
+    vec3 l = -R.sun_dir.xyz, h = normalize(l + v);
+    float nl = max(dot(n, l), 0.0), a = 0.07;
+    float spec = d_ggx(max(dot(n, h), 0.0), a) * v_smith(nv, nl, a) * nl * (0.02 + 0.98 * pow(1.0 - max(dot(v, h), 0.0), 5.0));
+    c += spec * to_linear(min(R.sun_color.rgb, vec3(1.0))) * sun_shadow(p, vec3(0.0, 1.0, 0.0), pixel) * edge;
+
+    // Shoreline foam: a soft band over the shallow bed, broken up by both height layers and lapping with time.
+    float band = 1.0 - smoothstep(0.0, 40.0, depth), pattern = 0.5 * (na.a + nb.a);
+    float lap = 0.5 + 0.5 * sin(depth * 0.25 - t * 1.5 + pattern * 6.0);
+    float foam = band * band * smoothstep(0.4, 0.75, 0.6 * pattern + 0.4 * lap);
+    return mix(c, light * 0.85, foam * 0.75 * smoothstep(0.0, 4.0, depth));
+}

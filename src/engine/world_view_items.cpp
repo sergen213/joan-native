@@ -3,6 +3,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -136,6 +137,56 @@ void WorldView::build_items(float alpha, std::vector<DrawItem>& draws) {
         }
         ++item_stats_.drops;
     }
+}
+
+void WorldView::sync_map_items(const game::World& world) {
+    const int now = world.now();
+    std::erase_if(map_actors_, [&](MapActor& a) {
+        const game::MapItem* it = objects_->item(a.recno);
+        if (!it || it->res != a.res) return scene_->hide(a.object), true;
+        const game::ObjRes& r = *objects_->res(a.res);
+        const PlacedObject& o = scene_->objects()[a.object];
+        // stage_down: stage s -> s-1 plays stages[s-1].anim on the model shown at s-1 (FUN_004a3f20).
+        if (it->stage != a.stage && it->stage < int(r.stages.size()) && !o.anim.empty()) {
+            const std::string& clip = r.stages[std::size_t(it->stage)].anim;
+            const std::string& shown = it->stage >= 1 && !r.stages[std::size_t(it->stage - 1)].model.empty()
+                                           ? r.stages[std::size_t(it->stage - 1)].model : r.model;
+            const std::string file = lower(o.path.substr(o.path.find_last_of("/\\") + 1));
+            if (!clip.empty() && file == lower(shown)) {
+                try {
+                    if (!a.anim) a.anim = std::make_unique<Character>(*assets_, o.path, o.anim);
+                    if (a.anim->play(o.anim, clip)) a.clip = clip, a.start = now, a.t1 = 0, scene_->hide(a.object);
+                } catch (const std::exception&) {
+                }
+            }
+        }
+        a.stage = it->stage;
+        a.t0 = a.t1, a.t1 = float(now - a.start);
+        a.fade = it->fade_until ? std::clamp(float(it->fade_until - now) / 2000.0f, 0.0f, 1.0f) : 1.0f;
+        return false;
+    });
+}
+
+void WorldView::build_map_items(float alpha, std::vector<DrawItem>& draws) {
+    for (MapActor& a : map_actors_) {
+        if (a.clip.empty()) continue;
+        const PlacedObject& o = scene_->objects()[a.object];
+        a.anim->pose(glm::mix(a.t0, a.t1, alpha));
+        const std::size_t first = draws.size();
+        a.anim->build(o.transform, draws);
+        for (std::size_t i = first; i < draws.size(); ++i) {
+            DrawItem& d = draws[i];
+            d.light_count = o.light_count, d.lights = o.lights, d.object = 0x40000000u + std::uint32_t(a.recno);
+            d.material.volume_caster = false;  // a scene prop, not a unit
+            if (a.fade < 1.0f) d.material.blend = BlendMode::AlphaBlend, d.material.tint.a *= a.fade;
+        }
+    }
+}
+
+std::string WorldView::map_item_clip(int recno) const {
+    for (const MapActor& a : map_actors_)
+        if (a.recno == recno) return a.clip;
+    return {};
 }
 
 std::string WorldView::shot_model(int projectile_id) const {

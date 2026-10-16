@@ -308,7 +308,8 @@ AI-driven in RTS). GL and Vulkan end with the same mission hash.
 - Equipment visuals: hero meshes follow the armour used (JOAN_ARMOR_LV1/2/3 → joan_armorC / Joan_of_Arc / joan_armorB),
   carried weapons swap, projectiles fly with the ammo's flight mesh, dropped items lie on the floor and are picked
   up by walking over them (generals). Box contents and script-added map items are drawn and picked up the
-  same way; pickups by the player post the original SMS line ("You have picked up ...", gold-crate counter) bottom
+  same way (a broken box plays its break clip and disappears; destroyed map items vanish); pickups by the player
+  post the original SMS line ("You have picked up ...", gold-crate counter) bottom
   left. Not done: arrow trails, item pickup radius is an estimate (15), and the bow shown while aiming
   (the hero is hidden behind the first-person aim camera, as in the original).
 - Gamepad: no on-screen keyboard (a pad-only save gets no typed description); in RTS the commander keys 25..32 have no

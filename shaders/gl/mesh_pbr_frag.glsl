@@ -24,6 +24,7 @@ uniform bool u_has_lightmap;
 uniform ivec4 u_maps;     // has normal, roughness, metal, ao map
 uniform int u_class;      // MaterialClass
 uniform int u_blend;      // BlendMode
+uniform float u_water;    // Material::water when `water=enhanced`, else -1
 uniform vec4 u_tint;
 uniform float u_alpha_cutoff;
 uniform bool u_a2c;  // MSAA alpha-to-coverage: the alpha test becomes a sharpened coverage alpha
@@ -106,8 +107,17 @@ void main() {
         original = original_color(s);
         if (u_class == kClassVegetation) ambient = vec3(0.0);  // no SSAO on thin foliage
     }
+    float alpha = base.a;
+    if (u_water >= 0.0 && !u_unlit) {  // stylised water (renderer_gl.cpp: `water=enhanced` only), opaque over the scene copy
+        vec2 wa, wb;
+        water_uv(v_world, u_water, wa, wb);
+        vec4 flat_n = vec4(0.5, 0.5, 1.0, 0.5);
+        c = shade_water(v_world, u_maps.x != 0 ? tex(u_normal_map, wa) : flat_n, u_maps.x != 0 ? tex(u_normal_map, wb) : flat_n, u_water,
+                        gl_FragCoord.xy);
+        alpha = 1.0;
+    }
     float fog = u_no_fog ? 0.0 : v_fog;
-    o_color = vec4(apply_fog(c, fog), base.a);
+    o_color = vec4(apply_fog(c, fog), alpha);
     o_ambient = vec4(ambient * (1.0 - fog), 1.0);
     o_reference = vec4(luma(apply_fog(original, fog)), 0.0, 0.0, base.a);
 }

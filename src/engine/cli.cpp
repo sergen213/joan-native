@@ -68,8 +68,10 @@ const char* usage() {
            "  --play-movie FILE        play a movie (e.g. movie/intro.wmv, relative to the game dir); Esc/click skips\n"
            "  --preset NAME            graphics preset: original (faithful, default) | enhanced | ultra | custom\n"
            "  --graphics K=V[,K=V]     graphics keys (docs/GRAPHICS_ROADMAP.md). Image-quality keys (aa=none|fxaa|smaa|taa,\n"
-           "                           msaa=1|2|4|8, anisotropy=1..16, render_scale=0.5..2, upscale, sharpness) work with\n"
-           "                           every preset; other keys (e.g. ssao=false) imply --preset custom\n"
+           "                           msaa=1|2|4|8, anisotropy=1..16, render_scale=0.5..2, upscale=none|fsr1|fsr3,\n"
+           "                           fsr_quality=native|quality|balanced|performance|ultra_performance, frame_generation=0|1\n"
+           "                           (FSR 3 + frame generation: Vulkan), sharpness) work with every preset; other keys\n"
+           "                           (e.g. ssao=false) imply --preset custom\n"
            "  --hd-packs A[,B]         HD texture packs (names under $XDG_DATA_HOME/joan-native/hd/ or dirs), first wins\n"
            "  --movie-time SEC         start the movie at SEC (with --screenshot: capture the frame shown at SEC)\n";
 }

@@ -1,5 +1,6 @@
 #include "engine/renderer_vk.hpp"
 
+#include "engine/fsr_vk.hpp"
 #include "engine/vk_api.hpp"
 #include "engine/vk_memory.hpp"
 #include "engine/pbr_env.hpp"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <iterator>
 #include <string>
 #include <string_view>
@@ -92,6 +94,10 @@ const std::uint32_t kPostEasu[] = {
 const std::uint32_t kPostRcas[] = {
 #include "post_rcas.frag.inc"
 };
+// AMD FSR 3 render-size inputs: R32F depth + full motion (fsr_upscale).
+const std::uint32_t kPostFsrInputs[] = {
+#include "post_fsr_inputs.frag.inc"
+};
 // Image-quality post (any preset): FXAA, SMAA 1x edges / weights / blend (third_party/smaa).
 const std::uint32_t kPostFxaa[] = {
 #include "post_fxaa.frag.inc"
@@ -143,6 +149,7 @@ constexpr std::uint32_t kFramesInFlight = 2;
 constexpr std::uint32_t kMaxTextures = 4096;  // descriptorIndexing guarantees >= 500k update-after-bind samplers
 constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_SRGB;
 constexpr VkFormat kUiColorFormat = VK_FORMAT_R8G8B8A8_UNORM;  // UNORM view of the colour image for the UI pass
+constexpr VkFormat kFgFormat = VK_FORMAT_R8G8B8A8_UNORM;  // FSR 3 frame generation source/output (sRGB-encoded bytes)
 constexpr VkMemoryPropertyFlags kHost = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
 // OpenGL clip space (y up, z in [-1,1]) -> Vulkan (y down, z in [0,1]); camera code stays GL-convention.
@@ -221,6 +228,9 @@ struct Slot {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer scene = VK_NULL_HANDLE, present = VK_NULL_HANDLE;
     VkSemaphore acquired = VK_NULL_HANDLE;
+    // FSR 3 frame generation: the interpolated frame's own acquire + blit, presented before the real one.
+    VkCommandBuffer present_generated = VK_NULL_HANDLE;
+    VkSemaphore acquired_generated = VK_NULL_HANDLE;
     std::uint64_t retire_value = 0;  // timeline value reached once the GPU finished this slot's last frame
     Buffer uniforms, draws, lights, ui;
     VkDescriptorSet set = VK_NULL_HANDLE;
@@ -290,6 +300,8 @@ public:
             for (auto& [id, t] : textures_) destroy(t);
             for (auto& g : graveyard_) g.second();
             destroy_rt();
+            fsr_.reset();
+            destroy_fg_targets();
             destroy_remaster();
             destroy_target();
             destroy_swapchain(swapchain_);
@@ -297,6 +309,7 @@ public:
             for (Slot& s : slots_) {
                 vk_.vkDestroyCommandPool(device_, s.pool, nullptr);
                 vk_.vkDestroySemaphore(device_, s.acquired, nullptr);
+                vk_.vkDestroySemaphore(device_, s.acquired_generated, nullptr);
                 destroy(s.uniforms);
                 destroy(s.draws);
                 destroy(s.lights);
@@ -529,13 +542,35 @@ public:
             for (const auto& [id, t] : textures_)
                 if (t.mipmaps) write_texture_slot(t);
         }
+        // AMD FSR 3.1.4 needs the remaster path's motion vectors and a capable device; else FSR1 at the same scale. It is
+        // the anti-aliasing too, so MSAA is off under it (one sample per pixel, like Kabus 22).
+        remaster_ = g.remastered();
+        const bool fsr3 = g.upscale == Upscaler::Fsr3 && remaster_ && !fsr_missing_;
+        if (g.upscale == Upscaler::Fsr3 && !fsr3)
+            std::fprintf(stderr, "joan-native: vulkan FSR 3 unavailable (%s), using FSR1 at the same render scale\n",
+                         remaster_ ? fsr_missing_ : "the Original look has no motion vectors");
+        else if (g.frame_generation && generation_missing_)
+            std::fprintf(stderr, "joan-native: vulkan FSR 3 frame generation unavailable (%s)\n", generation_missing_);
+        if (!fsr3) fsr3_fallback(gfx_);
+        if (fsr3) gfx_.msaa = 1;
+        if (fsr3 != fsr3_ || (fsr3 && g.frame_generation && !generation_missing_) != generating_) {
+            vk_.vkDeviceWaitIdle(device_);
+            fsr_.reset();
+        }
+        fsr3_ = fsr3;
+        generating_ = fsr3 && g.frame_generation && !generation_missing_;
+        gfx_.frame_generation = generating_;
+        if (generating_ && options_.present_mode != PresentMode::Fifo)
+            std::fputs("joan-native: vulkan frame generation is paced by FIFO vsync; other present modes may drop generated frames\n", stderr);
+        fsr_last_ = fg_last_ = ~0ull;
         const VkSampleCountFlags counts = props_.limits.framebufferColorSampleCounts & props_.limits.framebufferDepthSampleCounts &
                                           props_.limits.framebufferStencilSampleCounts;
         while (gfx_.msaa > 1 && !(counts & VkSampleCountFlags(gfx_.msaa))) gfx_.msaa /= 2;  // highest supported <= requested
-        remaster_ = g.remastered();
         history_.valid = false;
         rt_history_ = false;
-        if (remaster_) std::fprintf(stderr, "joan-native: vulkan graphics preset %s (remaster path)\n", preset_name(g.preset));
+        if (remaster_)
+            std::fprintf(stderr, "joan-native: vulkan graphics preset %s (remaster path%s%s)\n", preset_name(g.preset),
+                         fsr3_ ? ", FSR 3.1.4 upscaling" : "", generating_ ? " + frame generation" : "");
         else if (g.original_post())
             std::fprintf(stderr, "joan-native: vulkan graphics preset %s (original look + image-quality post)\n", preset_name(g.preset));
         // Ray tracing is optional everywhere: without a remastered preset or ray-query hardware the raster
@@ -594,6 +629,7 @@ public:
         image_barrier(cmd_, depth_.image, range(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT), VK_IMAGE_LAYOUT_UNDEFINED,
                       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, tests, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, tests,
                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        fg_pending_ = fg_valid_ = false;
         recording_ = true;
     }
 
@@ -612,20 +648,31 @@ public:
         }
         if (!swapchain_) return;
         Slot& s = slots_[slot_];
+        // FSR 3 frame generation: the generated frame first, then the real one. FIFO (the default) shows each for one
+        // refresh, so the display paces them evenly while rendering runs at half the refresh rate.
+        // ponytail: no CPU pacing thread (ETI Yami's present_loop); add one if non-FIFO or VRR presentation must be smooth.
+        if (fg_valid_ && !present(s, s.present_generated, s.acquired_generated, fg_present_.image, false)) return;
+        if (fg_valid_) ++fg_presents_;
+        if (present(s, s.present, s.acquired, color_.image, s.timed) && generating_) ++real_presents_;
+    }
+
+    // Blits `source` (target-size, TRANSFER_SRC_OPTIMAL) into the next swapchain image and presents it; false when the
+    // swapchain is out of date. Every call signals the timeline: the slot retires after its last present.
+    bool present(Slot& s, VkCommandBuffer cmd, VkSemaphore acquired_semaphore, VkImage source, bool timed) {
         std::uint32_t index = 0;
-        const VkResult acquired = vk_.vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, s.acquired, VK_NULL_HANDLE, &index);
+        const VkResult acquired = vk_.vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_semaphore, VK_NULL_HANDLE, &index);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             swapchain_dirty_ = true;
-            return;
+            return false;
         }
         if (acquired == VK_SUBOPTIMAL_KHR) swapchain_dirty_ = true;
         else check(acquired, "vkAcquireNextImageKHR");
 
         const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
                                              VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-        check(vk_.vkBeginCommandBuffer(s.present, &begin), "vkBeginCommandBuffer");
-        cmd_ = s.present;
-        if (s.timed) {
+        check(vk_.vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer");
+        cmd_ = cmd;
+        if (timed) {
             timestamp(QPresentBegin);
             s.present_timed = true;
         }
@@ -645,14 +692,14 @@ public:
         }
         // Blit (not copy): converts RGBA -> the swapchain's BGRA order; sRGB on both ends keeps bytes intact.
         const VkImageBlit blit{{color, 0, 0, 1}, {{0, 0, 0}, {w, h, 1}}, {color, 0, 0, 1}, {{0, 0, 0}, {w, h, 1}}};
-        vk_.vkCmdBlitImage(cmd_, color_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                           &blit, VK_FILTER_NEAREST);
+        vk_.vkCmdBlitImage(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                           VK_FILTER_NEAREST);
         image_barrier(cmd_, image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
-        if (s.present_timed) timestamp(QPresentEnd);
+        if (timed) timestamp(QPresentEnd);
         check(vk_.vkEndCommandBuffer(cmd_), "vkEndCommandBuffer");
 
-        const VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, s.acquired, 0,
+        const VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, acquired_semaphore, 0,
                                               VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0};
         const VkSemaphoreSubmitInfo signals[2] = {
             {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timeline_, ++timeline_value_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0},
@@ -671,6 +718,7 @@ public:
         const VkResult presented = vk_.vkQueuePresentKHR(queue_, &present);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) swapchain_dirty_ = true;
         else check(presented, "vkQueuePresentKHR");
+        return presented != VK_ERROR_OUT_OF_DATE_KHR;
     }
 
     Image read_back() override {
@@ -895,6 +943,17 @@ private:
         VkPhysicalDeviceFeatures core{};
         core.samplerAnisotropy = anisotropy_;
         core.independentBlend = independent_blend_;  // remaster stencil fill: colour + masked ambient attachment
+        // AMD FSR 3.1.4 (fsr_vk.hpp): its compute shaders write (and frame interpolation reads) formatless storage images.
+        fsr_ffx_ = Fsr3::load(vk_.vkGetInstanceProcAddr, instance_);
+        fsr_missing_ = fsr_ffx_ ? Fsr3::unsupported(vk_, physical_) : "Vulkan entry points missing";
+        generation_missing_ = fsr_missing_ ? fsr_missing_ : Fsr3::generation_unsupported(vk_, physical_, kFgFormat);
+        if (!fsr_missing_) {
+            core.shaderStorageImageWriteWithoutFormat = core.shaderStorageImageExtendedFormats = VK_TRUE;
+            core.shaderStorageImageReadWithoutFormat = !generation_missing_;
+        }
+        std::fprintf(stderr, "joan-native: vulkan FSR 3.1.4 %s%s; frame generation %s%s\n", fsr_missing_ ? "unavailable: " : "available",
+                     fsr_missing_ ? fsr_missing_ : "", generation_missing_ ? "unavailable: " : "available",
+                     generation_missing_ ? generation_missing_ : "");
         std::vector<const char*> exts;
         if (surface_) exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         // Ray tracing: ray queries over acceleration structures, buffer references to the mesh data.
@@ -1147,14 +1206,16 @@ private:
             const VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
                                                queue_family_};
             check(vk_.vkCreateCommandPool(device_, &pool, nullptr, &s.pool), "vkCreateCommandPool");
-            VkCommandBuffer cmds[2];
+            VkCommandBuffer cmds[3];
             const VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, s.pool,
-                                                    VK_COMMAND_BUFFER_LEVEL_PRIMARY, 2};
+                                                    VK_COMMAND_BUFFER_LEVEL_PRIMARY, 3};
             check(vk_.vkAllocateCommandBuffers(device_, &alloc, cmds), "vkAllocateCommandBuffers");
             s.scene = cmds[0];
             s.present = cmds[1];
+            s.present_generated = cmds[2];
             const VkSemaphoreCreateInfo sem{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             check(vk_.vkCreateSemaphore(device_, &sem, nullptr, &s.acquired), "vkCreateSemaphore");
+            check(vk_.vkCreateSemaphore(device_, &sem, nullptr, &s.acquired_generated), "vkCreateSemaphore");
             s.uniforms = create_buffer(sizeof(FrameUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
             const VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, descriptor_pool_, 1, &frame_layout_};
             check(vk_.vkAllocateDescriptorSets(device_, &ai, &s.set), "vkAllocateDescriptorSets");
@@ -1629,7 +1690,9 @@ private:
     struct MaterialExtraGpu {  // std430 mirror of MaterialExtra in shaders/vk/remaster_vk.glsl
         glm::mat4 prev_model;
         std::uint32_t normal, rough, metal, ao;
-        std::int32_t cls, blend, pad0, pad1;
+        std::int32_t cls, blend;
+        float water;  // Material::water when `water=enhanced`, else -1
+        std::int32_t pad1;
     };
     static_assert(sizeof(MaterialExtraGpu) == 96);
     static constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1642,8 +1705,8 @@ private:
     // blended like the HDR colour (post_exposure_lum.glsl).
     static constexpr VkFormat kReferenceFormat = VK_FORMAT_R16_SFLOAT;
     // set 2 (remaster_vk.glsl); 14-17: SMAA edges, weights, area, search; 18-21: auto exposure previous state, measurement,
-    // state, reference
-    static constexpr std::uint32_t kRmBindings = 22;
+    // state, reference; 22-23: stylised water refraction colour (RmTargets::opaque) and depth (pbr_shade.glsl shade_water)
+    static constexpr std::uint32_t kRmBindings = 24;
     static constexpr VkFormat kExposureFormat = VK_FORMAT_R32_SFLOAT;  // 1x1 auto exposure state (post_exposure_adapt.glsl)
 
     VkPipeline make_rm_pipeline(const RmPipe& p) {
@@ -1824,6 +1887,8 @@ private:
                                      RmBlend::Off, 0xf, false, false, L});
         rm_final_ = make_rm_pipeline({kPostVert, kPostRcas, false, {kUiColorFormat}, VK_FORMAT_UNDEFINED, false, false, false,
                                       RmStencil::None, RmBlend::Off, 0xf, false, false, L});
+        rm_fsr_inputs_ = make_rm_pipeline({kPostVert, kPostFsrInputs, false, {VK_FORMAT_R32_SFLOAT, kMotionFormat, VK_FORMAT_R8_UNORM},
+                                           VK_FORMAT_UNDEFINED, false, false, false, RmStencil::None, RmBlend::Off, 0xf, false, false, L});
         const auto ldr_post = [&](std::span<const std::uint32_t> fs) {
             return make_rm_pipeline({kPostVert, fs, false, {kLdrFormat}, VK_FORMAT_UNDEFINED, false, false, false, RmStencil::None, RmBlend::Off, 0xf,
                                      false, false, L});
@@ -1844,18 +1909,26 @@ private:
         // samples > 1: the scene passes render into these and resolve into hdr/ambient/motion/reference/depth (sample 0 for depth).
         int samples = 1;
         Image2D ms_hdr, ms_ambient, ms_motion, ms_reference, ms_depth;
+        // Opaque-only HDR (copy of hdr after the opaque + AO passes, before the translucent pass): FSR 3's autogen reactive
+        // mask input, water refraction colour.
+        Image2D opaque;
+        Image2D water_depth;  // depth_format_: copy of the opaque depth for the stylised water (`water=enhanced`)
+        // FSR 3 (fsr): render-size R32F depth + RG16F full motion (post_fsr_inputs), R8 reactive mask, display-size output.
+        bool fsr = false;
+        Image2D fsr_depth, fsr_motion, fsr_reactive, fsr_output;
     };
 
     // Fresh images start in their sampled layout, so every descriptor is valid from the first frame.
-    void ensure_rm_targets(glm::ivec2 scene, glm::ivec2 output, int samples) {
-        if (rmt_.scene == scene && rmt_.output == output && rmt_.samples == samples && rmt_.hdr.image) return;
+    void ensure_rm_targets(glm::ivec2 scene, glm::ivec2 output, int samples, bool fsr) {
+        if (rmt_.scene == scene && rmt_.output == output && rmt_.samples == samples && rmt_.fsr == fsr && rmt_.hdr.image) return;
         vk_.vkDeviceWaitIdle(device_);
         destroy_rm_targets();
         rmt_.samples = samples;
         if (samples > 1) {
             const VkExtent2D e{std::uint32_t(scene.x), std::uint32_t(scene.y)};
             const auto n = VkSampleCountFlagBits(samples);
-            rmt_.ms_hdr = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, n);
+            rmt_.ms_hdr = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                                       0, n);
             rmt_.ms_ambient = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, n);
             rmt_.ms_motion = create_image(kMotionFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, n);
             rmt_.ms_reference = create_image(kReferenceFormat, e, 1, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, n);
@@ -1871,10 +1944,24 @@ private:
         rmt_.output = output;
         const VkExtent2D e{std::uint32_t(scene.x), std::uint32_t(scene.y)};
         const VkImageUsageFlags color = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        rmt_.hdr = create_image(kHdrFormat, e, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
+        rmt_.hdr = create_image(kHdrFormat, e, 1, color | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        rmt_.opaque = create_image(kHdrFormat, e, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        rmt_.fsr = fsr;
+        if (fsr) {
+            const VkImageUsageFlags storage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            rmt_.fsr_depth = create_image(VK_FORMAT_R32_SFLOAT, e, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
+            rmt_.fsr_motion = create_image(kMotionFormat, e, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
+            rmt_.fsr_reactive = create_image(VK_FORMAT_R8_UNORM, e, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
+            rmt_.fsr_output = create_image(kLdrFormat, {std::uint32_t(output.x), std::uint32_t(output.y)}, 1, storage, VK_IMAGE_ASPECT_COLOR_BIT);
+        }
         rmt_.ambient = create_image(kHdrFormat, e, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
-        rmt_.depth = create_image(depth_format_, e, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                                  VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+        const auto ds = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        rmt_.depth = create_image(depth_format_, e, 1,
+                                  VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, ds);
+        // (Depth-attachment usage only for the DEPTH_STENCIL_READ_ONLY layout it is sampled in, like rmt_.depth.)
+        rmt_.water_depth = create_image(depth_format_, e, 1,
+                                        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                        VK_IMAGE_ASPECT_DEPTH_BIT);
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vi.image = rmt_.depth.image;
         vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -1890,12 +1977,14 @@ private:
         for (Image2D& x : rmt_.exposure) x = create_image(kExposureFormat, {1, 1}, 1, color, VK_IMAGE_ASPECT_COLOR_BIT);
         immediate([&](VkCommandBuffer cmd) {
             for (Image2D* i : {&rmt_.hdr, &rmt_.ambient, &rmt_.ao, &rmt_.ldr, &rmt_.hist[0], &rmt_.hist[1], &rmt_.motion, &rmt_.reference, &rmt_.lum,
-                               &rmt_.exposure[0], &rmt_.exposure[1]})
-                image_barrier(cmd, i->image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                               &rmt_.exposure[0], &rmt_.exposure[1], &rmt_.opaque, &rmt_.fsr_depth, &rmt_.fsr_motion, &rmt_.fsr_reactive,
+                               &rmt_.fsr_output})
+                if (i->image)
+                    image_barrier(cmd, i->image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            for (Image2D* i : {&rmt_.depth, &rmt_.water_depth})
+                image_barrier(cmd, i->image, range(ds), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                               VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-            image_barrier(cmd, rmt_.depth.image, range(VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT), VK_IMAGE_LAYOUT_UNDEFINED,
-                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         });
         history_.valid = false;
     }
@@ -1904,7 +1993,8 @@ private:
         if (rmt_.depth_sample) vk_.vkDestroyImageView(device_, rmt_.depth_sample, nullptr);
         for (Image2D* i : {&rmt_.hdr, &rmt_.ambient, &rmt_.depth, &rmt_.ao, &rmt_.ldr, &rmt_.hist[0], &rmt_.hist[1], &rmt_.motion, &rmt_.reference,
                            &rmt_.ms_hdr, &rmt_.ms_ambient, &rmt_.ms_motion, &rmt_.ms_reference, &rmt_.ms_depth, &rmt_.lum, &rmt_.exposure[0],
-                           &rmt_.exposure[1]})
+                           &rmt_.exposure[1], &rmt_.opaque, &rmt_.fsr_depth, &rmt_.fsr_motion, &rmt_.fsr_reactive, &rmt_.fsr_output,
+                           &rmt_.water_depth})
             destroy(*i);
         rmt_ = {};
     }
@@ -1937,7 +2027,8 @@ private:
         destroy_rm_targets();
         destroy_rm_shadow();
         for (VkPipeline p : {rm_opaque_, rm_volume_, rm_fill_, rm_blend_, rm_blend_zwrite_, rm_additive_, rm_shadow_, rm_ssao_, rm_ao_apply_, rm_composite_,
-                             rm_exposure_[0], rm_exposure_[1], rm_taa_, rm_easu_, rm_final_, rm_fxaa_, rm_smaa_[0], rm_smaa_[1], rm_smaa_[2]})
+                             rm_exposure_[0], rm_exposure_[1], rm_taa_, rm_easu_, rm_final_, rm_fxaa_, rm_smaa_[0], rm_smaa_[1], rm_smaa_[2],
+                             rm_fsr_inputs_})
             if (p) vk_.vkDestroyPipeline(device_, p, nullptr);
         destroy_ms_pipes();
         destroy_rm_ms();
@@ -2004,7 +2095,9 @@ private:
             {rm_nearest_, or_white(rmt_.exposure[1 - ew].view), ro},
             {rm_nearest_, or_white(rmt_.lum.view), ro},
             {rm_nearest_, or_white(rmt_.exposure[ew].view), ro},
-            {rm_nearest_, or_white(rmt_.reference.view), ro}};
+            {rm_nearest_, or_white(rmt_.reference.view), ro},
+            {linear, or_white(rmt_.opaque.view), ro},
+            {rm_nearest_, rmt_.water_depth.view ? rmt_.water_depth.view : shadow_.view, dro}};
         const VkDescriptorBufferInfo ubo{s.rm_ubo.buffer, 0, VK_WHOLE_SIZE}, materials{s.rm_materials.buffer, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet w[kRmBindings]{};
         for (std::uint32_t i = 0; i < kRmBindings; ++i) {
@@ -2066,8 +2159,9 @@ private:
     }
 
     static bool is_terrain(const Material& m) { return m.lightmap && m.vertex_diffuse; }
-    static bool casts_sun_shadow(const Material& m) {  // units: their stencil volumes instead (Material::volume_caster)
-        return !m.unlit && !m.volume_caster && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m);
+    static bool casts_sun_shadow(const Material& m) {  // units: their stencil volumes instead (Material::volume_caster); water: none
+        return !m.unlit && !m.volume_caster && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m) &&
+               m.water < 0.0f;
     }
 
     void render_remaster(Slot& s, const FrameData& f) {
@@ -2078,7 +2172,7 @@ private:
         // G-buffer and denoisers are per pixel; Ultra uses TAA).
         const int samples = rt_active() ? 1 : gfx_.msaa;
         const bool ms = samples > 1;
-        ensure_rm_targets(scene, output, samples);
+        ensure_rm_targets(scene, output, samples, fsr3_);
         ensure_rm_shadow();
         ensure_env(f.lighting);
         const Lighting& l = f.lighting;
@@ -2090,7 +2184,8 @@ private:
         const bool rt = rt_active();
 
         // Draw table: opaque/alpha-tested, the units' stencil volumes (kept with shadow maps and RT shadows:
-        // Material::volume_caster), blended back to front.
+        // Material::volume_caster), blended back to front with the stylised water first (it is drawn opaque over a copy of the
+        // opaque scene, every other blend over it).
         order_.clear();
         for (const DrawItem& d : f.draws)
             if (d.material.blend == BlendMode::Opaque || d.material.blend == BlendMode::AlphaTest) order_.push_back(&d);
@@ -2103,6 +2198,7 @@ private:
             if (d.material.blend == BlendMode::AlphaBlend || d.material.blend == BlendMode::Additive) order_.push_back(&d);
         const glm::vec3 cam = f.view.camera_position;
         std::sort(order_.begin() + long(first_blended), order_.end(), [&](const DrawItem* a, const DrawItem* b) {
+            if (const bool wa = gfx_.water && a->material.water >= 0.0f; wa != (gfx_.water && b->material.water >= 0.0f)) return wa;
             const glm::vec3 pa(a->model[3]), pb(b->model[3]);
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
@@ -2113,15 +2209,17 @@ private:
         for (std::size_t i = 0; i < order_.size(); ++i) {
             const Material& m = order_[i]->material;
             MaterialMaps maps;
-            if (const auto it = material_maps_.find(m.albedo.id); it != material_maps_.end()) maps = it->second;
+            const bool water = m.water >= 0.0f && gfx_.water;
+            if (const auto it = material_maps_.find(m.albedo.id); it != material_maps_.end() && (m.water < 0.0f || water)) maps = it->second;
             if (is_terrain(m)) maps.cls = MaterialClass::Terrain;
             extra[i] = {prev_models_[std::size_t(order_[i] - f.draws.data())], slot_or_none(maps.normal), slot_or_none(maps.roughness),
-                        slot_or_none(maps.metal), slot_or_none(maps.ao), std::int32_t(maps.cls), std::int32_t(m.blend), 0, 0};
+                        slot_or_none(maps.metal), slot_or_none(maps.ao), std::int32_t(maps.cls), std::int32_t(m.blend), water ? m.water : -1.0f, 0};
         }
         const int w = int(history_.frame & 1u), r = 1 - w;  // TAA history written / read this frame (as GL)
-        const bool taa = gfx_.aa == AntiAliasing::Taa;
+        const bool taa = gfx_.aa == AntiAliasing::Taa && !fsr3_;  // FSR 3 replaces TAA and post AA; the final pass reads its output
         ensure_post_targets(scene, output);
-        write_rm_set(s, post_views(rmt_.ldr.view, rmt_.hist[r].view, taa ? rmt_.hist[w].view : rmt_.ldr.view));
+        write_rm_set(s, fsr3_ ? RmViews{rmt_.ldr.view, rmt_.hist[r].view, rmt_.ldr.view, rmt_.fsr_output.view}
+                              : post_views(rmt_.ldr.view, rmt_.hist[r].view, taa ? rmt_.hist[w].view : rmt_.ldr.view));
         const VkDescriptorSet sets[3] = {textures_set_, s.set, s.rm_set};
         vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_pipe_layout_, 0, 3, sets, 0, nullptr);
         if (rt) rt_prepare(s, f, scene, first_volume, first_blended);  // instance table, RtFrame, set 3 (graphics + compute)
@@ -2298,6 +2396,35 @@ private:
             vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
             vk_.vkCmdEndRendering(cmd_);
         }
+        // Opaque-only HDR (+ depth) before the translucent pass: FSR 3's autogen reactive mask input; the stylised water (first
+        // of the blended draws, order_ above) refracts it and reads the depth (pbr_shade.glsl shade_water).
+        const bool water = gfx_.water && first_blended < order_.size() && order_[first_blended]->material.water >= 0.0f;
+        const VkExtent3D extent{std::uint32_t(scene.x), std::uint32_t(scene.y), 1};
+        if (fsr3_ || water) {
+            const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
+            rm_barrier(scene_hdr.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            rm_barrier(rmt_.opaque.image, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            if (ms) {
+                const VkImageResolve resolve{{color, 0, 0, 1}, {}, {color, 0, 0, 1}, {}, extent};
+                vk_.vkCmdResolveImage(cmd_, scene_hdr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rmt_.opaque.image,
+                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve);
+            } else {
+                const VkImageCopy copy{{color, 0, 0, 1}, {}, {color, 0, 0, 1}, {}, extent};
+                vk_.vkCmdCopyImage(cmd_, scene_hdr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rmt_.opaque.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            }
+            rm_barrier(rmt_.opaque.image, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            rm_barrier(scene_hdr.image, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        }
+        if (water) {  // MSAA: rmt_.depth holds the opaque pass's resolved (sample 0) depth
+            const VkImageCopy copy{{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {}, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {}, extent};
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            rm_barrier(rmt_.water_depth.image, ds, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vk_.vkCmdCopyImage(cmd_, rmt_.depth.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rmt_.water_depth.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            rm_barrier(rmt_.water_depth.image, ds, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+            rm_barrier(rmt_.depth.image, ds, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        }
 
         // Translucent, back to front; depth writes only for Material::depth_write blends.
         rm_barrier(rmt_.hdr.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -2339,8 +2466,9 @@ private:
             VkPipeline bound = VK_NULL_HANDLE;
             for (std::size_t i = first_blended; i < order_.size(); ++i) {
                 const Material& m = order_[i]->material;
+                const bool zwrite = m.depth_write || (gfx_.water && m.water >= 0.0f);  // stylised water: depth + motion of its surface
                 const VkPipeline p = m.blend == BlendMode::Additive ? (rt ? rt_additive_ : P.additive)
-                                     : m.depth_write                ? (rt ? rt_blend_zwrite_ : P.blend_zwrite)
+                                     : zwrite                       ? (rt ? rt_blend_zwrite_ : P.blend_zwrite)
                                                                     : (rt ? rt_blend_ : P.blend);
                 if (p != bound) vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = p);
                 draw(i, false);
@@ -2361,6 +2489,7 @@ private:
         // Post chain, then the final pass + UI into the display target (UNORM view: encoded bytes).
         post_pass(rm_composite_, rmt_.ldr, scene);
         if (taa) post_pass(rm_taa_, rmt_.hist[w], scene);
+        if (fsr3_) fsr_upscale(f, scene, output, rf);
         post_tail(s, f, scene, output, vp);
         if (rt) {
             rt_prev_camera_ = cam;
@@ -2478,9 +2607,10 @@ private:
     }
 
     void post_tail(Slot& s, const FrameData& f, glm::ivec2 scene, glm::ivec2 output, glm::ivec4 vp) {
-        if (gfx_.aa == AntiAliasing::Fxaa) {
+        const AntiAliasing aa = fsr3_ ? AntiAliasing::None : gfx_.aa;  // FSR 3 is the anti-aliasing
+        if (aa == AntiAliasing::Fxaa) {
             post_pass(rm_fxaa_, pt_.out, scene);
-        } else if (gfx_.aa == AntiAliasing::Smaa) {
+        } else if (aa == AntiAliasing::Smaa) {
             post_pass(rm_smaa_[0], pt_.edges, scene, true);  // edge-free pixels discard: cleared target
             post_pass(rm_smaa_[1], pt_.weights, scene);
             post_pass(rm_smaa_[2], pt_.out, scene);
@@ -2497,9 +2627,146 @@ private:
         vk_.vkCmdSetScissor(cmd_, 0, 1, &rect);
         vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_final_);
         vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+        if (fg_pending_) {  // FSR 3 frame generation: interpolate the HUD-less image, then the UI onto both frames
+            vk_.vkCmdEndRendering(cmd_);
+            frame_generate(s, f, vp);
+            const VkRenderingAttachmentInfo load =
+                attachment(color_ui_view_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+            begin_rendering(target_size_, {&load, 1}, nullptr, false);
+        }
         if (s.timed) timestamp(QUiBegin);
         draw_ui(s, f);
         vk_.vkCmdEndRendering(cmd_);
+    }
+
+    // ---- AMD FSR 3.1.4 upscaling + frame generation (fsr_vk.hpp, docs/GRAPHICS_ROADMAP.md "FSR 3") -----------------
+    // Render-size composite (tone-mapped, jittered by FSR's Halton sequence), R32F depth, full unjittered motion and the
+    // autogen reactive mask -> display-size rmt_.fsr_output, read by the final pass (no RCAS there: FSR's own takes the
+    // sharpness). History resets on resize, settings change, camera cuts (RemasterFrame exposure.y snap) and after any
+    // frame without this pass.
+    void fsr_upscale(const FrameData& f, glm::ivec2 scene, glm::ivec2 output, const RemasterFrame& rf) {
+        const VkExtent2D render{std::uint32_t(scene.x), std::uint32_t(scene.y)}, display{std::uint32_t(output.x), std::uint32_t(output.y)};
+        if (!fsr_ || fsr_->render().width != render.width || fsr_->render().height != render.height || fsr_->display().width != display.width ||
+            fsr_->display().height != display.height || fsr_->generates() != generating_) {
+            vk_.vkDeviceWaitIdle(device_);
+            fsr_.reset();
+            fsr_ = std::make_unique<Fsr3>(physical_, device_, render, display, generating_ ? kFgFormat : VK_FORMAT_UNDEFINED);
+        }
+        const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
+        for (const Image2D* i : {&rmt_.fsr_depth, &rmt_.fsr_motion, &rmt_.fsr_reactive})
+            rm_barrier(i->image, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const auto out = [&](const Image2D& i) {
+            return attachment(i.view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE);
+        };
+        const VkRenderingAttachmentInfo inputs[3] = {out(rmt_.fsr_depth), out(rmt_.fsr_motion), out(rmt_.fsr_reactive)};
+        begin_rendering(scene, inputs, nullptr, false);
+        vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_fsr_inputs_);
+        vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
+        vk_.vkCmdEndRendering(cmd_);
+        for (const Image2D* i : {&rmt_.fsr_depth, &rmt_.fsr_motion, &rmt_.fsr_reactive})
+            rm_barrier(i->image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        const auto image = [](const Image2D& i, VkFormat format, glm::ivec2 size, VkImageUsageFlags usage) {
+            return Fsr3::Image{i.image, format, {std::uint32_t(size.x), std::uint32_t(size.y)}, usage};
+        };
+        constexpr VkImageUsageFlags target = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                    storage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        const Fsr3::Image reactive = image(rmt_.fsr_reactive, VK_FORMAT_R8_UNORM, scene, target);
+        // GL-convention perspective: near = P[3][2] / (P[2][2] - 1), far = P[3][2] / (P[2][2] + 1); device depth is [0, 1].
+        const glm::mat4& p = f.view.projection;
+        const bool perspective = p[2][3] != 0.0f;
+        fsr_near_ = perspective ? p[3][2] / (p[2][2] - 1.0f) : 1.0f;
+        fsr_far_ = perspective ? p[3][2] / (p[2][2] + 1.0f) : 100000.0f;
+        fsr_fov_ = 2.0f * std::atan(1.0f / p[1][1]);
+        // The simulation step (deterministic captures), not the wall clock.
+        fsr_ms_ = f.dt > 0.0f ? std::clamp(f.dt * 1000.0f, 1.0f, 100.0f) : 1000.0f / 30.0f;
+        fsr_reset_ = rf.exposure.y != 0.0f || fsr_last_ + 1 != frame_;
+        fsr_last_ = frame_;
+        // RemasterFrame jitter is GL NDC (y up); FSR wants render pixels, y down.
+        fsr_->dispatch({cmd_, image(rmt_.ldr, kLdrFormat, scene, target), image(rmt_.fsr_depth, VK_FORMAT_R32_SFLOAT, scene, target),
+                        image(rmt_.fsr_motion, kMotionFormat, scene, target), reactive, image(rmt_.fsr_output, kLdrFormat, output, storage),
+                        {rf.jitter.x * float(scene.x) * 0.5f, -rf.jitter.y * float(scene.y) * 0.5f}, fsr_ms_, gfx_.sharpness, fsr_near_, fsr_far_,
+                        fsr_fov_, fsr_reset_});
+        fg_pending_ = generating_;
+    }
+
+    // FSR 3 frame generation (ETI Yami / IKV present path): the HUD-less display image (vp region of color_) is the
+    // interpolation source; FSR writes the frame halfway between the previous and this one, and this frame's UI is drawn
+    // onto that generated frame too (the HUD is never interpolated). end_frame presents it before the real frame. Called
+    // between the final pass and the UI with color_ in COLOR_ATTACHMENT_OPTIMAL.
+    void frame_generate(Slot& s, const FrameData& f, glm::ivec4 vp) {
+        fg_pending_ = false;
+        ensure_fg_targets(glm::ivec2(vp.z, vp.w));
+        const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
+        const VkExtent3D extent{std::uint32_t(vp.z), std::uint32_t(vp.w), 1};
+        rm_barrier(color_.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        rm_barrier(fg_source_.image, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkImageCopy source{{color, 0, 0, 1}, {vp.x, vp.y, 0}, {color, 0, 0, 1}, {0, 0, 0}, extent};
+        vk_.vkCmdCopyImage(cmd_, color_.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, fg_source_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &source);
+        rm_barrier(fg_source_.image, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        rm_barrier(color_.image, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const bool reset = fsr_reset_ || fg_last_ + 1 != frame_;  // interpolate only between consecutive FSR frames
+        fg_last_ = frame_;
+        rm_barrier(fg_generated_.image, color, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);  // last frame's copy -> FSR's writes
+        const VkExtent2D e{extent.width, extent.height};
+        constexpr VkImageUsageFlags source_usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        fsr_->interpolate({cmd_, {fg_source_.image, kFgFormat, e, source_usage},
+                           {fg_generated_.image, kFgFormat, e, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT},
+                           fsr_ms_, fsr_near_, fsr_far_, fsr_fov_, reset, ++fg_frame_});
+        fg_valid_ = !reset;
+        if (!fg_valid_) return;  // history reset: nothing to show between the frames
+        rm_barrier(fg_generated_.image, color, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);  // FSR's writes -> the copy
+        rm_barrier(fg_present_.image, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
+        const VkImageSubresourceRange all = range(color);
+        vk_.vkCmdClearColorImage(cmd_, fg_present_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        rm_barrier(fg_present_.image, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        const VkImageCopy place{{color, 0, 0, 1}, {0, 0, 0}, {color, 0, 0, 1}, {vp.x, vp.y, 0}, extent};
+        vk_.vkCmdCopyImage(cmd_, fg_generated_.image, VK_IMAGE_LAYOUT_GENERAL, fg_present_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &place);
+        rm_barrier(fg_present_.image, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        const VkRenderingAttachmentInfo ui =
+            attachment(fg_present_ui_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+        begin_rendering(target_size_, {&ui, 1}, nullptr, false);
+        draw_ui(s, f);
+        vk_.vkCmdEndRendering(cmd_);
+        rm_barrier(fg_present_.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    }
+
+    // fg_source_/fg_generated_: viewport size, kFgFormat; fg_present_: the target-size presented generated frame (sRGB like
+    // color_, with a UNORM view for the UI pass).
+    void ensure_fg_targets(glm::ivec2 output) {
+        if (fg_output_ == output && fg_target_ == target_size_ && fg_present_.image) return;
+        vk_.vkDeviceWaitIdle(device_);
+        destroy_fg_targets();
+        fg_output_ = output;
+        fg_target_ = target_size_;
+        const VkExtent2D e{std::uint32_t(output.x), std::uint32_t(output.y)}, t{std::uint32_t(target_size_.x), std::uint32_t(target_size_.y)};
+        // FSR copies the source for the next interpolation (TRANSFER_SRC).
+        fg_source_ = create_image(kFgFormat, e, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT);
+        fg_generated_ = create_image(kFgFormat, e, 1, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                     VK_IMAGE_ASPECT_COLOR_BIT);
+        fg_present_ = create_image(kColorFormat, t, 1,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                   VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = fg_present_.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = kUiColorFormat;
+        vi.subresourceRange = range(VK_IMAGE_ASPECT_COLOR_BIT);
+        check(vk_.vkCreateImageView(device_, &vi, nullptr, &fg_present_ui_), "vkCreateImageView");
+        immediate([&](VkCommandBuffer cmd) {  // FSR declares the interpolation output UNORDERED_ACCESS (GENERAL)
+            image_barrier(cmd, fg_generated_.image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                          VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        });
+        fg_last_ = ~0ull;
+    }
+
+    void destroy_fg_targets() {
+        if (fg_present_ui_) vk_.vkDestroyImageView(device_, fg_present_ui_, nullptr);
+        fg_present_ui_ = VK_NULL_HANDLE;
+        for (Image2D* i : {&fg_source_, &fg_generated_, &fg_present_}) destroy(*i);
+        fg_output_ = fg_target_ = {0, 0};
     }
 
     void render_original_post(Slot& s, const FrameData& f) {
@@ -2891,6 +3158,9 @@ private:
 
     void report_timings() {
         for (Slot& s : slots_) collect_timings(s);
+        if (generating_ || fg_presents_)
+            std::fprintf(stderr, "joan-native: vulkan frame generation: %llu generated + %llu real frames presented\n",
+                         static_cast<unsigned long long>(fg_presents_), static_cast<unsigned long long>(real_presents_));
         if (!timing_.frames) return;
         const double n = double(timing_.frames);
         std::fprintf(stderr, "joan-native: vulkan gpu timing (%llu frames, mean ms): scene %.3f, ui %.3f, frame %.3f, present-blit %.3f\n",
@@ -2962,6 +3232,23 @@ private:
 
     GraphicsSettings gfx_{};
     bool remaster_ = false;
+    // AMD FSR 3.1.4 (fsr_vk.hpp): fsr3_ = upscale=fsr3 runs this frame (remaster path, supported device); generating_ =
+    // frame generation on. fsr_ffx_ = the backend's Vulkan entry points resolved (once per instance).
+    bool fsr3_ = false, generating_ = false, fsr_ffx_ = false;
+    const char* fsr_missing_ = nullptr;         // device reason FSR 3 cannot run (null: supported)
+    const char* generation_missing_ = nullptr;  // device reason frame generation cannot run
+    std::unique_ptr<Fsr3> fsr_;
+    std::uint64_t fsr_last_ = ~0ull;  // frame_ of the last FSR dispatch (history continuity)
+    float fsr_near_ = 1.0f, fsr_far_ = 1.0f, fsr_fov_ = 1.0f, fsr_ms_ = 16.7f;
+    bool fsr_reset_ = true;  // this frame's FSR dispatch reset its history
+    VkPipeline rm_fsr_inputs_ = VK_NULL_HANDLE;
+    // Frame generation: fg_pending_ = this frame upscaled and interpolates in post_tail; fg_valid_ = this frame's generated
+    // image (fg_present_) is presented before the real one; fg_last_ = frame_ of the last interpolation.
+    bool fg_pending_ = false, fg_valid_ = false;
+    std::uint64_t fg_last_ = ~0ull, fg_frame_ = 0, fg_presents_ = 0, real_presents_ = 0;
+    glm::ivec2 fg_output_{0, 0}, fg_target_{0, 0};
+    Image2D fg_source_, fg_generated_, fg_present_;
+    VkImageView fg_present_ui_ = VK_NULL_HANDLE;
     std::unordered_map<std::uint32_t, MaterialMaps> material_maps_;  // by albedo texture id
     VkDescriptorSetLayout rm_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool rm_pool_ = VK_NULL_HANDLE;

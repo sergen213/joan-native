@@ -287,9 +287,8 @@ vec3 rt_screen_reflection(vec3 env, float roughness, vec2 pixel) {
     return mix(r.rgb, env, smoothstep(RT.params.y * 0.75, RT.params.y, roughness));  // fade into the IBL near max roughness
 }
 
-// Bump-mapped water (blended, not in the G-buffer): one mirror ray per fragment. Returns radiance + Fresnel weight.
-vec4 rt_water(vec3 p, vec2 bump) {
-    vec3 n = normalize(vec3(bump.x * 4.0, 1.0, bump.y * 4.0));
+// Water (blended, not in the G-buffer): one mirror ray per fragment about the surface normal n. Returns radiance + Fresnel weight.
+vec4 rt_water(vec3 p, vec3 n) {
     vec3 v = normalize(R.camera_pos.xyz - p);
     vec3 r = reflect(-v, n);
     r = normalize(vec3(r.x, max(r.y, 0.02), r.z));

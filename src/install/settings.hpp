@@ -2,6 +2,8 @@
 // settings.ini shared by joa-launcher (writer) and joan-native (reader). Schema: docs/LAUNCHER.md.
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace joa::install {
 
@@ -17,7 +19,7 @@ struct Settings {
     std::string anisotropy;    // 1..16
     std::string render_scale;  // 0.5..2
     std::string sharpness;     // 0..1
-    std::string graphics_extra;  // every other [graphics] line (custom preset keys, hd_packs), kept verbatim
+    std::vector<std::pair<std::string, std::string>> graphics_extra;  // every other [graphics] key=value (custom preset keys, hd_packs), file order
     int width = 0, height = 0;            // [display] 0 = desktop resolution
     std::string aspect = "auto";          // [display] auto|4:3|16:9|16:10|21:9
     std::string mode = "fullscreen";      // [display] windowed|fullscreen|borderless

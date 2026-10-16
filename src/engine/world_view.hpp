@@ -77,6 +77,8 @@ public:
     std::string drop_model(int item_id) const;
     // Model matrix of a projectile at its latest tick position (identity if none).
     glm::mat4 shot_frame(int projectile_id) const;
+    // Stage clip a map item (MapObjects recno) is drawn playing, empty while its static .stg object stands.
+    std::string map_item_clip(int recno) const;
 
 private:
     struct Actor {
@@ -109,6 +111,21 @@ private:
         float yaw = 0;  // radians, the dropping unit's heading / map item HD
         int item = 0;   // item.res id (map items: a reused recno with another item is a new drop)
     };
+    // Map item drawn by a WorldScene .stg object (the scene draws every CreateObject statically). Deleted
+    // (modify_item 0x4afb20: dead -> FUN_0049f370) -> the object is hidden. A stage drop whose stage AnimName
+    // runs on the shown model (stage_down: box "break" 0x48a1f0, gate/obstacle stage clips) plays that clip on
+    // the object's AM1 in its place, holding the last frame; a box opened by interact fades out
+    // (process 0x48ba70: actor+0x30 -0.5 over 2 s) before its deletion.
+    struct MapActor {
+        int recno = 0, res = 0, stage = 0;
+        std::size_t object = 0;  // WorldScene::objects() index
+        std::unique_ptr<Character> anim;
+        std::string clip;
+        int start = 0;  // game ms the clip started
+        float t0 = 0, t1 = 0, fade = 1;
+    };
+    void sync_map_items(const game::World& world);
+    void build_map_items(float alpha, std::vector<DrawItem>& draws);
     void sync_items(const game::World& world, const game::Snapshot& prev, const game::Snapshot& cur);
     void build_items(float alpha, std::vector<DrawItem>& draws);
     const Model* item_model(const std::string& path);
@@ -155,6 +172,7 @@ private:
     std::unordered_map<int, game::Vec3> gone_;      // map drops removed by the last sync (PICKUP emitter spot)
     std::unordered_map<std::string, const Model*> item_models_;  // null = failed
     ItemStats item_stats_;
+    std::vector<MapActor> map_actors_;
 };
 
 }  // namespace joa::engine
