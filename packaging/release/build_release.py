@@ -223,7 +223,7 @@ def main() -> None:
     # 1. build + install
     build, stage = work / "build", work / "stage"
     run("cmake", "-S", ROOT, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=OFF",
-        "-DJOA_REPRODUCIBLE=ON", f"-DJOA_UPDATE_REPO={args.repo}", f"-DJOA_VERSION_STRING={args.version}", "-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib",
+        "-DJOA_REPRODUCIBLE=ON", "-DJOA_DEV_OVERLAY=ON", f"-DJOA_UPDATE_REPO={args.repo}", f"-DJOA_VERSION_STRING={args.version}", "-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib",
         "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--disable-new-dtags", env=env)
     run("cmake", "--build", build, "--target", *TARGETS, env=env)
     run("cmake", "--install", build, "--prefix", stage, "--strip", env=env)
