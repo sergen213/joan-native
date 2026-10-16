@@ -7,6 +7,7 @@
 #include "engine/platform.hpp"
 #include "engine/png.hpp"
 #include "engine/profile.hpp"
+#include "engine/renderdoc.hpp"
 #include "engine/renderer_gl.hpp"
 #include "engine/renderer_vk.hpp"
 #include "engine/session_client.hpp"
@@ -92,6 +93,7 @@ int run_demo(const Options& o) {
     std::uint64_t last_ns = SDL_GetTicksNS();
 
     for (int frame = 0; o.frames == 0 || frame < o.frames; ++frame) {
+        renderdoc_frame(frame);
         if (!platform.pump(raw)) break;
         const std::uint64_t now_ns = SDL_GetTicksNS();
         // Captures use a fixed frame time so the same command line renders the same image.
@@ -148,6 +150,7 @@ int run_demo(const Options& o) {
         renderer->end_frame();
         JOA_FRAME_MARK();
     }
+    renderdoc_report();
     return 0;
 }
 
@@ -177,6 +180,7 @@ int run(const Options& o) {
         std::fprintf(stderr, "joan-native: --game-dir %s is not a directory\n", o.game_dir.c_str());
         return 1;
     }
+    renderdoc_init(o);  // before any window / GPU object so RenderDoc hooks the API
     try {
         if (!o.movie.empty()) return run_movie(o);
         const formats::Vfs vfs(o.game_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(o.game_dir));

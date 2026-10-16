@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 find_program(JOA_GLSLC glslc REQUIRED)
 option(JOA_TRACY "Enable the Tracy profiler client (downloads Tracy via FetchContent)" OFF)
+option(JOA_DEV_OVERLAY "Dear ImGui developer overlay (third_party/imgui, Ctrl+F12 in game)" OFF)
 
 # Embed shaders/gl/<name>.glsl and shaders/common/<name>.glsl (remaster passes, shared with Vulkan) as
 # joa::engine::gl_shaders::<name>; reconfigures when a shader changes.
@@ -40,11 +41,22 @@ endforeach()
 
 file(GLOB JOA_ENGINE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 list(REMOVE_ITEM JOA_ENGINE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
+if(NOT JOA_DEV_OVERLAY)
+  list(REMOVE_ITEM JOA_ENGINE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/dev_overlay.cpp)
+endif()
 add_library(joa_engine STATIC ${JOA_ENGINE_SRC} ${CMAKE_CURRENT_BINARY_DIR}/gl_shaders.cpp ${JOA_VK_SPIRV})
-target_include_directories(joa_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vk_shaders")
+target_include_directories(joa_engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/vk_shaders" "${JOA_ROOT}/third_party")  # renderdoc/renderdoc_app.h
 target_include_directories(joa_engine PUBLIC "${JOA_ROOT}/src")
-target_link_libraries(joa_engine PUBLIC joa_formats joa_game SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG)
+target_link_libraries(joa_engine PUBLIC joa_formats joa_game SDL3::SDL3 glm::glm ZLIB::ZLIB Vulkan::Headers PkgConfig::FFMPEG ${CMAKE_DL_LIBS})
 target_compile_options(joa_engine PRIVATE -Wall -Wextra)
+
+if(JOA_DEV_OVERLAY)
+  file(GLOB JOA_IMGUI_SRC "${JOA_ROOT}/third_party/imgui/*.cpp")
+  add_library(joa_imgui STATIC ${JOA_IMGUI_SRC})
+  target_include_directories(joa_imgui PUBLIC "${JOA_ROOT}/third_party/imgui")
+  target_link_libraries(joa_engine PRIVATE joa_imgui)
+  target_compile_definitions(joa_engine PUBLIC JOA_DEV_OVERLAY)
+endif()
 
 if(JOA_TRACY)
   include(FetchContent)
@@ -61,6 +73,9 @@ install(TARGETS joan-native RUNTIME DESTINATION bin)
 
 # tests/engine/<name>_test.cpp -> CTest engine.<name>; exit 77 = skipped.
 file(GLOB JOA_ENGINE_TESTS CONFIGURE_DEPENDS "${JOA_ROOT}/tests/engine/*_test.cpp")
+if(NOT JOA_DEV_OVERLAY)
+  list(FILTER JOA_ENGINE_TESTS EXCLUDE REGEX "_dev_overlay_test\\.cpp$")
+endif()
 find_program(JOA_XVFB_RUN xvfb-run)
 # Vulkan tests: SDL offscreen driver (surfaceless rendering), user implicit layers off, validation on.
 # The Khronos layer is not always installed system-wide; point JOA_VK_LAYER_PATH at an extracted copy.
@@ -105,7 +120,9 @@ foreach(t ${JOA_ENGINE_TESTS})
                          SKIP_RETURN_CODE 77 TIMEOUT 120)
   else()
     add_test(NAME engine.${short} COMMAND engine_${n})
-    set_tests_properties(engine.${short} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR}" SKIP_RETURN_CODE 77)
+    # Never the user's ~/.config (UiRunner loads and saves joan-native/options.ini there).
+    set_tests_properties(engine.${short} PROPERTIES SKIP_RETURN_CODE 77
+                         ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR};XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}")
   endif()
 endforeach()
 

@@ -3,6 +3,7 @@
 #include "engine/assets_cache.hpp"
 #include "engine/audio_system.hpp"
 #include "engine/camera.hpp"
+#include "engine/dev_overlay.hpp"
 #include "engine/game_audio.hpp"
 #include "engine/game_camera.hpp"
 #include "engine/game_input.hpp"
@@ -17,6 +18,7 @@
 #include "engine/platform.hpp"
 #include "engine/png.hpp"
 #include "engine/profile.hpp"
+#include "engine/renderdoc.hpp"
 #include "engine/renderer_gl.hpp"
 #include "engine/renderer_null.hpp"
 #include "engine/renderer_vk.hpp"
@@ -93,6 +95,7 @@ private:
     std::unique_ptr<GameAudio> game_audio_;
     std::unique_ptr<Ui> ui_;
     std::unique_ptr<WorldView> view_;
+    JOA_DEV(std::unique_ptr<DevOverlay> dev_; DevStats dev_stats_;)  // after renderer_: destroyed first
     int view_generation_ = -1;
     FixedStep clock_;
     RawInput raw_;
@@ -289,10 +292,16 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
 
     f.draws = draws_;
     f.ui = quads_;
+    JOA_DEV(if (dev_) {
+        dev_stats_.world = m ? &m->world() : nullptr;
+        dev_->frame(dev_stats_, size, float(dt), f);
+    })
     renderer_->begin_frame(size);
     {
         JOA_ZONE("render.submit");
+        JOA_DEV(const std::uint64_t submit_t0 = SDL_GetTicksNS();)
         renderer_->submit(f);
+        JOA_DEV(dev_stats_.submit_ms = double(SDL_GetTicksNS() - submit_t0) * 1e-6;)
     }
     std::vector<std::string> shots = script.shots;
     if (!o_.screenshot.empty() && frame + 1 == o_.frames) shots.push_back(o_.screenshot);
@@ -303,7 +312,10 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
         else std::fprintf(stderr, "joan-native: wrote %s (%dx%d) frame %d state %s\n", path.c_str(), img.width, img.height, frame,
                           flow_state_name(flow_.state()));
     }
-    renderer_->end_frame();
+    {
+        JOA_ZONE("render.present");
+        renderer_->end_frame();
+    }
 }
 
 int Client::run() {
@@ -324,6 +336,7 @@ int Client::run() {
         SDL_HideCursor();  // CURSOR.RES pointer drawn by the UI
     }
     renderer_->set_graphics(o_.graphics.resolve());
+    JOA_DEV(if (platform_) dev_ = std::make_unique<DevOverlay>(*renderer_, o_.graphics.resolve());)
     ui_ = std::make_unique<Ui>(vfs_, *renderer_);
     load_options(vfs_, options_ini_path(), menu_.options, menu_.bindings);
     if (o_.music_volume >= 0) menu_.options.music_volume = o_.music_volume;
@@ -375,7 +388,9 @@ int Client::run() {
     int frame = 0;
     const int last = o_.frames > 0 ? o_.frames : (!script_.empty() ? script_.last_frame() + 2 : 0);
     for (; last == 0 || frame < last; ++frame) {
+        renderdoc_frame(frame);
         if (platform_ && !platform_->pump(raw_)) break;
+        JOA_DEV(if (dev_) dev_->input(platform_->window(), raw_);)
         const std::uint64_t now_ns = SDL_GetTicksNS();
         const double dt = fixed_dt_ ? kGameTickSeconds : std::min(double(now_ns - last_ns) * 1e-9, 0.25);
         last_ns = now_ns;
@@ -441,7 +456,9 @@ int Client::run() {
 
         ensure_view();
         if (flow_.state() == FlowState::Menu && !menu_music_) game_audio_->menu(), menu_music_ = true;
+        JOA_DEV(const std::uint64_t sim_t0 = SDL_GetTicksNS(); const std::uint64_t sim_ticks0 = session_.ticks();)
         tick_world(dt);
+        JOA_DEV(dev_stats_.sim_ms = double(SDL_GetTicksNS() - sim_t0) * 1e-6, dev_stats_.ticks = int(session_.ticks() - sim_ticks0);)
         // GamepadPlay: RTS virtual cursor (right stick; South / West = left / right button) while RTS is live.
         if (mission_visible() && !flow_.paused() && !camera_.free && session_.in_rts() && !bridge_.blocking(*session_.mission()))
             pad_pointer_.update(raw_, float(dt), viewport_, pad_settings_);
@@ -487,6 +504,7 @@ int Client::run() {
         if (flow_.state() == FlowState::Quit) break;
         JOA_FRAME_MARK();
     }
+    renderdoc_report();
     if (headless || !o_.autoplay.empty())
         std::printf("frames=%d state=%s mission=%d ticks=%llu hash=%016llx\n", frame, flow_state_name(flow_.state()),
                     session_.mission() ? session_.mission()->scenario_no() : 0, static_cast<unsigned long long>(session_.ticks()),

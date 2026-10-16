@@ -34,7 +34,7 @@ all 8073 distinct `known_versions.json` hashes and the game-data name patterns).
 | libpng-2.0 | libpng |
 | MIT (MIT-SIPB) | e2fsprogs libcom_err (krb5 dependency); krb5 (custom MIT) |
 | GPL-3.0-or-later WITH GCC-exception-3.1 | libgomp (GCC runtime, via libb2) |
-| Compiled in | GLM (MIT), nlohmann/json (MIT), Vulkan-Headers (Apache-2.0 OR MIT), AMD FidelityFX FSR 1 EASU/RCAS algorithms (MIT, `packaging/licenses/FidelityFX-FSR1-LICENSE.txt`) |
+| Compiled in | GLM (MIT), nlohmann/json (MIT), Vulkan-Headers (Apache-2.0 OR MIT), AMD FidelityFX FSR 1 EASU/RCAS algorithms (MIT, `packaging/licenses/FidelityFX-FSR1-LICENSE.txt`), RenderDoc in-application API header 1.46 (MIT, vendored `third_party/renderdoc/renderdoc_app.h`, `packaging/licenses/RenderDoc-app-API-LICENSE.txt`; RenderDoc itself is loaded only from the user's install with `--renderdoc`) |
 | AppImage runtime (outside the payload) | AppImage type2-runtime (MIT) statically linking libfuse 3.15.0 (LGPL-2.1, patched), squashfuse (BSD-2), musl, zstd, zlib, mimalloc — notices in `share/licenses/appimage-type2-runtime/`, source in the third-party source tarball |
 
 Host-provided, never bundled: glibc, libstdc++/libgcc_s, libGL/GLX/EGL/OpenGL/GLdispatch, Vulkan
@@ -58,8 +58,9 @@ and the runtime's are).
 | shaderc / glslc, glslang | Apache-2.0 / BSD | SPIR-V outputs are ours |
 | CMake, Ninja, GCC, nasm, squashfs-tools | various | not shipped |
 | Tracy (`JOA_TRACY=ON`, dev builds) | BSD-3-Clause | disabled in releases |
+| Dear ImGui 1.93.0 (`JOA_DEV_OVERLAY=ON`, dev builds) | MIT | vendored in `third_party/imgui` with `LICENSE.txt`; not in releases |
 
-Not used (earlier plans): OpenAL Soft, miniaudio, Dear ImGui, FreeType (directly).
+Not used (earlier plans): OpenAL Soft, miniaudio, FreeType (directly).
 
 ## Referenced community work (not redistributed)
 

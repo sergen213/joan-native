@@ -66,11 +66,6 @@ GLuint link(const char* vs_src, const char* fs_src) {
     return p;
 }
 
-struct UiVertex {
-    glm::vec2 position, uv;
-    glm::vec4 color;
-};
-
 class GlRenderer final : public IRenderer {
 public:
     explicit GlRenderer(SDL_Window* window) : window_(window) {
@@ -251,7 +246,7 @@ public:
         if (remaster_) draw_scene_remaster(f);
         else draw_scene(f);
         if (timed) glQueryCounter(timing_.queries[1], GL_TIMESTAMP);
-        draw_ui(f.ui);
+        draw_ui(f);
     }
 
     void end_frame() override {
@@ -515,8 +510,9 @@ private:
         glDrawElements(GL_TRIANGLES, GLsizei(count), GL_UNSIGNED_INT, reinterpret_cast<void*>(std::size_t(first) * 4));
     }
 
-    void draw_ui(std::span<const UiQuad> quads) {
-        if (quads.empty()) return;
+    void draw_ui(const FrameData& f) {
+        const std::span<const UiQuad> quads = f.ui;
+        if (quads.empty() && f.ui_triangles.empty()) return;
         ui_vertices_.clear();
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
@@ -524,6 +520,8 @@ private:
                                    {p1, q.uv1, q.color}, {{p0.x, p1.y}, {q.uv0.x, q.uv1.y}, q.color}};
             ui_vertices_.insert(ui_vertices_.end(), {v[0], v[1], v[2], v[0], v[2], v[3]});
         }
+        const GLint tri_base = GLint(ui_vertices_.size());
+        ui_vertices_.insert(ui_vertices_.end(), f.ui_vertices.begin(), f.ui_vertices.end());
         glViewport(0, 0, target_size_.x, target_size_.y);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
@@ -545,6 +543,17 @@ private:
             glBindTexture(GL_TEXTURE_2D, texture(quads[start].texture));
             glDrawArrays(GL_TRIANGLES, GLint(start * 6), GLsizei((i - start) * 6));
             start = i;
+        }
+        if (!f.ui_triangles.empty()) {
+            glEnable(GL_SCISSOR_TEST);
+            for (const UiTriangles& t : f.ui_triangles) {
+                const glm::ivec4 c = glm::clamp(t.clip, glm::ivec4(0), glm::ivec4(target_size_, target_size_));
+                if (c.z <= c.x || c.w <= c.y || !t.count) continue;
+                glScissor(c.x, target_size_.y - c.w, c.z - c.x, c.w - c.y);  // GL: bottom-left origin
+                glBindTexture(GL_TEXTURE_2D, texture(t.texture));
+                glDrawArrays(GL_TRIANGLES, tri_base + GLint(t.first), GLsizei(t.count));
+            }
+            glDisable(GL_SCISSOR_TEST);
         }
         glDisable(GL_BLEND);
         glEnable(GL_FRAMEBUFFER_SRGB);

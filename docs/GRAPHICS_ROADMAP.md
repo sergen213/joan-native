@@ -37,7 +37,7 @@ class IRenderer {
     virtual TextureHandle create_texture(const TextureData&); // RGBA8 sRGB or UNORM, top row first, UV (0,0)=top-left
     virtual void destroy_texture(TextureHandle);
     virtual void begin_frame(glm::ivec2 framebuffer_pixels);
-    virtual void submit(const FrameData&);                    // view+projection+viewport, Lighting, DrawItems, UiQuads
+    virtual void submit(const FrameData&);                    // view+projection+viewport, Lighting, DrawItems, UiQuads, clipped UI triangles
     virtual void end_frame();                                 // present
     virtual Image read_back();                                // sRGB RGBA8, top row first
     virtual void set_graphics(const GraphicsSettings&);       // preset/features (default Original = faithful path)
@@ -70,6 +70,46 @@ class IRenderer {
 - `engine.gl_smoke` runs the real client path under a private `xvfb-run` server (llvmpipe; falls back to `SDL_VIDEO_DRIVER=offscreen` + EGL if xvfb-run is missing), captures 640×360 at native and forced-4:3 aspect, decodes the PNG and checks colour variety, sky/ground/UI marker pixels and black pillarbox bars.
 - Manual capture: `SDL_VIDEO_DRIVER=x11 xvfb-run -a joan-native --screenshot work/engine/first.png --frames 5`. `SDL_VIDEO_DRIVER=offscreen` also works and uses the real GPU through EGL without a window.
 
+## Developer tools
+
+All optional; the default/release build has none of them active (RenderDoc support is compiled in but inert without
+`--renderdoc`; Tracy and the overlay are CMake options, off by default).
+
+- **RenderDoc** (`src/engine/renderdoc.cpp`, vendored MIT header `third_party/renderdoc/renderdoc_app.h`):
+  `--renderdoc` loads `librenderdoc.so` (`$RENDERDOC_LIB`, else the system library; reused if RenderDoc already
+  injected it) before any window or GPU object; `--renderdoc-capture N` (implies `--renderdoc`) captures frame-loop
+  iteration N with `StartFrameCapture`/`EndFrameCapture` (NULL device/window), so it works without presentation
+  (hidden `--screenshot` windows, Vulkan's offscreen fallback, where `TriggerCapture` never fires). The written path
+  (`/tmp/RenderDoc/joan-native_<date>_capture.rdc` by default) is logged; a library that cannot load, or a capture
+  that fails, is logged too.
+  - OpenGL: a late `dlopen` cannot hook SDL's `dlopen`/`dlsym` of libGL/libEGL, so the client restarts itself once
+    (`execv /proc/self/exe`) with `LD_PRELOAD=librenderdoc.so` and the library's directory on `LD_LIBRARY_PATH`
+    (`LD_PRELOAD` splits paths at spaces).
+  - Vulkan: RenderDoc's implicit layer (`ENABLE_VULKAN_RENDERDOC_CAPTURE=1` is set automatically). A system install
+    registers it; for the extracted tarball fix the manifest's `library_path` (`../../../lib/librenderdoc.so`) and
+    export `VK_ADD_IMPLICIT_LAYER_PATH=<tarball>/etc/vulkan/implicit_layer.d`. Without it the capture logs "failed".
+  - Verified 2026-10-15 with the official RenderDoc 1.46 Linux tarball (renderdoc.org/builds), S1L1 frame 30
+    (`--scenario S1L1 --screenshot … --frames 31 --renderdoc-capture 30`): GL under `xvfb-run` (llvmpipe) → 222 MB .rdc,
+    driver OpenGL, 15126 chunks, 392 draw calls, embedded thumbnail = the S1L1 frame; Vulkan with
+    `SDL_VIDEO_DRIVER=offscreen` (RADV, no swapchain) → 183 MB .rdc, driver Vulkan, 3461 chunks, 392 draws (no
+    thumbnail: nothing presented). Both opened by `renderdoccmd convert -c xml` / `renderdoccmd thumb`.
+- **Tracy** (`-DJOA_TRACY=ON`, Tracy v0.11.1 via FetchContent, needs network at configure time): `src/engine/profile.hpp`
+  zones `sim.tick`, `render.submit`, `render.present`, `audio.mix` (mixer thread or the fixed-step capture mix) and a
+  frame mark per frame. Verified 2026-10-15: `tracy-capture` built from the fetched sources
+  (`cmake -S <build>/_deps/tracy-src/capture`, its CPM step downloads capstone) recorded S1L1 Vulkan offscreen,
+  120 frames: 480 zones (4 × 120); `tracy-csvexport` lists `sim.tick`, `render.submit`, `audio.mix` 120 each and
+  `render.present` 98 (the offscreen Vulkan `end_frame` is a ~20 ns no-op). Run the client with `TRACY_NO_EXIT=1`
+  for short `--frames` runs so it waits for the capture to drain.
+- **Dev overlay** (`-DJOA_DEV_OVERLAY=ON`, vendored Dear ImGui 1.93.0 under `third_party/imgui`, MIT,
+  `src/engine/dev_overlay.*`): Ctrl+F12 in game toggles a window with frame time + graph, sim tick time/count, submit
+  CPU time, draw items / UI quads, unit counts (total/alive/hostile), the backend name, and graphics preset +
+  per-feature toggles (applied with `IRenderer::set_graphics`; switching backend needs a restart). It renders through
+  `FrameData::ui_vertices`/`ui_triangles`: non-indexed textured triangles with a per-batch scissor rect, drawn after
+  the UI quads in the same gamma-space UI pass by both backends (GL `glScissor` with the y flip, Vulkan
+  `vkCmdSetScissor`). Tests `engine.gl_dev_overlay` / `engine.vk_dev_overlay` (built only with the option) render
+  the demo plain, with the overlay and with a scissored full-screen triangle, and check the window background's
+  gamma-space blend, text pixels, the exact scissor rect and untouched pixels elsewhere (Vulkan: zero validation errors).
+
 ## Not done yet (in order)
 
 1. Original asset loading through the `MeshData`/`TextureData` seam (DDS decode, SMO/AM1/AM3 meshes, terrain) — depends on `joa_formats`.
@@ -77,7 +117,6 @@ class IRenderer {
 3. Vulkan: done for raster parity (section below) and optional hardware ray tracing (reflections/shadows/GI, [RAYTRACING.md](RAYTRACING.md)).
 4. Shadows, particles, MSAA, anisotropic filtering, gamma-space blending option, terrain renderer.
 5. Original key bindings, mouse-camera behaviour (CAMERA_AND_WIDESCREEN.md §3 mouse delta clamp) and menus/UI art.
-6. Tracy: `-DJOA_TRACY=ON` fetches Tracy v0.11.1 via FetchContent (network at configure time; verified to build and run). Dear ImGui is not installed system-wide and cannot be vendored offline, so no dev overlay yet.
 
 ## Vulkan
 

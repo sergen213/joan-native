@@ -151,10 +151,6 @@ struct LightGpu {  // std430 mirror of `Light`
     glm::vec4 pos_range, color, att;
 };
 constexpr std::uint32_t kNoTexture = 0xffffffffu;
-struct UiVertex {
-    glm::vec2 position, uv;
-    glm::vec4 color;
-};
 struct RtInstanceGpu {  // std430 mirror of `RtInstance` in shaders/vk/rt_common.glsl
     VkDeviceAddress vertices, indices;
     std::uint32_t first_index, albedo, layer2, lightmap;
@@ -1331,7 +1327,7 @@ private:
             timestamp(QUiBegin);
         }
         vk_.vkCmdEndRendering(cmd_);
-        if (!f || f->ui.empty()) return;
+        if (!f || (f->ui.empty() && f->ui_triangles.empty())) return;
         // UI pass: same image through the UNORM view, after the scene's colour writes.
         image_barrier(cmd_, color_.image, range(VK_IMAGE_ASPECT_COLOR_BIT), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1345,7 +1341,7 @@ private:
         info.pColorAttachments = &ui_color;
         info.pDepthAttachment = info.pStencilAttachment = nullptr;
         vk_.vkCmdBeginRendering(cmd_, &info);
-        draw_ui(s, f->ui);
+        draw_ui(s, *f);
         vk_.vkCmdEndRendering(cmd_);
     }
 
@@ -1494,9 +1490,11 @@ private:
         }
     }
 
-    void draw_ui(Slot& s, std::span<const UiQuad> quads) {
-        if (quads.empty()) return;
-        ensure(s, s.ui, quads.size() * 6 * sizeof(UiVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    void draw_ui(Slot& s, const FrameData& f) {
+        const std::span<const UiQuad> quads = f.ui;
+        if (quads.empty() && f.ui_triangles.empty()) return;
+        const std::size_t tri_base = quads.size() * 6;
+        ensure(s, s.ui, (tri_base + f.ui_vertices.size()) * sizeof(UiVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         auto* v = reinterpret_cast<UiVertex*>(s.ui.memory.mapped);
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
@@ -1504,6 +1502,7 @@ private:
                                    {p1, q.uv1, q.color}, {{p0.x, p1.y}, {q.uv0.x, q.uv1.y}, q.color}};
             for (int k : {0, 1, 2, 0, 2, 3}) *v++ = c[k];
         }
+        if (!f.ui_vertices.empty()) std::memcpy(v, f.ui_vertices.data(), f.ui_vertices.size_bytes());
         const VkDescriptorSet sets[2] = {textures_set_, s.set};
         vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 2, sets, 0, nullptr);
         const VkViewport viewport{0.0f, 0.0f, float(target_size_.x), float(target_size_.y), 0.0f, 1.0f};
@@ -1522,6 +1521,15 @@ private:
             vk_.vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof slot, &slot);
             vk_.vkCmdDraw(cmd_, std::uint32_t((i - start) * 6), 1, std::uint32_t(start * 6), 0);
             start = i;
+        }
+        for (const UiTriangles& t : f.ui_triangles) {
+            const glm::ivec4 c = glm::clamp(t.clip, glm::ivec4(0), glm::ivec4(target_size_, target_size_));
+            if (c.z <= c.x || c.w <= c.y || !t.count) continue;
+            const VkRect2D clip{{c.x, c.y}, {std::uint32_t(c.z - c.x), std::uint32_t(c.w - c.y)}};
+            vk_.vkCmdSetScissor(cmd_, 0, 1, &clip);
+            const std::uint32_t slot = texture_slot(t.texture);
+            vk_.vkCmdPushConstants(cmd_, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof slot, &slot);
+            vk_.vkCmdDraw(cmd_, t.count, 1, std::uint32_t(tri_base + t.first), 0);
         }
     }
 
@@ -2105,7 +2113,7 @@ private:
         vk_.vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_final_);
         vk_.vkCmdDraw(cmd_, 3, 1, 0, 0);
         if (s.timed) timestamp(QUiBegin);
-        draw_ui(s, f.ui);
+        draw_ui(s, f);
         vk_.vkCmdEndRendering(cmd_);
         if (rt) {
             rt_prev_camera_ = cam;

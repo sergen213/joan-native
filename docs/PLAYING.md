@@ -170,7 +170,23 @@ volumes), `[paths] game_dir`. Explicit CLI flags win. In-game options (shadows, 
 --headless --frames N                                  no window (NullRenderer): run N frames, print state + hash
 --screenshot FILE.png --frames N                       hidden window, capture frame N
 --autoplay-script FILE                                 timed synthetic input, see below
+--renderdoc  --renderdoc-capture N                     RenderDoc in-app API; capture frame N (see below)
 ```
+
+### Developer tools (docs/GRAPHICS_ROADMAP.md "Developer tools")
+
+- RenderDoc: `--renderdoc-capture N` loads RenderDoc (`RENDERDOC_LIB=/path/to/librenderdoc.so` for an extracted
+  tarball, else the installed one) and writes frame N to `/tmp/RenderDoc/joan-native_<date>_capture.rdc` (path logged).
+  OpenGL restarts the process once with RenderDoc preloaded. Vulkan needs RenderDoc's layer registered (installed
+  package, or `VK_ADD_IMPLICIT_LAYER_PATH=<tarball>/etc/vulkan/implicit_layer.d` with the manifest's `library_path`
+  pointing at the tarball's `lib/librenderdoc.so`). Example:
+  `RENDERDOC_LIB=~/renderdoc_1.46/lib/librenderdoc.so joan-native --scenario S1L1 --screenshot s.png --frames 31 --renderdoc-capture 30`.
+  RenderDoc's own hotkeys (F12/PrtScn) also work in a visible window while it is loaded.
+- Dev overlay (builds configured with `-DJOA_DEV_OVERLAY=ON`): Ctrl+F12 toggles it (plain F12 stays the Mission Brief).
+  It shows timings, draw/unit counts and graphics preset/feature toggles; it takes the mouse while the pointer is
+  over it.
+- Tracy (builds configured with `-DJOA_TRACY=ON`): connect the Tracy profiler/`tracy-capture` v0.11.1 to the running
+  client; zones `sim.tick`, `render.submit`, `render.present`, `audio.mix`.
 
 ### Autoplay scripts (`src/engine/session_autoplay.hpp`)
 

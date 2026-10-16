@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 using namespace joa::engine;
 using namespace joa::game;
@@ -82,6 +83,12 @@ struct Rig {
 }  // namespace
 
 int main() {
+    // The Options page saves options.ini (OptionsChanged): a fresh private config dir, never the user's, so the slider
+    // starts from the defaults on every run instead of creeping up to the 100 clamp.
+    const char* out = std::getenv("JOA_TEST_OUT");
+    const std::filesystem::path xdg = std::filesystem::path(out ? out : ".") / "gamepad-xdg";
+    std::filesystem::remove_all(xdg);
+    setenv("XDG_CONFIG_HOME", xdg.c_str(), 1);
     // ---- GameInput: Back layer, Back tap, deadzone (no game data: empty DEFAULTK) ----
     {
         Rig r;

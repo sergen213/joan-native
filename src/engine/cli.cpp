@@ -46,6 +46,8 @@ const char* usage() {
            "  --present-mode M         Vulkan: fifo (default, vsync) | relaxed | mailbox | immediate\n"
            "  --vk-validation          enable Khronos validation layer (errors are counted and logged)\n"
            "  --gpu-timing             log mean GPU timestamps per pass at exit (Vulkan)\n"
+           "  --renderdoc              load the RenderDoc in-app API (RENDERDOC_LIB or system librenderdoc.so)\n"
+           "  --renderdoc-capture N    with RenderDoc: capture frame N (0-based; implies --renderdoc)\n"
            "  --scenario NAME          play the campaign mission of an original map (e.g. S1L1), menus skipped\n"
            "  --free-camera            fly camera (move/look keys) instead of following Joan\n"
            "  --camera X,Y,Z[,H[,P]]   free camera pose: original units, heading/pitch in degrees\n"
@@ -161,7 +163,11 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
         else if (a == "--headless") o.headless = true;
         else if (a == "--vk-validation") o.vk_validation = true;
         else if (a == "--gpu-timing") o.gpu_timing = true;
-        else if (a == "--gpu") {
+        else if (a == "--renderdoc") o.renderdoc = true;
+        else if (a == "--renderdoc-capture") {
+            if (!value(v) || !number(v, o.renderdoc_capture) || o.renderdoc_capture < 0) return "--renderdoc-capture expects a frame number";
+            o.renderdoc = true;
+        } else if (a == "--gpu") {
             if (!value(v) || !number(v, o.gpu) || o.gpu < 0) return "--gpu expects a device index";
         } else if (a == "--present-mode") {
             if (!value(v)) return "--present-mode expects fifo|relaxed|mailbox|immediate";

@@ -1,5 +1,7 @@
 #include "engine/audio_mixer.hpp"
 
+#include "engine/profile.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -155,6 +157,7 @@ glm::vec2 Mixer::voice_gains(const Voice& v) const {
 }
 
 void Mixer::mix(float* out, std::size_t frames) {
+    JOA_ZONE("audio.mix");
     std::fill_n(out, frames * 2, 0.0f);
     std::lock_guard l(m_);
     for (Voice& v : voices_) {

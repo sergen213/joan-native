@@ -44,6 +44,14 @@ int main() {
     }
     {
         Options o;
+        CHECK(parse({"--renderdoc-capture", "30"}, o).empty() && o.renderdoc && o.renderdoc_capture == 30);
+        Options p;
+        CHECK(parse({"--renderdoc"}, p).empty() && p.renderdoc && p.renderdoc_capture == -1);
+        CHECK(!parse({"--renderdoc-capture", "-1"}, p).empty());
+        CHECK(!parse({"--renderdoc-capture"}, p).empty());
+    }
+    {
+        Options o;
         CHECK(!parse({"--width", "0"}, o).empty());
         CHECK(!parse({"--renderer", "dx8"}, o).empty());
         CHECK(!parse({"--frames"}, o).empty());

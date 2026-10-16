@@ -163,11 +163,28 @@ struct UiQuad {
     TextureHandle texture;   // empty = white
 };
 
+// Screen-space triangle vertex, pixel coordinates with top-left origin; color is a linear RGBA multiplier like UiQuad's.
+struct UiVertex {
+    glm::vec2 position{0.0f};
+    glm::vec2 uv{0.0f};
+    glm::vec4 color{1.0f};
+};
+
+// Textured triangle list ui_vertices[first, first + count) scissored to clip (pixels x0, y0, x1, y1), drawn after the
+// quads in the same gamma-space UI pass (Dear ImGui dev overlay, dev_overlay.hpp).
+struct UiTriangles {
+    std::uint32_t first = 0, count = 0;
+    glm::ivec4 clip{0};
+    TextureHandle texture;  // empty = white
+};
+
 struct FrameData {
     FrameView view;
     Lighting lighting;
     std::span<const DrawItem> draws;
     std::span<const UiQuad> ui;
+    std::span<const UiVertex> ui_vertices;
+    std::span<const UiTriangles> ui_triangles;
 };
 
 // sRGB-encoded RGBA8, top row first (ready for PNG).

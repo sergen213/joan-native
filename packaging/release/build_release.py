@@ -61,6 +61,8 @@ STATIC_COMPONENTS = (  # compiled into our binaries (header-only / embedded); li
     {"name": "Vulkan-Headers", "package": "vulkan-headers", "license": "Apache-2.0 OR MIT", "use": "Vulkan API headers (joan-native)"},
     {"name": "AMD FidelityFX FSR 1", "package": None, "license": "MIT", "use": "EASU/RCAS shader algorithms (shaders/common/post_easu.glsl, post_rcas.glsl)",
      "text": "packaging/licenses/FidelityFX-FSR1-LICENSE.txt"},
+    {"name": "RenderDoc in-application API", "package": None, "license": "MIT",
+     "use": "third_party/renderdoc/renderdoc_app.h (joan-native --renderdoc)", "text": "packaging/licenses/RenderDoc-app-API-LICENSE.txt"},
 )
 
 
@@ -253,8 +255,7 @@ def main() -> None:
     # 3. desktop integration, notices, license inventory
     for source, target in ((PACKAGING / "desktop/joan-native.desktop", share / "applications/joan-native.desktop"),
                            (PACKAGING / "desktop/joan-native.svg", share / "icons/hicolor/scalable/apps/joan-native.svg"),
-                           (PACKAGING / "NOTICE.txt", share / "doc/joan-native/NOTICE.txt"),
-                           (PACKAGING / "licenses/FidelityFX-FSR1-LICENSE.txt", share / "licenses/FidelityFX-FSR1/LICENSE.txt")):
+                           (PACKAGING / "NOTICE.txt", share / "doc/joan-native/NOTICE.txt")):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     packages: dict[str, dict] = {}
@@ -280,8 +281,11 @@ def main() -> None:
         if component["package"]:
             entry.update(version=owner(next(Path("/usr/share/licenses", component["package"]).iterdir()))["version"],
                          license_texts=copy_license_texts(component["package"], component["license"], share / "licenses"))
-        else:
-            entry["license_texts"] = ["licenses/FidelityFX-FSR1/LICENSE.txt"]
+        else:  # packaging/licenses/<name>-LICENSE.txt -> share/licenses/<name>/LICENSE.txt
+            name = Path(component["text"]).name.removesuffix("-LICENSE.txt")
+            (share / "licenses" / name).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / component["text"], share / "licenses" / name / "LICENSE.txt")
+            entry["license_texts"] = [f"licenses/{name}/LICENSE.txt"]
         static.append(entry)
     inventory = {
         "format": 1, "product": "joan-native", "version": args.version,

@@ -28,6 +28,8 @@ struct Options {
     int gpu = -1;                    // Vulkan physical device index; -1 = prefer discrete
     bool vk_validation = false;      // enable VK_LAYER_KHRONOS_validation + debug messenger
     bool gpu_timing = false;         // log GPU timestamp means at exit (Vulkan)
+    bool renderdoc = false;          // --renderdoc: load the RenderDoc in-app API before any GPU object (renderdoc.hpp)
+    int renderdoc_capture = -1;      // --renderdoc-capture N: capture frame N (-1 = only the RenderDoc hotkeys)
     PresentMode present_mode = PresentMode::Fifo;
     std::string scenario;            // original map to play (e.g. S1L1: its campaign mission, menus skipped); empty = demo
     bool free_camera = false;        // fly camera instead of following Joan
