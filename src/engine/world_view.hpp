@@ -48,6 +48,9 @@ public:
     AssetCache& assets() { return *assets_; }  // RtsFinish: GameCamera picks map items by their model bounds
     // Stage lighting with the fog/clear colour of the current view direction (refreshed by frame()).
     Lighting lighting() const { return lighting_; }
+    // Day/night: the lighting of the next frame() follows `minutes` after midnight (the mission clock,
+    // MissionState::minute); JOA_WORLD_CLOCK pins it instead.
+    void set_clock(float minutes) { scene_->set_clock(clock_env_ ? *clock_env_ : minutes); }
     // CONFIG.DAT 0x9C shadow mode (GameOptions::shadow): 0 none, 1 ShadowModel blobs only, 2 a stencil
     // volume for the player's hero only, 3 volumes for every unit (Scene::draw_shadow actor loop 0x5f1cc0).
     int shadow_mode = 3;
@@ -190,6 +193,8 @@ private:
     int player_ = 0;
     float time_s_ = 0;  // rendered time, drives sky drift and water
     Lighting lighting_;
+    std::optional<float> clock_env_;  // JOA_WORLD_CLOCK
+    glm::vec3 sky_noon_{1.0f};        // linear Normal_12 fog colour: the dome's horizon, tinted by the clock's
     UnitStats unit_stats_;
     ShadowStats shadow_stats_;
     std::unordered_map<int, Shot> shots_;

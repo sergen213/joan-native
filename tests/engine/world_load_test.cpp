@@ -97,6 +97,16 @@ int main() {
         light11 |= glm::distance(l.point_lights[sector129.lights[std::size_t(i)]].position, to_engine(8370.42f, 482.69f, 1424.0f)) < 1.0f;
     CHECK(light11);
     CHECK(WorldScene(assets, "S1L1", 60.0f).stats().stage == "Normal_Night");  // 1400 + 160 min wraps past midnight
+    {  // day/night: noon is Normal_12's straight-down sun; 13:30 is halfway to Normal_15 (VDir 90 -> 110), so the sun
+       // tilts 10 degrees; the clock wraps.
+        WorldScene day(assets, "S1L1");
+        CHECK(glm::dot(glm::normalize(day.lighting().sun_direction), glm::vec3(0, -1, 0)) > 0.9999f);
+        day.set_clock(810.0f);
+        CHECK_NEAR(glm::degrees(std::acos(-glm::normalize(day.lighting().sun_direction).y)), 10.0f, 0.1f);
+        CHECK(day.stats().stage == "Normal_12");
+        day.set_clock(810.0f + 1440.0f);
+        CHECK_NEAR(glm::degrees(std::acos(-glm::normalize(day.lighting().sun_direction).y)), 10.0f, 0.1f);
+    }
     CHECK(world.nodes().size() == 1 && world.nodes()[0].map.origin == glm::vec2(0.0f));
     Character joan(assets, "unit/Joan_of_Arc.AM1", "anim/joan_of_arc.am2");
     CHECK(joan.play("anim/joan_of_arc.am2", "f_run"));

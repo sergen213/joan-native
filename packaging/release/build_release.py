@@ -68,6 +68,8 @@ STATIC_COMPONENTS = (  # compiled into our binaries (header-only / embedded); li
      "use": "SMAA 1x shader library + area/search lookup textures (third_party/smaa, aa=smaa)", "text": "packaging/licenses/SMAA-LICENSE.txt"},
     {"name": "RenderDoc in-application API", "package": None, "license": "MIT",
      "use": "third_party/renderdoc/renderdoc_app.h (joan-native --renderdoc)", "text": "packaging/licenses/RenderDoc-app-API-LICENSE.txt"},
+    {"name": "Dear ImGui 1.93.0", "package": None, "license": "MIT",
+     "use": "developer overlay (third_party/imgui, Ctrl+F12 in game)", "text": "packaging/licenses/DearImGui-LICENSE.txt"},
 )
 
 

@@ -47,11 +47,14 @@ WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::M
         maps.push_back({n.name, {n.ox, n.oy}});
     const std::string& wf = mission.info().step.world_file;  // "scenario3\S3L1w"
     const std::string world = wf.substr(wf.find_last_of("\\/") + 1);
-    // Dev: JOA_WORLD_CLOCK=1440 (minutes after midnight) picks another .day lighting stage, e.g. Normal_Night.
-    const char* clock = std::getenv("JOA_WORLD_CLOCK");
-    scene_ = std::make_unique<WorldScene>(*assets_, dir, maps, world, clock ? float(std::atof(clock)) : 720.0f);
+    // Dev: JOA_WORLD_CLOCK=1440 (minutes after midnight) pins the day/night clock, e.g. Normal_Night.
+    if (const char* clock = std::getenv("JOA_WORLD_CLOCK")) clock_env_ = float(std::atof(clock));
+    // Built at noon: the sky dome's colours are the day's, the clock tints them (frame()).
+    scene_ = std::make_unique<WorldScene>(*assets_, dir, maps, world, 720.0f);
+    sky_noon_ = glm::convertSRGBToLinear(scene_->lighting().fog_color);
+    sky_ = std::make_unique<SkyDome>(*assets_, sky_noon_, scene_->cloud_textures());
+    set_clock(720.0f);
     lighting_ = scene_->lighting();
-    sky_ = std::make_unique<SkyDome>(*assets_, glm::convertSRGBToLinear(lighting_.fog_color), scene_->cloud_textures());
     // map/scenarioN -> DynGrass.res "_M<N>" variants.
     const int scenario_no = std::atoi(dir.c_str() + std::min(dir.size(), dir.find_last_not_of("0123456789") + 1));
     for (const WorldScene::Node& sn : scene_->nodes()) {
@@ -325,7 +328,9 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     // Interactive water: the wave window follows the look-at point; kicks of this frame (wade below) enter the next step.
     waves_.follow({pose.target.x, pose.target.z});
     waves_.step(dt);
-    sky_->build(eye, time_s_, draws);
+    // Day/night sky: the noon dome scaled per channel by how the horizon (scattering) colour changed since noon.
+    const glm::vec3 horizon = glm::convertSRGBToLinear(scene_->lighting().fog_color);
+    sky_->build(eye, time_s_, glm::clamp(horizon / glm::max(sky_noon_, glm::vec3(1e-3f)), 0.0f, 1.5f), draws);
     scene_->build(view_proj, eye, draws);
     for (Node& n : nodes_) {
         n.water->build(time_s_, eye, draws);

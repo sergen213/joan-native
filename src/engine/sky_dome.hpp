@@ -19,8 +19,8 @@ public:
     SkyDome(const SkyDome&) = delete;
     SkyDome& operator=(const SkyDome&) = delete;
 
-    // time_s drives the cloud drift.
-    void build(glm::vec3 camera, float time_s, std::vector<DrawItem>& draws) const;
+    // time_s drives the cloud drift; tint (linear) scales dome and clouds for the time of day.
+    void build(glm::vec3 camera, float time_s, glm::vec3 tint, std::vector<DrawItem>& draws) const;
 
     // Inside the in-game far plane (kWorldFar 4096), just beyond the fog end (3996): terrain reaching
     // the dome is fully fogged, so the horizon colour (= fog colour) joins it seamlessly.

@@ -54,7 +54,7 @@ jobs:
         run: |
           useradd -m ci && chown -R ci: .
           su ci -c "PKG_CONFIG_PATH=$PWD/work/tools/ffmpeg-prefix/lib/pkgconfig cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DJOA_UPDATE_REPO=$GITHUB_REPOSITORY && cmake --build build \
+            -DCMAKE_BUILD_TYPE=Release -DJOA_UPDATE_REPO=$GITHUB_REPOSITORY -DJOA_DEV_OVERLAY=ON && cmake --build build \
             && LIBGL_ALWAYS_SOFTWARE=1 ctest --test-dir build --output-on-failure -j4 -E '\.vk_|\.gl_' \
             && LIBGL_ALWAYS_SOFTWARE=1 ctest --test-dir build --output-on-failure -R '\.gl_' --repeat until-pass:2"
       - name: Release artifacts (tarballs, manifest, AppImage, third-party source), signed

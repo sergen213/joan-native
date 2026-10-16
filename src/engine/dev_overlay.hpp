@@ -29,6 +29,7 @@ struct DevStats {
     int ticks = 0;           // simulation ticks run this frame
     double submit_ms = 0.0;  // CPU time of the previous IRenderer::submit
     const game::World* world = nullptr;  // unit counts; null outside a mission
+    float game_minute = -1.0f;           // mission clock (MissionState::minute); < 0 outside a mission
 };
 
 class DevOverlay {
@@ -46,6 +47,10 @@ public:
     void frame(const DevStats& stats, glm::ivec2 framebuffer, float dt, FrameData& f);
 
     bool visible = false;
+    // Day/night test: while clock_override, the world lighting follows clock_minutes (minutes after midnight),
+    // advanced by clock_speed game minutes per real second, instead of the mission clock.
+    bool clock_override = false;
+    float clock_minutes = 720.0f, clock_speed = 0.0f;
 
 private:
     IRenderer& renderer_;

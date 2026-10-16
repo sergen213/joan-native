@@ -180,49 +180,49 @@ void WorldScene::load_lighting(const std::string& dir, const std::string& world,
     const auto& vfs = assets_.vfs();
     // Day cycle of the world (scenario_0N.scr WorldFileName = <map>w, e.g. S1L1w.day: Normal_06..
     // Normal_Night, StartTime/Duration in minutes after midnight); the per-map S1L1.day (three
-    // Special_Night stages) is only the fallback. Stage = the one running at `clock`.
+    // Special_Night stages) is only the fallback.
     for (const std::string& f : {dir + "/" + world + ".day", dir + "/" + map + ".day"}) {
         const auto day = read_text(vfs, f);
         if (!day) continue;
-        std::string name, first;
-        float start = 0;
         for (const auto& kv : formats::parse_kv_text(*day)) {
             const std::string k = lower(kv.key);
             if (k == "cloudtexture1" || k == "cloudtexture2") clouds_.push_back(kv.value);
-            if (k == "stagename") name = kv.value, first = first.empty() ? name : first;
-            else if (k == "starttime") start = float(to_number(kv.value));
-            else if (k == "duration") {
-                const float end = start + float(to_number(kv.value));
-                if ((clock >= start && clock < end) || (clock + 1440.0f >= start && clock + 1440.0f < end)) stats_.stage = name;
-            }
+            if (k == "stagename") stages_.emplace_back().name = kv.value;
+            else if (k == "starttime" && !stages_.empty()) stages_.back().start = float(to_number(kv.value));
         }
-        if (stats_.stage.empty()) stats_.stage = first;
-        if (!stats_.stage.empty()) break;
+        if (!stages_.empty()) break;
         clouds_.clear();
     }
+    if (stages_.empty()) stages_.emplace_back();  // no .day: the defaults below
+    std::sort(stages_.begin(), stages_.end(), [](const Stage& a, const Stage& b) { return a.start < b.start; });
     // Stage lights: the map's own .lgt first (S1L1.lgt is empty), then map/common.lgt, map/special.lgt.
-    std::optional<LgtLight> sun, ambient;
-    for (const std::string& f : {dir + "/" + map + ".lgt", std::string("map/common.lgt"), std::string("map/special.lgt")}) {
-        const auto t = read_text(vfs, f);
-        if (!t) continue;
-        for (const LgtLight& l : parse_lgt(*t)) {
-            if (!l.on || lower(l.stage) != lower(stats_.stage)) continue;
-            if (l.type == 1 && !sun) sun = l;
-            if (l.type == 0 && !ambient) ambient = l;
+    std::vector<std::vector<LgtLight>> lgts;
+    for (const std::string& f : {dir + "/" + map + ".lgt", std::string("map/common.lgt"), std::string("map/special.lgt")})
+        if (const auto t = read_text(vfs, f)) lgts.push_back(parse_lgt(*t));
+    const auto sca = read_text(vfs, "map/common.sca");
+    for (Stage& st : stages_) {
+        std::optional<LgtLight> sun, ambient;
+        for (const auto& file : lgts) {
+            for (const LgtLight& l : file) {
+                if (!l.on || lower(l.stage) != lower(st.name)) continue;
+                if (l.type == 1 && !sun) sun = l;
+                if (l.type == 0 && !ambient) ambient = l;
+            }
+            if (sun || ambient) break;
         }
-        if (sun || ambient) break;
-    }
-    // .sca record of the stage, read in file order like the engine's loader (lightsys.cpp,
-    // thunk_FUN_004a5bf0): Rayleigh, Mie, Inscattering, G, DistanceModifier, Red, Green, Blue (sun
-    // colour), DirectionX/Y/Z (original Z-up, normalised).
-    if (const auto t = read_text(vfs, "map/common.sca")) {
+        if (sun) st.sun = sun->rgb / 255.0f, st.vdir = sun->vdir, st.hdir = sun->hdir;
+        if (ambient) st.ambient = ambient->rgb / 255.0f;
+        // .sca record of the stage, read in file order like the engine's loader (lightsys.cpp,
+        // thunk_FUN_004a5bf0): Rayleigh, Mie, Inscattering, G, DistanceModifier, Red, Green, Blue (sun
+        // colour), DirectionX/Y/Z (original Z-up, normalised).
+        if (!sca) continue;
         bool in = false;
-        glm::vec3 dir{0.0f, 0.0f, -1.0f};  // original space
-        Scattering& s = scattering_;
-        for (const auto& kv : formats::parse_kv_text(*t)) {
+        glm::vec3 d{0.0f, 0.0f, -1.0f};  // original space
+        Scattering& s = st.scattering;
+        for (const auto& kv : formats::parse_kv_text(*sca)) {
             const std::string k = lower(kv.key);
             const float v = float(to_number(kv.value));
-            if (k == "stagename") in = lower(kv.value) == lower(stats_.stage);
+            if (k == "stagename") in = lower(kv.value) == lower(st.name);
             else if (!in) continue;
             else if (k == "rayleigh") s.rayleigh = v;
             else if (k == "mie") s.mie = v;
@@ -232,36 +232,61 @@ void WorldScene::load_lighting(const std::string& dir, const std::string& world,
             else if (k == "red") s.sun_rgb.r = v;
             else if (k == "green") s.sun_rgb.g = v;
             else if (k == "blue") s.sun_rgb.b = v;
-            else if (k == "directionx") dir.x = v;
-            else if (k == "directiony") dir.y = v;
-            else if (k == "directionz") dir.z = v;
+            else if (k == "directionx") d.x = v;
+            else if (k == "directiony") d.y = v;
+            else if (k == "directionz") d.z = v;
         }
-        if (glm::dot(dir, dir) > 0.0f) s.direction = glm::normalize(to_engine(dir.x, dir.y, dir.z));
+        if (glm::dot(d, d) > 0.0f) s.direction = glm::normalize(to_engine(d.x, d.y, d.z));
     }
+    // Linear vertex fog (fog.nvo calculate_linear_normal_fog_factor, D3DFOG_LINEAR) from 900 to the view
+    // distance; FUN_005634e0 steers the view distance towards min(far - 200, 4096 [* 0.7 at night or in
+    // rain/snow]) and stops within 100 units: 3996 at day. Far plane 4096. HIGH.
+    lighting_.fog_start = 900.0f;
+    lighting_.fog_end = kWorldFar - 100.0f;
+    set_clock(clock);
+    // Sky: the .day SkyMesh (model/sky01.smo) carries sunset textures (sky01..04); the engine draws it
+    // with the scatter.nvo vertex shader (not reproduced). sky_dome.hpp draws a gradient dome + clouds.
+}
+
+void WorldScene::set_clock(float clock) {
+    // Each stage's values hold at its StartTime and blend linearly into the next stage's (wrapping at midnight),
+    // so the noon start (720 = Normal_12's StartTime) is exactly that stage.
+    // ponytail: linear blend between the .day stages; the original's own transition (modify_light
+    // FUN_004b0780 / lighting reselect FUN_004a5630) is not reverse engineered.
+    clock = std::fmod(std::fmod(clock, 1440.0f) + 1440.0f, 1440.0f);
+    std::size_t i = stages_.size() - 1;  // before the first StartTime: the last stage (from the previous day)
+    for (std::size_t k = 0; k < stages_.size(); ++k)
+        if (stages_[k].start <= clock) i = k;
+    const Stage &a = stages_[i], &b = stages_[(i + 1) % stages_.size()];
+    const float span = std::fmod(b.start - a.start + 1440.0f, 1440.0f);
+    const float t = span > 0.0f ? std::fmod(clock - a.start + 1440.0f, 1440.0f) / span : 0.0f;
+    stats_.stage = a.name;  // the stage running at `clock` (the .day stages tile the day: StartTime + Duration = next)
+    clock_ = clock;
+
+    Scattering& s = scattering_;
+    s.rayleigh = glm::mix(a.scattering.rayleigh, b.scattering.rayleigh, t);
+    s.mie = glm::mix(a.scattering.mie, b.scattering.mie, t);
+    s.inscattering = glm::mix(a.scattering.inscattering, b.scattering.inscattering, t);
+    s.g = glm::mix(a.scattering.g, b.scattering.g, t);
+    s.distance_modifier = glm::mix(a.scattering.distance_modifier, b.scattering.distance_modifier, t);
+    s.sun_rgb = glm::mix(a.scattering.sun_rgb, b.scattering.sun_rgb, t);
+    const glm::vec3 sd = glm::mix(a.scattering.direction, b.scattering.direction, t);
+    s.direction = glm::dot(sd, sd) > 1e-6f ? glm::normalize(sd) : b.scattering.direction;
 
     Lighting& l = lighting_;
-    const glm::vec3 sun_rgb = sun ? sun->rgb / 255.0f : glm::vec3(0.6f);
-    const glm::vec3 amb_rgb = ambient ? ambient->rgb / 255.0f : glm::vec3(0.25f);
-    // HYPOTHESIS: VDir = elevation, HDir = azimuth CCW from +X (degrees), light shines downward.
-    const float v = glm::radians(sun ? sun->vdir : 60.0f), h = glm::radians(sun ? sun->hdir : 0.0f);
+    // HYPOTHESIS: VDir = elevation, HDir = azimuth CCW from +X (degrees), light shines downward. The angles
+    // blend (not the vectors), so the sun arcs over: Normal_06..18 run VDir 45, 70, 90, 110, 135.
+    const float v = glm::radians(glm::mix(a.vdir, b.vdir, t)), h = glm::radians(glm::mix(a.hdir, b.hdir, t));
     l.sun_direction = -to_engine(std::cos(v) * std::cos(h), std::cos(v) * std::sin(h), std::sin(v));
     // D3D8 material lighting: the material diffuse multiplies the sun and point lights (models: colour1,
     // 150/255, AssetCache::materials); every material ambient is overwritten with DAT_00a69cd0 =
     // 0xFFF0F0F0 after load (FUN_0060baf0 copies DAT_00a18a6c), so the ambient light is scaled by
     // 240/255. CONFIRMED values; gamma-space sum.
-    l.sun_color = sun_rgb;
-    l.ambient = amb_rgb * (240.0f / 255.0f);
-    // Linear vertex fog (fog.nvo calculate_linear_normal_fog_factor, D3DFOG_LINEAR) from 900 to the view
-    // distance; FUN_005634e0 steers the view distance towards min(far - 200, 4096 [* 0.7 at night or in
-    // rain/snow]) and stops within 100 units: 3996 at day. Far plane 4096. HIGH.
-    l.fog_start = 900.0f;
-    l.fog_end = kWorldFar - 100.0f;
+    l.sun_color = glm::mix(a.sun, b.sun, t);
+    l.ambient = glm::mix(a.ambient, b.ambient, t) * (240.0f / 255.0f);
     // Fog/clear colour: scattering towards a level view (WorldView refreshes it from the camera).
     l.fog_color = fog_color(glm::vec3(1.0f, 0.0f, 0.0f));
     l.clear_color = glm::vec4(srgb_to_linear(l.fog_color), 1.0f);
-
-    // Sky: the .day SkyMesh (model/sky01.smo) carries sunset textures (sky01..04); the engine draws it
-    // with the scatter.nvo vertex shader (not reproduced). sky_dome.hpp draws a gradient dome + clouds.
 }
 
 glm::vec3 scattering_fog_color(const Scattering& s, glm::vec3 view_dir) {

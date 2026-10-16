@@ -99,9 +99,12 @@ public:
     const WorldStats& stats() const { return stats_; }  // every node
     const std::vector<PlacedObject>& objects() const { return objects_; }
     void hide(std::size_t object) { objects_[object].hidden = true; }  // permanent (see PlacedObject::hidden)
-    // Stage lighting at the start clock; fog_color for a level view (WorldView recomputes it per frame
+    // Lighting at the current clock (set_clock); fog_color for a level view (WorldView recomputes it per frame
     // with fog_color()); point_lights = every scene light (flickering ones change in tick_lights()).
     Lighting lighting() const;
+    // Day/night: blends the .day stages around `minutes` after midnight (wraps) into lighting() and fog_color().
+    void set_clock(float minutes);
+    float clock() const { return clock_; }
     glm::vec3 fog_color(glm::vec3 view_dir) const { return scattering_fog_color(scattering_, view_dir); }
     // Advances RANDOM_ATTENUATION light flicker by one 30 Hz tick.
     void tick_lights();
@@ -131,6 +134,15 @@ private:
     std::vector<PlacedObject> objects_;
     Lighting lighting_;
     Scattering scattering_;
+    struct Stage {  // one .day stage with its .lgt sun/ambient and .sca record
+        std::string name;
+        float start = 0;                                   // StartTime, minutes after midnight
+        glm::vec3 sun{0.6f}, ambient{0.25f};               // gamma space 0..1
+        float vdir = 60.0f, hdir = 0.0f;                   // degrees
+        Scattering scattering;
+    };
+    std::vector<Stage> stages_;  // by StartTime
+    float clock_ = 720.0f;
     std::vector<PointLight> lights_;
     struct Flicker {
         std::vector<std::uint16_t> lights;  // one .stg Group (a light copied into several sectors)

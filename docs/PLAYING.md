@@ -184,13 +184,15 @@ volumes), `[paths] game_dir`. Explicit CLI flags win (`--preset original --graph
   pointing at the tarball's `lib/librenderdoc.so`). Example:
   `RENDERDOC_LIB=~/renderdoc_1.46/lib/librenderdoc.so joan-native --scenario S1L1 --screenshot s.png --frames 31 --renderdoc-capture 30`.
   RenderDoc's own hotkeys (F12/PrtScn) also work in a visible window while it is loaded.
-- Dev overlay (builds configured with `-DJOA_DEV_OVERLAY=ON`): Ctrl+F12 toggles it (plain F12 stays the Mission Brief).
-  It shows timings, draw/unit counts and graphics preset/feature toggles; it takes the mouse while the pointer is
-  over it.
+- Dev overlay (release builds and `-DJOA_DEV_OVERLAY=ON`): Ctrl+F12 toggles it (plain F12 stays the Mission Brief).
+  It shows timings, draw/unit counts, a day/night section (the mission clock; "override game clock" with a
+  time-of-day slider, a speed in game minutes per real second and 06:00..night presets) and graphics preset/feature
+  toggles; it takes the mouse while the pointer is over it.
 - Tracy (builds configured with `-DJOA_TRACY=ON`): connect the Tracy profiler/`tracy-capture` v0.11.1 to the running
   client; zones `sim.tick`, `render.submit`, `render.present`, `audio.mix`.
-- `JOA_WORLD_CLOCK=<minutes>` picks the world's `.day` lighting stage at that clock (the port otherwise starts at
-  720 = noon), e.g. `JOA_WORLD_CLOCK=1450` = `Normal_Night`.
+- Day/night: the world lighting follows the mission clock (24 game minutes per real minute), blending the world's
+  `.day` stages (Normal_06 .. Normal_Night: sun colour, ambient, sun elevation 45° .. 135°, fog scattering) between
+  their start times. `JOA_WORLD_CLOCK=<minutes>` pins it, e.g. `JOA_WORLD_CLOCK=1450` = `Normal_Night`.
 - `JOA_CAPTURE_FPS=<fps>`: `--screenshot` / `--autoplay-script` runs advance 1/fps s per frame instead of one 33 ms
   game tick (render interpolation as on a high-refresh display, still deterministic); scale script frame numbers by fps/30.
 

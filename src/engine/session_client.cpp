@@ -218,6 +218,9 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
         f.view.projection = perspective_hor_plus(std::atan(pose_.fov_k), aspect, kDefaultNear, kDefaultFar);
         f.view.viewport = viewport_;
         view_->selection = session_.in_rts() ? &camera_.rts_selection() : nullptr;  // RTS selection rings
+        float minute = m->state().minute;  // day/night: the mission clock (GameClock 0x476bb0)
+        JOA_DEV(if (dev_ && dev_->clock_override) minute = dev_->clock_minutes;)
+        view_->set_clock(minute);
         view_->frame(alpha, pose_, float(dt), f.view, draws_);
         frame_view_ = f.view;
         f.lighting = view_->lighting();
@@ -298,6 +301,7 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
     f.ui = quads_;
     JOA_DEV(if (dev_) {
         dev_stats_.world = m ? &m->world() : nullptr;
+        dev_stats_.game_minute = m ? m->state().minute : -1.0f;
         dev_->frame(dev_stats_, size, float(dt), f);
     })
     renderer_->begin_frame(size);

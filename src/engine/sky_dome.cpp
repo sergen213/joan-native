@@ -71,15 +71,16 @@ SkyDome::~SkyDome() {
     for (const Layer& l : layers_) renderer_.destroy_mesh(l.mesh);
 }
 
-void SkyDome::build(glm::vec3 camera, float time_s, std::vector<DrawItem>& draws) const {
+void SkyDome::build(glm::vec3 camera, float time_s, glm::vec3 tint, std::vector<DrawItem>& draws) const {
     Material m;
     m.unlit = true;
     m.fog = false;
     m.receive_shadow = false;  // drawn before Scene_render enables the stencil (0x5ebac0)
     m.two_sided = true;
+    m.tint = glm::vec4(tint, 1.0f);
     draws.push_back({dome_, m, glm::translate(glm::mat4(1.0f), camera)});
     m.blend = BlendMode::AlphaBlend;
-    m.tint = glm::vec4(1.25f, 1.25f, 1.3f, 0.9f);  // the cloud texels are grey; lifted towards white wisps
+    m.tint = glm::vec4(glm::vec3(1.25f, 1.25f, 1.3f) * tint, 0.9f);  // the cloud texels are grey; lifted towards white wisps
     for (const Layer& l : layers_) {
         m.albedo = l.texture;
         // Vertices sit at (dome - lift): translate(camera + lift) * spin about +Y puts them back on the

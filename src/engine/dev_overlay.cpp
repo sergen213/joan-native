@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace joa::engine {
 namespace {
@@ -79,6 +80,7 @@ void DevOverlay::input(SDL_Window* window, RawInput& raw) {
 
 void DevOverlay::frame(const DevStats& stats, glm::ivec2 framebuffer, float dt, FrameData& f) {
     frame_ms_[std::size_t(frame_count_++) % frame_ms_.size()] = dt * 1000.0f;
+    if (clock_override) clock_minutes = std::fmod(std::fmod(clock_minutes + clock_speed * dt, 1440.0f) + 1440.0f, 1440.0f);
     if (!visible) return;
     ImGui::SetCurrentContext(ctx_);
     ImGuiIO& io = ImGui::GetIO();
@@ -108,6 +110,26 @@ void DevOverlay::frame(const DevStats& stats, glm::ivec2 framebuffer, float dt, 
         } else {
             ImGui::TextDisabled("no mission");
         }
+        ImGui::SeparatorText("day / night");
+        const auto hhmm = [](float m) { return std::to_string(int(m) / 60 + 100).substr(1) + ":" + std::to_string(int(m) % 60 + 100).substr(1); };
+        if (stats.game_minute >= 0.0f) ImGui::Text("game clock %s (24 game min per real min)", hhmm(stats.game_minute).c_str());
+        if (ImGui::Checkbox("override game clock", &clock_override) && clock_override && stats.game_minute >= 0.0f)
+            clock_minutes = stats.game_minute;
+        ImGui::BeginDisabled(!clock_override);
+        ImGui::SliderFloat("time of day", &clock_minutes, 0.0f, 1439.0f, hhmm(clock_minutes).c_str());
+        ImGui::SliderFloat("speed (game min/s)", &clock_speed, -240.0f, 240.0f, "%.0f");
+        if (ImGui::Button("06:00")) clock_minutes = 360.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("09:00")) clock_minutes = 540.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("12:00")) clock_minutes = 720.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("15:00")) clock_minutes = 900.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("18:00")) clock_minutes = 1080.0f;
+        ImGui::SameLine();
+        if (ImGui::Button("night")) clock_minutes = 1440.0f - 20.0f;
+        ImGui::EndDisabled();
         ImGui::SeparatorText("graphics");
         bool changed = false;
         int preset = int(graphics_.preset);

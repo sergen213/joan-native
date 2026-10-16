@@ -15,7 +15,8 @@ its SHA-256, the upstream project / distribution package and version it came
 from, its SPDX license expression and the license texts shipped for it under
 share/licenses/. Components compiled into the programs (GLM, nlohmann/json,
 Vulkan-Headers, AMD FidelityFX FSR 1 algorithms, SMAA (shader library and lookup
-textures, MIT), the RenderDoc in-application API header) are listed there as well.
+textures, MIT), the RenderDoc in-application API header, Dear ImGui (MIT, the
+developer overlay)) are listed there as well.
 Host-provided libraries (glibc, libstdc++, GPU drivers and the Vulkan/OpenGL
 loaders, X11/Wayland client and font libraries) are NOT bundled.
 
