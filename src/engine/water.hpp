@@ -27,7 +27,7 @@ public:
     // Animates the bump frame (time_s) and the per-vertex reflection coordinates (eye, engine space).
     void build(float time_s, glm::vec3 eye, std::vector<DrawItem>& draws);
     // Engine-space height (Y) of the remaster-shaded surfaces (not ice) over engine position p's x/z, the highest
-    // where several overlap; nullopt off the water (interactive ripples, world_view_water.cpp).
+    // where several overlap; nullopt off the water (interactive wave field walls, world_view_water.cpp).
     std::optional<float> surface_height(glm::vec3 p) const;
 
 private:

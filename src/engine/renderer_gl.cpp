@@ -738,7 +738,7 @@ private:
             {"u_ao_map", 7},  {"u_shadow", 8},  {"u_env", 9},         {"u_irradiance", 10}, {"u_hdr", 11},  {"u_ambient", 12}, {"u_depth", 13},
             {"u_ao", 14},     {"u_ldr", 15},    {"u_history", 16},    {"u_src", 17},  {"u_final", 19}, {"u_velocity", 20},
             {"u_aa_a", 21},   {"u_aa_b", 22},   {"u_area", 23},       {"u_search", 24}, {"u_exposure_prev", 25}, {"u_lum", 26},
-            {"u_exposure", 27}, {"u_reference", 28}, {"u_water_color", 29}, {"u_water_depth", 30}};
+            {"u_exposure", 27}, {"u_reference", 28}, {"u_water_color", 29}, {"u_water_depth", 30}, {"u_water_waves", 31}};
         for (const auto& [n, unit] : units)
             if (const GLint loc = glGetUniformLocation(p, n); loc >= 0) glUniform1i(loc, unit);
         if (const GLuint block = glGetUniformBlockIndex(p, "RemasterFrame"); block != GL_INVALID_INDEX) glUniformBlockBinding(p, block, 0);
@@ -770,6 +770,7 @@ private:
         glGenBuffers(1, &ubo_);
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
         glBufferData(GL_UNIFORM_BUFFER, sizeof(RemasterFrame), nullptr, GL_DYNAMIC_DRAW);
+        waves_ = make_texture(GL_R16F, GL_RED, GL_FLOAT, glm::ivec2(kWaterWaveGrid), GL_LINEAR);
     }
 
     static GLuint make_texture(GLenum internal, GLenum format, GLenum type, glm::ivec2 size, GLint filter) {
@@ -988,6 +989,7 @@ private:
                          prog_rcas_, prog_fxaa_, prog_smaa_[0], prog_smaa_[1], prog_smaa_[2]})
             if (p) glDeleteProgram(p);
         if (ubo_) glDeleteBuffers(1, &ubo_);
+        if (waves_) glDeleteTextures(1, &waves_);
     }
 
     void ensure_env(const Lighting& l) {
@@ -1101,6 +1103,10 @@ private:
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof rf, &rf);
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
+        if (rf.waves.w > 0.0f) {  // interactive water wave field (FrameData::waves): unit 31 is only ever this texture;
+            bind_unit(31, waves_);  // respecified whole (the driver orphans the copy an in-flight frame still reads)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R16F, kWaterWaveGrid, kWaterWaveGrid, 0, GL_RED, GL_FLOAT, f.waves.height.data());
+        }
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_BLEND);
         glDisable(GL_FRAMEBUFFER_SRGB);  // float/UNORM targets; the final pass writes encoded bytes
@@ -1332,6 +1338,7 @@ private:
     std::unordered_map<std::uint32_t, MaterialMaps> material_maps_;  // by albedo texture id
     PbrProgram pbr_{};
     GLuint prog_ssao_ = 0, prog_ao_apply_ = 0, prog_composite_ = 0, prog_taa_ = 0, prog_easu_ = 0, prog_rcas_ = 0, ubo_ = 0;
+    GLuint waves_ = 0;  // R16F kWaterWaveGrid^2 interactive water wave field (unit 31)
     GLuint prog_exposure_[2]{};  // post_exposure_lum, post_exposure_adapt
     GLuint prog_fxaa_ = 0, prog_smaa_[3]{};
     RemasterTargets rt_{};

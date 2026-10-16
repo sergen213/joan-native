@@ -11,6 +11,7 @@
 
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
+#include <glm/gtc/packing.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -238,6 +239,9 @@ struct Slot {
     bool timed = false, present_timed = false, rt_timed = false;
     Buffer rm_ubo, rm_materials;  // remaster frame block, MaterialExtra table (set 2)
     VkDescriptorSet rm_set = VK_NULL_HANDLE;
+    // Interactive water wave field (FrameData::waves, set 2 binding 24): R16F staging + image, rewritten when the slot is idle.
+    Buffer rm_waves;
+    Image2D waves;
     Buffer rt_ubo, rt_instances;  // RtFrame, RtInstance table (set 3)
     VkDescriptorSet rt_set = VK_NULL_HANDLE;
 };
@@ -1705,8 +1709,10 @@ private:
     // blended like the HDR colour (post_exposure_lum.glsl).
     static constexpr VkFormat kReferenceFormat = VK_FORMAT_R16_SFLOAT;
     // set 2 (remaster_vk.glsl); 14-17: SMAA edges, weights, area, search; 18-21: auto exposure previous state, measurement,
-    // state, reference; 22-23: stylised water refraction colour (RmTargets::opaque) and depth (pbr_shade.glsl shade_water)
-    static constexpr std::uint32_t kRmBindings = 24;
+    // state, reference; 22-23: stylised water refraction colour (RmTargets::opaque) and depth (pbr_shade.glsl shade_water);
+    // 24: interactive water wave field (Slot::waves)
+    static constexpr std::uint32_t kRmBindings = 25;
+    static constexpr VkFormat kWavesFormat = VK_FORMAT_R16_SFLOAT;  // linear filtering is mandatory for R16F (not R32F)
     static constexpr VkFormat kExposureFormat = VK_FORMAT_R32_SFLOAT;  // 1x1 auto exposure state (post_exposure_adapt.glsl)
 
     VkPipeline make_rm_pipeline(const RmPipe& p) {
@@ -1861,6 +1867,9 @@ private:
             const VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, rm_pool_, 1, &rm_layout_};
             check(vk_.vkAllocateDescriptorSets(device_, &ai, &s.rm_set), "vkAllocateDescriptorSets");
             s.rm_ubo = create_buffer(sizeof(RemasterFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            s.rm_waves = create_buffer(VkDeviceSize(kWaterWaveGrid) * kWaterWaveGrid * 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kHost, 0);
+            s.waves = create_image(kWavesFormat, {std::uint32_t(kWaterWaveGrid), std::uint32_t(kWaterWaveGrid)}, 1,
+                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         }
         const VkDescriptorSetLayout sets[3] = {textures_layout_, frame_layout_, rm_layout_};
         const VkPushConstantRange push{stages, 0, 16};  // = the RT layout's range, so sets 0-2 stay bound across both
@@ -2037,6 +2046,8 @@ private:
         for (Slot& s : slots_) {
             destroy(s.rm_ubo);
             destroy(s.rm_materials);
+            destroy(s.rm_waves);
+            destroy(s.waves);
         }
         if (rm_pipe_layout_) vk_.vkDestroyPipelineLayout(device_, rm_pipe_layout_, nullptr);
         if (rm_pool_) vk_.vkDestroyDescriptorPool(device_, rm_pool_, nullptr);
@@ -2065,8 +2076,8 @@ private:
 
     // All of set 2 for this slot, rewritten every frame (the slot is idle: begin_frame waited for it). Inputs that do not
     // exist on this path (the Original look has no remaster targets or environment) get a valid dummy: the white texture,
-    // or the (1x1 when off) shadow map for the depth bindings.
-    void write_rm_set(Slot& s, const RmViews& v) {
+    // or the (1x1 when off) shadow map for the depth bindings. waves: Slot::waves when uploaded this frame.
+    void write_rm_set(Slot& s, const RmViews& v, VkImageView waves = VK_NULL_HANDLE) {
         const VkSampler linear = samplers_[0][0];
         const auto ro = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, dro = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         const VkImageView white = textures_.at(white_.id).view;
@@ -2097,7 +2108,8 @@ private:
             {rm_nearest_, or_white(rmt_.exposure[ew].view), ro},
             {rm_nearest_, or_white(rmt_.reference.view), ro},
             {linear, or_white(rmt_.opaque.view), ro},
-            {rm_nearest_, rmt_.water_depth.view ? rmt_.water_depth.view : shadow_.view, dro}};
+            {rm_nearest_, rmt_.water_depth.view ? rmt_.water_depth.view : shadow_.view, dro},
+            {linear, or_white(waves), ro}};
         const VkDescriptorBufferInfo ubo{s.rm_ubo.buffer, 0, VK_WHOLE_SIZE}, materials{s.rm_materials.buffer, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet w[kRmBindings]{};
         for (std::uint32_t i = 0; i < kRmBindings; ++i) {
@@ -2218,8 +2230,21 @@ private:
         const int w = int(history_.frame & 1u), r = 1 - w;  // TAA history written / read this frame (as GL)
         const bool taa = gfx_.aa == AntiAliasing::Taa && !fsr3_;  // FSR 3 replaces TAA and post AA; the final pass reads its output
         ensure_post_targets(scene, output);
-        write_rm_set(s, fsr3_ ? RmViews{rmt_.ldr.view, rmt_.hist[r].view, rmt_.ldr.view, rmt_.fsr_output.view}
-                              : post_views(rmt_.ldr.view, rmt_.hist[r].view, taa ? rmt_.hist[w].view : rmt_.ldr.view));
+        // Wave field: half floats into this (idle) slot's staging buffer, copied before the scene passes.
+        const bool waves = rf.waves.w > 0.0f;
+        if (waves) {
+            auto* half = reinterpret_cast<std::uint16_t*>(s.rm_waves.memory.mapped);
+            for (std::size_t i = 0; i < f.waves.height.size(); ++i) half[i] = std::uint16_t(glm::packHalf1x16(f.waves.height[i]));
+            const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
+            rm_barrier(s.waves.image, color, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            const VkBufferImageCopy copy{0, 0, 0, {color, 0, 0, 1}, {0, 0, 0}, {std::uint32_t(kWaterWaveGrid), std::uint32_t(kWaterWaveGrid), 1}};
+            vk_.vkCmdCopyBufferToImage(cmd_, s.rm_waves.buffer, s.waves.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            rm_barrier(s.waves.image, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        write_rm_set(s,
+                     fsr3_ ? RmViews{rmt_.ldr.view, rmt_.hist[r].view, rmt_.ldr.view, rmt_.fsr_output.view}
+                           : post_views(rmt_.ldr.view, rmt_.hist[r].view, taa ? rmt_.hist[w].view : rmt_.ldr.view),
+                     waves ? s.waves.view : VK_NULL_HANDLE);
         const VkDescriptorSet sets[3] = {textures_set_, s.set, s.rm_set};
         vk_.vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, rm_pipe_layout_, 0, 3, sets, 0, nullptr);
         if (rt) rt_prepare(s, f, scene, first_volume, first_blended);  // instance table, RtFrame, set 3 (graphics + compute)

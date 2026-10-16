@@ -221,7 +221,7 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
         view_->frame(alpha, pose_, float(dt), f.view, draws_);
         frame_view_ = f.view;
         f.lighting = view_->lighting();
-        f.ripples = view_->ripples();
+        f.waves = view_->waves().data();
         bridge_.voice_active = game_audio_ && game_audio_->voice_active();
         bridge_.rts_commander = camera_.rts_commander(), bridge_.rts_siege = camera_.rts_hover_siege();  // HudFinish
         camera_.minimap_scale = hud_minimap_scale(*ui_, hud_);  // RtsHero: Ctrl_switch_commander view test
@@ -363,7 +363,7 @@ int Client::run() {
         f.view = frame_view_;
         f.lighting = view_->lighting();
         f.draws = draws_;
-        f.ripples = view_->ripples();
+        f.waves = view_->waves().data();
         renderer_->begin_frame(platform_ ? platform_->pixel_size() : glm::ivec2(o_.width, o_.height));
         renderer_->submit(f);
         const Image img = renderer_->read_back();

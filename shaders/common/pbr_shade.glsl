@@ -174,11 +174,12 @@ vec3 apply_fog(vec3 c, float fog) { return fog > 0.0 ? to_linear(mix(to_srgb(c),
 
 // ---- Stylised water (`[graphics] water=enhanced`, docs/GRAPHICS_ROADMAP.md "Water") ----------------------------------
 // .stg CreateWater surfaces after World of Warcraft: Forever's water: saturated teal-to-deep-blue absorption over the bed
-// seen through the surface (the opaque scene and its depth, copied before the translucent pass, refracted by the ripples),
-// a soft shoreline foam band, two scrolling normal layers (water.cpp: the original Lake1.bmp height map), Fresnel sky (or
-// ray-traced) reflection and sun glints. Drawn opaque over the copy, so the waterline has no hard edge.
+// seen through the surface (the opaque scene and its depth, copied before the translucent pass, refracted by the waves),
+// a soft shoreline foam band, two scrolling normal layers (water.cpp: the original Lake1.bmp height map), the interactive
+// wave field, Fresnel sky (or ray-traced) reflection and sun glints. Drawn opaque over the copy, so the waterline has no hard edge.
 TEX(22) sampler2D u_water_color;  // opaque HDR scene before the translucent pass
 TEX(23) sampler2D u_water_depth;  // its depth
+TEX(24) sampler2D u_water_waves;  // interactive wave height field (FrameData::waves, R.waves), world units
 
 const mat2 kWaterRot = mat2(0.8, 0.6, -0.6, 0.8);
 // World-anchored uv of the two normal layers at time t (seconds): broad swell + finer ripples, crossing directions.
@@ -187,38 +188,35 @@ void water_uv(vec3 p, float t, out vec2 a, out vec2 b) {
     b = kWaterRot * p.xz * (1.0 / 260.0) + t * vec2(-0.030, 0.041);
 }
 
-// Interactive ripple rings (FrameData::ripples, RemasterFrame water/ripples): per ring a packet of a few concentric
-// crests running out at 75 units/s (~1.7 m/s, a unit is 80 units ~ 1.8 m), h = A exp(-(u/w)^2) sin(k u) with u = distance
-// minus 75 age, the packet widening with age; A ~ sqrt(strength), fading to 0 by 3 s and with distance. Returns the analytic
-// height gradient (xy = world xz), z the crest height relative to the peak (-1..1, stylised crest light) and, in w, foam on
-// the leading crest of strong (splash) rings.
-vec4 water_ripples(vec2 p, float t) {
-    const float k = 6.2831853 / 28.0;  // 28 units between crests
-    vec4 g = vec4(0.0);
-    for (int i = 0; i < int(R.water.x); ++i) {
-        vec4 rp = R.ripples[i];
-        float age = t - rp.z;
-        if (age < 0.0 || age > 3.0) continue;
-        vec2 dv = p - rp.xy;
-        float d = length(dv), w = 16.0 + 14.0 * age, u = d - 75.0 * age;
-        if (abs(u) > 2.5 * w) continue;  // outside the packet
-        // sqrt(strength): wading (0.15) and walking (0.4) rings stay visible next to the normal-map swell.
-        float fade = sqrt(rp.w) * (1.0 - smoothstep(0.0, 3.0, age)) / (1.0 + d / 300.0), e = exp(-(u * u) / (w * w));
-        // dh/du with A = 1 / k (peak slope = sqrt(strength)); damped at the centre, where the cone tip has no direction.
-        float centre = min(d / 10.0, 1.0), dh = fade * e * (cos(k * u) - 2.0 * u / (k * w * w) * sin(k * u)) * centre;
-        g.xy += dh * dv / max(d, 1e-3);
-        g.z += fade * e * sin(k * u) * centre;
-        g.w += 0.8 * smoothstep(0.5, 1.0, rp.w) * fade * exp(-(u - 7.0) * (u - 7.0) / 25.0);  // sin(k u) = 1 at u = 7
-    }
-    return g;
+// Interactive waves (FrameData::waves, water_waves.cpp): the CPU wave-equation height field around the camera, so wakes
+// and splashes interfere, reflect off the shore and bend around bodies. Returns xy the height gradient (world xz, central
+// differences one cell apart), z the height and w its Laplacian (negative on crests); 0 outside the field (faded over its
+// outer 4 % so the window edge never shows) or without one.
+vec4 water_waves(vec2 p) {
+    if (R.waves.w == 0.0) return vec4(0.0);
+    vec2 uv = (p - R.waves.xy) * R.waves.z;
+    vec2 inside = min(uv, 1.0 - uv);
+    float fade = smoothstep(0.0, 0.04, min(inside.x, inside.y));
+    if (fade == 0.0) return vec4(0.0);
+    // Taps 1.5 cells out: the bilinear fetch averages two cells, so the cell-sized checkerboard legs stamp into the field
+    // cancels instead of dotting the curvature (crest light) with speckles.
+    float d = 1.5 * R.waves.w, du = d * R.waves.z;
+    float h = textureLod(u_water_waves, uv, 0.0).r;
+    float x0 = textureLod(u_water_waves, uv - vec2(du, 0.0), 0.0).r, x1 = textureLod(u_water_waves, uv + vec2(du, 0.0), 0.0).r;
+    float z0 = textureLod(u_water_waves, uv - vec2(0.0, du), 0.0).r, z1 = textureLod(u_water_waves, uv + vec2(0.0, du), 0.0).r;
+    return fade * vec4(vec2(x1 - x0, z1 - z0) / (2.0 * d), h, (x0 + x1 + z0 + z1 - 4.0 * h) / (d * d));
 }
 
 // na, nb: the water normal map at water_uv (rgb tangent normal, a height). Returns the linear HDR colour (drawn with alpha 1).
 vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     vec3 ta = na.xyz * 2.0 - 1.0, tb = nb.xyz * 2.0 - 1.0;
     vec2 s = 0.4 * ta.xy / max(ta.z, 0.3) + 0.35 * (transpose(kWaterRot) * tb.xy) / max(tb.z, 0.3);
-    vec4 ripple = water_ripples(p.xz, t);
-    s -= ripple.xy;  // normal of a height field: (-dh/dx, 1, -dh/dz); bends refraction, reflection and glints
+    // Wave slopes (S1L1 pond wade: 0.012 median, 0.065 p90, 0.17 p99) tilt the normal about 1:1, softly capped towards
+    // 0.3 (0.17 -> 0.12): steeper tilts swing the (ray-traced) reflection across bank / sky edges into hard-edged
+    // blotches. The normal of a height field is (-dh/dx, 1, -dh/dz): bends refraction, reflection, glints.
+    vec4 wave = water_waves(p.xz);
+    wave.xy *= 1.2 / (1.0 + 4.0 * length(wave.xy));
+    s -= wave.xy;
     vec3 n = normalize(vec3(s.x, 1.0, s.y));
     vec3 v = normalize(R.camera_pos.xyz - p);
     float nv = max(dot(n, v), 1e-3), dist = distance(R.camera_pos.xyz, p);
@@ -226,10 +224,10 @@ vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     // Bed under the surface: vertical depth (shoreline) and, along the refracted view, the path length through the water.
     vec2 uv = pixel * R.screen.zw;
     float depth = max(p.y - world_from_depth(uv, textureLod(u_water_depth, uv, 0.0).r).y, 0.0);
-    // The ripple rings refract more than the swell and already over a shallow bed: seen from above (Fresnel ~0.02) a
-    // pond shows them mostly through the bed.
+    // The waves refract more than the swell and already over a shallow bed: seen from above (Fresnel ~0.02) a pond shows
+    // them mostly through the bed.
     float far = 1.0 + dist / 1500.0;
-    vec2 ruv = uv + s * (0.025 * smoothstep(0.0, 80.0, depth) / far) - ripple.xy * (0.015 * smoothstep(0.0, 8.0, depth) / far);
+    vec2 ruv = uv + s * (0.025 * smoothstep(0.0, 80.0, depth) / far) - wave.xy * (0.015 * smoothstep(0.0, 8.0, depth) / far);
     vec3 bed = world_from_depth(ruv, textureLod(u_water_depth, ruv, 0.0).r);
     if (bed.y > p.y) {  // the offset sample is above the water (shore, a foreground object): look straight through
         ruv = uv;
@@ -254,9 +252,13 @@ vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     if (RT.effects.x != 0.0) sky = rt_water(p, n).rgb;
 #endif
     c = mix(c, sky, (0.02 + 0.98 * pow(1.0 - nv, 5.0)) * edge);
-    // Stylised ring light: crests catch the sky, troughs darken (rings readable from above, where Fresnel is ~0.02).
-    float crest = clamp(ripple.z, -1.0, 1.0) * edge;
-    c = mix(c, crest > 0.0 ? sky : c * 0.4, 0.4 * abs(crest));
+    // Stylised wave light: crests catch the sky, troughs darken (readable from above, where Fresnel is ~0.02). Driven by the
+    // curvature, not the height: a high-pass, so whole-pond sloshing and a wake's raised wedge stay a tilt and the fronts
+    // read as lines. Pond wade |Laplacian| 0.0026 median, 0.018 p90, 0.054 p99 -> bend 0.26, 1.8, 5.4: the median chop
+    // stays below the 0.4 threshold (no blotchy pond), wake / ring fronts light fully. Crests go half to the fog colour,
+    // so they do not carry the hard edges of the ray-traced reflection.
+    float bend = -100.0 * wave.w, crest = sign(bend) * smoothstep(0.4, 3.0, abs(bend)) * edge;
+    c = mix(c, crest > 0.0 ? mix(sky, to_linear(R.fog_color.rgb), 0.5) : c * 0.4, 0.6 * abs(crest));
     vec3 l = -R.sun_dir.xyz, h = normalize(l + v);
     float nl = max(dot(n, l), 0.0), a = 0.07;
     float spec = d_ggx(max(dot(n, h), 0.0), a) * v_smith(nv, nl, a) * nl * (0.02 + 0.98 * pow(1.0 - max(dot(v, h), 0.0), 5.0));
@@ -266,6 +268,9 @@ vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     float band = 1.0 - smoothstep(0.0, 40.0, depth), pattern = 0.5 * (na.a + nb.a);
     float lap = 0.5 + 0.5 * sin(depth * 0.25 - t * 1.5 + pattern * 6.0);
     float foam = band * band * smoothstep(0.4, 0.75, 0.6 * pattern + 0.4 * lap);
-    foam = max(foam, min(ripple.w, 1.0) * smoothstep(0.1, 0.7, pattern));  // splash foam, broken up like the shore's
+    // Wave foam: splash craters (bob 1.8, weapon 4.9, splash 7 units deep) or the sharpest crests (curvature well above the
+    // wade's p99), broken up like the shore's.
+    float churn = max(smoothstep(4.0, 7.0, abs(wave.z)), smoothstep(0.12, 0.25, -wave.w));
+    foam = max(foam, churn * smoothstep(0.1, 0.7, pattern));
     return mix(c, light * 0.85, foam * 0.75 * smoothstep(0.0, 4.0, depth));
 }

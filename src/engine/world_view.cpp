@@ -322,7 +322,9 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     lighting_.clear_color = glm::vec4(glm::convertSRGBToLinear(lighting_.fog_color), 1.0f);
 
     time_s_ += dt;
-    std::erase_if(ripples_, [&](const glm::vec4& r) { return time_s_ - r.z > 3.0f; });
+    // Interactive water: the wave window follows the look-at point; kicks of this frame (wade below) enter the next step.
+    waves_.follow({pose.target.x, pose.target.z});
+    waves_.step(dt);
     sky_->build(eye, time_s_, draws);
     scene_->build(view_proj, eye, draws);
     for (Node& n : nodes_) {
@@ -354,9 +356,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         float rx = 0, ry = 0;
         if (a.root) game::root_offset(*a.root, ms, rx, ry);
         c.pose(ms, rx, ry);
-        // ponytail: wading / weapon ripples within 2500 units of the eye only, so far units do not push the
-        // player's rings out of the kMaxWaterRipples budget; a per-distance priority if crowds ever wade nearby.
-        if (glm::distance(eye, at) < 2500.0f) wade(id, a, t);
+        if (waves_.covers({at.x, at.z})) wade(id, a, t, dt);
         // Hardware-skinned units get one point light (Shader_build_vertex_shader clamps the skinned light
         // counts to 1 point + 1 directional): the first light of their sector.
         const std::size_t first = draws.size();

@@ -9,6 +9,7 @@
 #include "engine/particles.hpp"
 #include "engine/sky_dome.hpp"
 #include "engine/water.hpp"
+#include "engine/water_waves.hpp"
 #include "engine/world_scene.hpp"
 #include "game/mission.hpp"
 
@@ -42,9 +43,8 @@ public:
     float ground_height(glm::vec3 engine_pos) const { return scene_->ground_height(engine_pos); }
     // Engine-space water surface height over engine_pos (WaterField::surface_height of every node), nullopt if dry.
     std::optional<float> water_height(glm::vec3 engine_pos) const;
-    // Interactive water (world_view_water.cpp): ripple rings of the last frame() for FrameData::ripples, oldest first
-    // (engine x, z, start in the Material::water clock, strength).
-    std::span<const glm::vec4> ripples() const { return ripples_; }
+    // Interactive water (world_view_water.cpp): the wave field after the last frame() (FrameData::waves via data()).
+    const WaveField& waves() const { return waves_; }
     AssetCache& assets() { return *assets_; }  // RtsFinish: GameCamera picks map items by their model bounds
     // Stage lighting with the fog/clear colour of the current view direction (refreshed by frame()).
     Lighting lighting() const { return lighting_; }
@@ -101,12 +101,11 @@ private:
         std::string model;                     // body mesh game path
         const game::ClipInfo* root = nullptr;  // root-motion clip being drawn (Bip01 x/y stripped), else null
         float speed = 0;                       // horizontal units/s over the last tick
-        // Interactive water: the last wading ripple (time_s_, engine position) and the weapon tips of the last frame.
-        float ripple_t = -1e9f;
-        glm::vec3 ripple_p{0.0f};
+        // Interactive water: when the standing unit last bobbed (time_s_) and the weapon tips of the last frame.
+        float bob_t = -1e9f;
         struct Tip {
-            glm::vec3 p{0.0f}, mark{0.0f};  // engine position; where it last rippled
-            float at = -1e9f;               // time_s_ of that ripple
+            glm::vec3 p{0.0f}, mark{0.0f};  // engine position; where it last kicked the water
+            float at = -1e9f;               // time_s_ of that kick
         };
         std::vector<Tip> tips;
     };
@@ -165,13 +164,16 @@ private:
     };
     void spawn_slot(const std::string& script, std::size_t slot, const game::UnitView& at);
     void build_rings(std::vector<DrawItem>& draws);  // world_view_rings.cpp, after frames_ is filled
-    // Interactive water (world_view_water.cpp). ripple: a ring at engine `p` (x/z); splash: one there when p lies over
-    // water within `reach` of its surface, with the jumpintowatersplash_s spray for strength 1; splash_segment: one
-    // where the original-space segment a -> b goes down through a surface; wade: a posed unit's body and weapons.
+    // Interactive water (world_view_water.cpp). wet: open water at engine x, z (a wave field cell, not a wall);
+    // ripple: a wave kick at engine `p` (x/z) of the given strength (0.15 bob .. 1 splash); splash: one there when p
+    // lies over water within `reach` of its surface, with the jumpintowatersplash_s spray for strength 1;
+    // splash_segment: one where the original-space segment a -> b goes down through a surface; wade: a posed unit's
+    // body (an obstacle, a wake when moving) and weapons.
+    bool wet(glm::vec2 p) const;
     void ripple(glm::vec3 p, float strength);
     void splash(glm::vec3 p, float strength, float reach);
     void splash_segment(const glm::vec3& a, const glm::vec3& b, float strength);
-    void wade(int id, Actor& a, const glm::mat4& t);
+    void wade(int id, Actor& a, const glm::mat4& t, float dt);
 
     formats::Vfs vfs_;
     std::unique_ptr<AssetCache> assets_;
@@ -196,7 +198,7 @@ private:
     std::unordered_map<std::string, const Model*> item_models_;  // null = failed
     ItemStats item_stats_;
     std::vector<MapActor> map_actors_;
-    std::vector<glm::vec4> ripples_;
+    WaveField waves_{[this](glm::vec2 p) { return wet(p); }};
 };
 
 }  // namespace joa::engine

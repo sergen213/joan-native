@@ -1,9 +1,11 @@
-// Interactive water (port extension, no original counterpart): ripple rings on the remaster-shaded CreateWater
-// surfaces (FrameData::ripples, shade_water in shaders/common/pbr_shade.glsl) where units wade, weapons dip in and
-// projectiles / items / bodies fall in. Every renderer receives them; `water=original` ignores them.
+// Interactive water (port extension, no original counterpart): wave kicks into the WaveField (water_waves.hpp) that
+// the remaster-shaded CreateWater surfaces show (FrameData::waves, shade_water in shaders/common/pbr_shade.glsl) where
+// units wade, weapons dip in and projectiles / items / bodies fall in. Every renderer receives the field;
+// `water=original` ignores it.
 #include "engine/world_view.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace joa::engine {
 
@@ -14,9 +16,16 @@ std::optional<float> WorldView::water_height(glm::vec3 engine_pos) const {
     return h;
 }
 
+bool WorldView::wet(glm::vec2 p) const {
+    // Walls: dry, or terrain at / above the surface (the CreateWater rectangles run under the banks).
+    const std::optional<float> h = water_height({p.x, 0.0f, p.y});
+    return h && ground_height({p.x, *h, p.y}) < *h;
+}
+
 void WorldView::ripple(glm::vec3 p, float strength) {
-    if (ripples_.size() >= std::size_t(kMaxWaterRipples)) ripples_.erase(ripples_.begin());  // newest kept
-    ripples_.push_back({p.x, p.z, time_s_, strength});
+    // Strength 1 (splash): a 7-unit crater of width 10; 0.15 (a standing unit's bob) 1.8 over 6.6, 0.6 (weapon) 4.9
+    // over 8.4 (^0.7: faint kicks still read, a crowd's bobbing does not churn the whole pond).
+    waves_.kick({p.x, p.z}, 7.0f * std::pow(strength, 0.7f), 6.0f + 4.0f * strength);
 }
 
 void WorldView::splash(glm::vec3 p, float strength, float depth) {
@@ -35,7 +44,7 @@ void WorldView::splash_segment(const glm::vec3& a, const glm::vec3& b, float str
     if (h && ea.y > *h && eb.y <= *h) splash(glm::mix(ea, eb, (ea.y - *h) / (ea.y - eb.y)), strength, 0.0f);
 }
 
-void WorldView::wade(int id, Actor& a, const glm::mat4& t) {
+void WorldView::wade(int id, Actor& a, const glm::mat4& t, float dt) {
     const Character& c = *a.character;
     const glm::vec3 feet(t[3]);
     const std::optional<float> h = water_height(feet);
@@ -43,18 +52,21 @@ void WorldView::wade(int id, Actor& a, const glm::mat4& t) {
         a.tips.clear();
         return;
     }
-    // Body: feet in the water, the unit not under it. Moving: a ring every 0.3 s or 35 units, stronger when running;
-    // standing: a faint one every 1.2..1.5 s, phased by unit id so a wading crowd does not pulse together.
+    // Body: feet in the water, the unit not under it. Legs are an obstacle the waves scatter around; moving: a
+    // continuous wake (WaveField::wade); standing: a faint bob every 1.2..1.5 s, phased by unit id so a wading crowd
+    // does not pulse together.
     if (feet.y <= *h + 2.0f && feet.y > *h - c.height()) {
-        const float since = time_s_ - a.ripple_t;
-        const bool moving = a.speed > 30.0f;
-        if (moving ? since >= 0.3f || glm::distance(glm::vec2(feet.x, feet.z), glm::vec2(a.ripple_p.x, a.ripple_p.z)) >= 35.0f
-                   : since >= 1.2f + 0.3f * glm::fract(float(id) * 0.618f)) {
-            ripple(feet, moving ? std::clamp(0.2f + a.speed * 0.0008f, 0.25f, 0.5f) : 0.15f);
-            a.ripple_t = time_s_, a.ripple_p = feet;
+        const glm::vec2 move(a.p1.x - a.p0.x, a.p0.y - a.p1.y);  // engine x, z of the last tick
+        const float len = glm::length(move);
+        waves_.wade({feet.x, feet.z}, len > 0.0f ? move * (a.speed / len) : glm::vec2(0.0f), dt);
+        if (a.speed > 30.0f) {
+            a.bob_t = time_s_;
+        } else if (time_s_ - a.bob_t >= 1.2f + 0.3f * glm::fract(float(id) * 0.618f)) {
+            ripple(feet, 0.15f);
+            a.bob_t = time_s_;
         }
     }
-    // Weapons: a ring where a blade / bow tip goes through the surface, and every 40 units it sweeps under it
+    // Weapons: a kick where a blade / bow tip goes through the surface, and every 40 units it sweeps under it
     // (at most one per tip per 0.15 s: a tip resting at the water line).
     const std::size_t n = c.attachments();
     const bool fresh = a.tips.size() != n;

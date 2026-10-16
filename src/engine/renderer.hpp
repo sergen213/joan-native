@@ -188,7 +188,15 @@ struct UiTriangles {
     TextureHandle texture;  // empty = white
 };
 
-inline constexpr int kMaxWaterRipples = 32;
+// Interactive water wave height field (water_waves.hpp, `water=enhanced` shade_water): kWaterWaveGrid x kWaterWaveGrid
+// surface displacements in world units (+ up), row-major, row index along engine +z, column along engine +x; cell (x, z)
+// covers origin + [x, x+1) * cell, origin + [z, z+1) * cell (engine-space xz). Empty span = no waves.
+inline constexpr int kWaterWaveGrid = 256;
+struct WaterWaves {
+    std::span<const float> height;
+    glm::vec2 origin{0.0f};
+    float cell = 0.0f;
+};
 
 struct FrameData {
     FrameView view;
@@ -197,9 +205,7 @@ struct FrameData {
     std::span<const UiQuad> ui;
     std::span<const UiVertex> ui_vertices;
     std::span<const UiTriangles> ui_triangles;
-    // Stylised water ripple rings (`water=enhanced`, pbr_shade.glsl shade_water): engine-space world x, z, start time t0
-    // in Material::water's time base (WorldView::time_s_), strength (0, 1]. At most kMaxWaterRipples, at most 3 s old.
-    std::span<const glm::vec4> ripples;
+    WaterWaves waves;
     float dt = 0.0f;  // seconds since the previous frame (remaster auto exposure smoothing); 0 = unknown, taken as 1/30 s
 };
 

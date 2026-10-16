@@ -23,8 +23,7 @@ UBO(0) RemasterFrame {
     vec4 ssao;             // x radius, y intensity, z mesh texture LOD bias (-1 under TAA), w far
     vec4 env;              // x env mip count, y projection[1][1], z projection[0][0], w upscale ratio (output/scene)
     vec4 exposure;         // auto exposure: x smoothing weight of this frame's target, y 1 = snap (no history), zw clamp range
-    vec4 water;            // x water ripple count (<= kMaxWaterRipples)
-    vec4 ripples[32];      // kMaxWaterRipples (renderer.hpp): world x, z, start time (water time base), strength
+    vec4 waves;            // interactive water wave field (FrameData::waves): xy origin (world xz), z 1/(cell*kWaterWaveGrid), w cell (0 = none)
 } R;
 
 const float kPi = 3.14159265;

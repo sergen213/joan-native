@@ -115,27 +115,35 @@ int main() {
     CHECK(!find(s.current(), victim) && !view.actor(victim));
     CHECK(view.unit_stats().actors == int(s.current().units.size()));
 
-    // Interactive water ripples. S1L1 "Water 4" pond: CreateWater X 10687, Y 14139, 250 x 473, Z 242, bed ~215.
+    // Interactive water waves. S1L1 "Water 4" pond: CreateWater X 10687, Y 14139, 250 x 473, Z 242, bed ~215.
     CHECK(view.water_height(to_engine(10687.0f, 14139.0f, 0.0f)) == 242.0f && !view.water_height(to_engine(10687.0f, 14500.0f, 0.0f)));
-    CHECK(view.ripples().empty());  // Joan ran and fought on dry ground
+    CHECK(view.waves().data().height.empty());  // Joan ran and fought on dry ground: nothing kicked the water
+    const auto wave = [&](float x, float y, float r) {  // strongest |height| within r of original x, y
+        float m = 0.0f;
+        for (float dx = -r; dx <= r; dx += 4.0f)
+            for (float dy = -r; dy <= r; dy += 4.0f) m = std::max(m, std::abs(view.waves().height({x + dx, -(y + dy)})));
+        return m;
+    };
     game::Unit& joan = *w.unit(w.player_id());
     joan.pos = {10680.0f, 14160.0f, w.terrain()->height(10680.0f, 14160.0f)};
     for (int i = 0; i < 20; ++i) tick({});
-    const std::size_t standing = view.ripples().size();
+    const float standing = wave(joan.pos.x, joan.pos.y, 80.0f);
     for (int i = 0; i < 8; ++i) {
         game::InputFrame f;
         f.held.set(game::IN_FORWARD);
         tick(f);
     }
-    float strongest = 0;
-    for (const glm::vec4& rp : view.ripples()) strongest = std::max(strongest, rp.w);
-    std::fprintf(stderr, "pond: bed %.0f ripples standing=%zu wading=%zu strongest=%.2f\n", joan.pos.z, standing, view.ripples().size(), strongest);
-    CHECK(standing >= 1 && view.ripples().size() > standing && strongest >= 0.25f);
-    // An item dropped into the pond: a 0.8 ring where it lands.
+    const float wading = wave(joan.pos.x, joan.pos.y, 80.0f);
+    // The pond's banks are walls: the dry ground north of it never moves; its middle is open water.
+    const glm::vec2 dry(10687.0f, -14500.0f), pond(10687.0f, -14139.0f);
+    std::fprintf(stderr, "pond: bed %.0f waves standing=%.2f wading=%.2f bank=%.2f\n", joan.pos.z, standing, wading, view.waves().height(dry));
+    CHECK(standing > 0.05f && wading > 0.3f && view.waves().wall(dry) && view.waves().height(dry) == 0.0f && !view.waves().wall(pond));
+    // An item dropped into the pond: a 0.8 kick (a ~5-unit crater) where it lands.
+    const float before = wave(10650.0f, 14000.0f, 0.0f);
     CHECK(w.add_item("SMALLRED", 0, 1, {10650.0f, 14000.0f, w.terrain()->height(10650.0f, 14000.0f)}) != 0);
     tick({});
-    CHECK(std::any_of(view.ripples().begin(), view.ripples().end(),
-                      [](const glm::vec4& rp) { return rp.w == 0.8f && rp.x == 10650.0f && rp.y == -14000.0f; }));
+    std::fprintf(stderr, "drop: %.2f -> %.2f\n", before, wave(10650.0f, 14000.0f, 0.0f));
+    CHECK(wave(10650.0f, 14000.0f, 0.0f) > before + 2.0f);
 
     // Mission 2: S3L1 = S3L1_1 + S3L1_2 (.wor CreateNode), node 2 at Y 14080.
     CHECK(s.new_game(2, 1, &err));
