@@ -28,8 +28,9 @@ struct RtCaps {
 };
 
 // TLAS instance masks. Shadow rays skip the terrain (its lightmaps already hold the terrain's own shading,
-// as the raster shadow map) and the units (Material::volume_caster: their shadow stays the original stencil
-// volume), GI probe rays skip the units too (moving units would make the probes flicker).
+// as the raster shadow map); the sun pass (rt_shadow.comp) adds the units, whose stencil volumes are then not
+// drawn, hit shading (rt_shade_hit) leaves them out. GI probe rays skip the units (moving units would make the
+// probes flicker).
 inline constexpr std::uint8_t kRtMaskWorld = 0x01, kRtMaskTerrain = 0x02, kRtMaskCharacter = 0x04, kRtMaskFoliage = 0x08;
 inline constexpr std::uint8_t kRtMaskShadow = kRtMaskWorld | kRtMaskFoliage;
 inline constexpr std::uint8_t kRtMaskProbe = kRtMaskWorld | kRtMaskTerrain | kRtMaskFoliage;

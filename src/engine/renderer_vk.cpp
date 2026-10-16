@@ -2195,14 +2195,14 @@ private:
         const bool shadows = gfx_.shadow_map_size > 0;
         const bool rt = rt_active();
 
-        // Draw table: opaque/alpha-tested, the units' stencil volumes (kept with shadow maps and RT shadows:
-        // Material::volume_caster), blended back to front with the stylised water first (it is drawn opaque over a copy of the
-        // opaque scene, every other blend over it).
+        // Draw table: opaque/alpha-tested, the units' stencil volumes (Material::volume_caster; dropped with RT shadows,
+        // whose rays hit the units' TLAS instances instead), blended back to front with the stylised water first (it is
+        // drawn opaque over a copy of the opaque scene, every other blend over it).
         order_.clear();
         for (const DrawItem& d : f.draws)
             if (d.material.blend == BlendMode::Opaque || d.material.blend == BlendMode::AlphaTest) order_.push_back(&d);
         const std::size_t first_volume = order_.size();
-        if (l.shadow_color.a > 0.0f)
+        if (l.shadow_color.a > 0.0f && !(rt && gfx_.rt.shadows))
             for (const DrawItem& d : f.draws)
                 if (d.material.blend == BlendMode::ShadowVolume) order_.push_back(&d);
         const std::size_t first_blended = order_.size();

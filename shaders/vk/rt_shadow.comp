@@ -35,7 +35,7 @@ void main() {
     for (int k = 0; k < rays; ++k) {
         vec2 xi = rt_xi(pixel, uint(k));
         float r = sqrt(xi.x) * RT.effects.w, a = xi.y * 6.2831853;  // uniform disk in the cone's tangent plane
-        vis += rt_visibility(o, normalize(l + (t * cos(a) + b * sin(a)) * r), 6000.0, kRtMaskShadow);
+        vis += rt_visibility(o, normalize(l + (t * cos(a) + b * sin(a)) * r), 6000.0, kRtMaskShadow | kRtMaskCharacter);
     }
     imageStore(u_img[0], px, vec4(vis / float(rays), 0.0, 0.0, 1.0));
 }
