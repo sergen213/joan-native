@@ -28,6 +28,9 @@ public:
         // the COMPOUNDBOW, no explosive ones (60 of them were 30000 gold), nothing kept.
         const bool open = (m.vm().state().bits[1] >> 25) & 1u;
         ap.shop_explosive_max = open ? 0 : 60, ap.shop_plain_max = open ? 60 : 150, ap.shop_gold_keep = open ? 0 : 6000;
+        // Saint-Pierre's last fightable man, a wall crossbow's crewman, stood on the destroyed crossbow's deck off the path
+        // mesh, 250 past the street: walked straight up to (an empty quiver and no shop before the capture left nothing else).
+        ap.offmesh_leg = true;
         // Joan's attribute points into STRENGTH up to 60, then HIT_POINT: melee attack = STR x 3 + sword + 100, and the
         // chain brings her with STR 9 and JOAN_SWORD_LV1 (137, against 167 with mission 4's LV4 sword when the mission was
         // last won); STR 60 makes 290. Her HP (328 at the start) is refilled by meat and chicken.

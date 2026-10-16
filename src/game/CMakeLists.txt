@@ -36,10 +36,13 @@ foreach(t ${JOA_GAME_TESTS})
   endif()
 endforeach()
 
-# game.campaign_legit: the bot's chain from a new game through missions 1..kExpectedWins (campaign_legit_test.cpp) writes
-# mission-start checkpoints into campaign_checkpoints/ here (fixture), the next mission's included (bot-S5L1.jsav: the
-# later missions' segment chains start there); game.campaign_legit_mission_N (N = 1..kExpectedWins: keep the RANGE below
-# in step) replays mission N from its checkpoint (skipped when the chain did not reach it). Iterate on one mission without the chain: ctest -R legit_mission_4 -FS campaign_checkpoints.
+# The legitimate campaign chain (no forced wins), one CTest fixture chain (SAVES_AND_CAMPAIGN.md §8.1): missions 1-4 on
+# Normal, Easy from mission 5; every step writes campaign_checkpoints/*.jsav here for the next. Whole chain:
+# ctest -R 'campaign_(legit|S[5-9]L1_)'; one step on the checkpoints already there: ctest -R <test> -FS 'campaign_.*'.
+# game.campaign_legit: missions 1..kExpectedWins from a new game (campaign_legit_test.cpp), mission-start checkpoints, the
+# next mission's included (bot-S5L1.jsav); game.campaign_legit_mission_N (N = 1..kExpectedWins: keep the RANGE below in
+# step) replays mission N from its checkpoint (skipped when the chain did not reach it). Iterate on one mission without
+# the chain: ctest -R legit_mission_4 -FS campaign_checkpoints.
 if(TARGET game_campaign_legit_test)
   set_tests_properties(game.campaign_legit PROPERTIES TIMEOUT 1500 FIXTURES_SETUP campaign_checkpoints)
   foreach(n RANGE 1 4)
@@ -47,36 +50,16 @@ if(TARGET game_campaign_legit_test)
     set_tests_properties(game.campaign_legit_mission_${n} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
                          TIMEOUT 600 FIXTURES_REQUIRED campaign_checkpoints)  # mission 4: up to 9 lost attempts
   endforeach()
-  # game.campaign_S5L1_bot starts from the chain's mission-4 checkpoint: ctest -R S5L1_bot -FS campaign_checkpoints.
-  set_tests_properties(game.campaign_S5L1_bot PROPERTIES FIXTURES_REQUIRED campaign_checkpoints)
-  # game.campaign_S6L1_bot starts on the road north: segment tests play mission 8 from the chain's mission-5 checkpoint
-  # (missions 5-7 forced) and save campaign_checkpoints/bot-S6L1-<segment>.jsav for the next (campaign_S6L1_bot_test.cpp):
-  # auxerre (Auxerre captured), hill (Troyes' wall down), troyes (Troyes captured), road (reputation 77). Iterate:
-  # ctest -R S6L1 -FS 'campaign_.*'.
-  set(s6fix campaign_checkpoints)
-  foreach(s auxerre hill troyes road)
-    add_test(NAME game.campaign_S6L1_${s} COMMAND game_campaign_S6L1_bot_test --${s} campaign_checkpoints/bot-S6L1-${s}.jsav)
-    set_tests_properties(game.campaign_S6L1_${s} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
-                         TIMEOUT 600 FIXTURES_REQUIRED ${s6fix} FIXTURES_SETUP campaign_S6L1_${s})
-    set(s6fix campaign_S6L1_${s})
-  endforeach()
-  set_tests_properties(game.campaign_S6L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED ${s6fix})
-  # game.campaign_S7L1_bot starts at La Charité's gates: game.campaign_S7L1_charite plays mission 7 there from the chain's
-  # mission-5 checkpoint and saves campaign_checkpoints/bot-S7L1-charite.jsav. Iterate: ctest -R S7L1_bot -FS 'campaign_.*'.
-  add_test(NAME game.campaign_S7L1_charite COMMAND game_campaign_S7L1_bot_test --charite campaign_checkpoints/bot-S7L1-charite.jsav)
-  set_tests_properties(game.campaign_S7L1_charite PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
-                       TIMEOUT 600 FIXTURES_REQUIRED campaign_checkpoints FIXTURES_SETUP campaign_S7L1_charite)
-  set_tests_properties(game.campaign_S7L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED campaign_S7L1_charite)
-endif()
 
-# game.campaign_S9L1_bot: the bot from the chain's mission-5 start (campaign_checkpoints/bot-S5L1.jsav) through the S5L1
-# win into the S9L1 win, cut into fixture segments (each saves campaign_checkpoints/bot-S9L1-seg<k>.jsav for the next; the
-# last of them bot-S9L1-last.jsav, which the test proper plays on to the win). Iterate: ctest -R S9L1_bot -FS 'campaign_.*'.
-if(TARGET game_campaign_S9L1_bot_test AND TARGET game_campaign_legit_test)
+  # Missions 5-6 (S5L1, S9L1): fixture segments from bot-S5L1.jsav (each saves campaign_checkpoints/bot-S9L1-seg<k>.jsav,
+  # the last bot-S9L1-last.jsav), a win CONTINUEs and ends its segment; game.campaign_S9L1_bot plays on to the S9L1 win
+  # and saves the S7L1 start bot-S7L1.jsav. seg1 switches the chain to Easy, as a player does in OPTIONS > GAME (the
+  # original's difficulty is a config byte, not saved; the bot has not won S9L1 on Normal: SAVES_AND_CAMPAIGN.md §8.1);
+  # the profile carries Easy on into missions 7 and 8.
   set(s9in campaign_checkpoints/bot-S5L1.jsav)
   set(s9fix campaign_checkpoints)
-  set(s9difficulty 0)  # Easy (the bot also won S9L1 on Normal, not every run: SAVES_AND_CAMPAIGN.md §8.1)
-  set(s9n 16)  # segments before the test proper (Easy wins in seg12-14, 60000 kSegmentTicks each; a won chain's later segments pass through)
+  set(s9difficulty 0)
+  set(s9n 16)  # segments before the test proper (60000 kSegmentTicks each; a won chain's later segments pass through)
   foreach(k RANGE 1 ${s9n})
     set(s9out campaign_checkpoints/bot-S9L1-seg${k}.jsav)
     if(k EQUAL s9n)
@@ -89,5 +72,24 @@ if(TARGET game_campaign_S9L1_bot_test AND TARGET game_campaign_legit_test)
     set(s9in ${s9out})
     set(s9fix campaign_S9L1_seg${k})
   endforeach()
-  set_tests_properties(game.campaign_S9L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED ${s9fix})
+  set_tests_properties(game.campaign_S9L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED ${s9fix} FIXTURES_SETUP campaign_S9L1)
+
+  # Mission 7 (S7L1): game.campaign_S7L1_charite plays bot-S7L1.jsav to La Charité's gates (bot-S7L1-charite.jsav);
+  # game.campaign_S7L1_bot plays on to the win and saves the S6L1 start bot-S6L1.jsav.
+  add_test(NAME game.campaign_S7L1_charite COMMAND game_campaign_S7L1_bot_test --charite campaign_checkpoints/bot-S7L1-charite.jsav)
+  set_tests_properties(game.campaign_S7L1_charite PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
+                       TIMEOUT 600 FIXTURES_REQUIRED campaign_S9L1 FIXTURES_SETUP campaign_S7L1_charite)
+  set_tests_properties(game.campaign_S7L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED campaign_S7L1_charite FIXTURES_SETUP campaign_S7L1)
+
+  # Mission 8 (S6L1): segments from bot-S6L1.jsav, each saving campaign_checkpoints/bot-S6L1-<segment>.jsav for the next
+  # (campaign_S6L1_bot_test.cpp): auxerre (Auxerre captured), hill (Troyes' wall down), troyes (Troyes captured), road
+  # (reputation 77); game.campaign_S6L1_bot plays on to the win and the Ending event.
+  set(s6fix campaign_S7L1)
+  foreach(s auxerre hill troyes road)
+    add_test(NAME game.campaign_S6L1_${s} COMMAND game_campaign_S6L1_bot_test --${s} campaign_checkpoints/bot-S6L1-${s}.jsav)
+    set_tests_properties(game.campaign_S6L1_${s} PROPERTIES ENVIRONMENT "JOA_GAME_DIR=${JOA_GAME_DIR}" SKIP_RETURN_CODE 77
+                         TIMEOUT 600 FIXTURES_REQUIRED ${s6fix} FIXTURES_SETUP campaign_S6L1_${s})
+    set(s6fix campaign_S6L1_${s})
+  endforeach()
+  set_tests_properties(game.campaign_S6L1_bot PROPERTIES TIMEOUT 600 FIXTURES_REQUIRED ${s6fix})
 endif()

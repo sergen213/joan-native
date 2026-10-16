@@ -50,6 +50,9 @@ public:
     int rest_pct = 70, rest_food = 10;
     // travel(): also open a gate near the player when the goal's region is not linked to hers (S9L1's Orleans east gate).
     bool gate_unlinked = false;
+    // steer(): walk the last leg straight to a goal off the path mesh up to 400 past the search's best node (S7L1's wall
+    // crossbowman left on its deck once the crossbow fell).
+    bool offmesh_leg = false;
     // Character screen: where every attribute point goes (World::allocate_point type: 6 HIT_POINT, 1 STRENGTH).
     int attr_kind = 6;
 

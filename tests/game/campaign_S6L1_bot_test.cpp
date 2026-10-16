@@ -1,8 +1,7 @@
 // Mission 8 (S6L1, The Road to Coronation) played by the campaign bot (game/autopilot_player + autopilot_plan_S6L1).
 //
-// Start checkpoint: the legitimate chain wins missions 1-4 and saves the mission-5 start (campaign_checkpoints/bot-S5L1.jsav,
-// written by the game.campaign_legit fixture into this build directory); missions 5..7 are won through
-// Mission::finish_objectives() (the end-condition awards) and CONTINUE. Without that file the test is skipped.
+// Start: the legitimate chain's S6L1 start (campaign_checkpoints/bot-S6L1.jsav, saved by game.campaign_S7L1_bot when the
+// bot wins S7L1 and CONTINUEs). Without that file the test is skipped.
 //
 // The mission spans the whole map (Auxerre, Troyes and its trebuchet hill, the camps on the road north, Reims) and needs
 // reputation 80: longer than a test may take, so it is cut at self-generated checkpoints, each segment a test of its own
@@ -14,11 +13,8 @@
 //   game.campaign_S6L1_bot      -> the win, then CONTINUE after the last scenario: MissionEvent::Ending.
 // Iterate on one segment: ctest -R S6L1 -FS 'campaign_.*'.
 //
-//   game_campaign_S6L1_bot_test [ROAD.jsav] [TICKS]          the bot from the road checkpoint: must win
-//   game_campaign_S6L1_bot_test --SEGMENT OUT [IN] [D]       one segment (auxerre: IN is the chain's mission-5 start, D the
-//                                                            difficulty, 1 Normal), save OUT
-//   game_campaign_S6L1_bot_test --checkpoint OUT [FROM] [D]  write the mission-8 start and exit; iterate with
-//                                                            joa-campaign --load OUT --autopilot
+//   game_campaign_S6L1_bot_test [ROAD.jsav] [TICKS]   the bot from the road checkpoint: must win
+//   game_campaign_S6L1_bot_test --SEGMENT OUT [IN]    one segment, save OUT (iterate with joa-campaign --load IN --autopilot)
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -38,7 +34,7 @@ bool done(Mission& m, int objective) { return m.state().end.size() >= std::size_
 // well under 200000 ticks (2-3 ms a tick, machine load: inside a test's 600 s).
 struct Segment { const char* name; const char* in; const char* out; bool (*end)(Mission&); const char* what; };
 constexpr Segment kSegments[] = {
-    {"auxerre", "campaign_checkpoints/bot-S5L1.jsav", "campaign_checkpoints/bot-S6L1-auxerre.jsav", [](Mission& m) { return done(m, 1); },
+    {"auxerre", "campaign_checkpoints/bot-S6L1.jsav", "campaign_checkpoints/bot-S6L1-auxerre.jsav", [](Mission& m) { return done(m, 1); },
      "Auxerre captured (objective 1)"},
     {"hill", "campaign_checkpoints/bot-S6L1-auxerre.jsav", "campaign_checkpoints/bot-S6L1-hill.jsav",
      [](Mission& m) {
@@ -52,24 +48,6 @@ constexpr Segment kSegments[] = {
      [](Mission& m) { return m.state().reputation >= 77; }, "reputation 77"},
 };
 constexpr int kSegmentTicks = 200000, kTicks = 200000;
-
-bool start_8(CampaignRunner& run, const char* from, int difficulty, std::string& err) {
-    if (!run.init(&err)) return false;
-    auto bytes = read_file(from);
-    auto f = bytes ? decode_save(*bytes, &err) : std::nullopt;
-    if (!f || !migrate_save(*f, &err) || !run.load(*f, &err)) return false;
-    while (run.mission()->scenario_no() < 8) {
-        Mission& m = *run.mission();
-        m.autosave = false;
-        for (int t = 0; t < 60; ++t) m.tick();
-        m.finish_objectives();
-        for (int t = 0; m.finish() == 0 && t < 6000; ++t) m.tick();
-        if (m.finish() != 1) return err = m.info().stem() + " forced win failed", false;
-        if (!run.continue_after_win(&err)) return false;
-    }
-    run.profile.difficulty = run.mission()->profile().difficulty = run.mission()->world().difficulty = difficulty;
-    return run.mission()->info().stem() == "S6L1" || (err = "not at S6L1", false);
-}
 
 int script_failures(Mission& m) {
     int fails = 0;
@@ -105,33 +83,19 @@ int main(int argc, char** argv) {
     const char* dir = std::getenv("JOA_GAME_DIR");
     if (!dir || !formats::Vfs(dir).exists("scenario/scenario_01.scr")) return 77;
     const std::string mode = argc > 1 ? argv[1] : "";
-    const bool checkpoint = argc > 2 && mode == "--checkpoint";
     const Segment* seg = nullptr;
     for (const Segment& s : kSegments)
         if (argc > 2 && mode == std::string("--") + s.name) seg = &s;
-    const bool start = checkpoint || seg == &kSegments[0];
-    const char* from = argc > 3 && (checkpoint || seg) ? argv[3]
-                       : checkpoint                    ? kSegments[0].in
-                       : seg                           ? seg->in
-                       : argc > 1                      ? argv[1]
-                                                       : std::end(kSegments)[-1].out;
-    if (!read_file(from)) return std::printf("skip: no %s (game.campaign_legit / the earlier S6L1 segment writes it)\n", from), 77;
+    const char* from = seg ? (argc > 3 ? argv[3] : seg->in) : argc > 1 ? argv[1] : std::end(kSegments)[-1].out;
+    if (!read_file(from)) return std::printf("skip: no %s (game.campaign_S7L1_bot / the earlier S6L1 segment writes it)\n", from), 77;
     std::string err;
     auto gd = GameData::load(dir, &err);
     if (!gd) return std::printf("game data: %s\n", err.c_str()), 1;
     const formats::Vfs vfs(dir);
     CampaignRunner run(*gd, vfs);
-    if (start) {
-        if (!start_8(run, from, argc > 4 ? std::atoi(argv[4]) : 1, err)) return std::printf("FAIL start: %s\n", err.c_str()), 1;
-    } else {
-        auto f = decode_save(*read_file(from), &err);
-        if (!f || !migrate_save(*f, &err) || !run.init(&err) || !run.load(*f, &err)) return std::printf("FAIL load: %s\n", err.c_str()), 1;
-        if (run.mission()->info().stem() != "S6L1") return std::printf("FAIL %s is not at S6L1\n", from), 1;
-    }
-    if (checkpoint) {
-        if (!write_save_atomic(argv[2], encode_save(run.save()), 0, &err)) return std::printf("FAIL save: %s\n", err.c_str()), 1;
-        return std::printf("saved %s\n", argv[2]), 0;
-    }
+    auto f = decode_save(*read_file(from), &err);
+    if (!f || !migrate_save(*f, &err) || !run.init(&err) || !run.load(*f, &err)) return std::printf("FAIL load: %s\n", err.c_str()), 1;
+    if (run.mission()->info().stem() != "S6L1") return std::printf("FAIL %s is not at S6L1\n", from), 1;
     if (seg) return segment(run, *seg, argv[2]);
     const MissionReport r = play_mission(run, argc > 2 ? std::atoi(argv[2]) : kTicks, 0);
     Mission& m = *run.mission();

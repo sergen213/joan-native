@@ -561,8 +561,8 @@ t40000 by d'Illiers' crews, Jargeau captured, 18 / 19 / 33 / 34 done, Joan level
 `work/MissionBot5d/bot-S9L1.jsav`, which `game.campaign_S9L1_bot` now prefers), **seed 3 won** at t218708, seed 2 lost
 (Joan killed at t156877 in the inner bailey, 3 food left), seed 4 stuck on the West Left tower at 128 HP (no French light
 infantry left near Jargeau to crew a cannon). Easy, seed 1: won at t237100.
-`game.campaign_S5L1_bot` plays 40000 ticks (a win takes 160000-240000, past a test's time) and checks progress there: not
-lost, ≥ 10 heal food bought in Orleans, 18 / 19 met (d'Illiers at ~t34000), ≤ 200 fightable English left (122-186).
+The forced-start progress test `game.campaign_S5L1_bot` is gone: the legit chain's S9L1 segments play S5L1 from its start
+(§8.1 "Full legitimate chain").
 
 **Bot fix (bag rules):** `Autopilot::loot` walked to floor items the bag could not take (Unit_auto_pickup leaves them
 lying): Joan stood 45000 ticks beside her dropped apples. It now only goes for gold, MISSION items, red food that fits the
@@ -1024,6 +1024,43 @@ from seg8 to seg13 with 0/4 cannons crewed (open: re-crewing the Bastard's canno
 **Port bug fixed (mission 6):** the win freeze set every unit's task to IDLE prio 127 also when leaving scenario 5, so in S9L1
 no enemy ever fought back (Joan took 0 damage in 20000 ticks). GameOver_win_freeze_units 0x6e7900 skips the order clear and
 `Unit_set_task(7, 0x7f, 1)` when `DAT_00a58fa7 == 5` and only calls `Unit_stop(0, 1)` (`game.campaign_S9L1_world`).
+
+**Full legitimate chain (FullChain).** Missions 1-8 now run as one CTest fixture chain with no forced win
+(`src/game/CMakeLists.txt`): `game.campaign_legit` (1-4 from a new game, `bot-S5L1.jsav`), then `game.campaign_S9L1_seg1..16`
+and `game.campaign_S9L1_bot` (S5L1 and S9L1; the test proper saves the S7L1 start `bot-S7L1.jsav`), then
+`game.campaign_S7L1_charite` and `game.campaign_S7L1_bot` (saves the S6L1 start `bot-S6L1.jsav` after CONTINUE), then
+`game.campaign_S6L1_auxerre/hill/troyes/road` and `game.campaign_S6L1_bot` (the win, CONTINUE, the Ending event). The forced-start variants (S7L1 from `bot-S5L1.jsav` with
+5-6 forced, S6L1 with 5-7 forced, `game.campaign_S5L1_bot` with 4 forced, the `--checkpoint` modes) are deleted: none was a
+fast independent check (each needed the legit fixture and ran 100-500 s). Run: `ctest -j4 -R 'campaign_(legit|S[5-9]L1_)'`.
+- **Difficulty:** 1-4 on Normal, Easy from S5L1 (seg1's `D` argument). The original's difficulty is the config byte 0xa57fc2,
+  set by NEW CAMPAIGN and by OPTIONS > GAME's difficulty combo and not stored in saves, so a player can switch between
+  missions; the profile carries Easy on into 7 and 8. S9L1 on Normal from the same `bot-S5L1.jsav`: S5L1 won in seg2, then
+  from seg8 Joan stood in Orleans for 12 segments ("Meung: 0/4 cannons at the north gate (hp 957)"): the Bastard's crews
+  attach only near the player and the walk to the cannons (15500,54500) from Orleans ends its level path at (16128,36518),
+  whose world-mesh leg crosses to (22939,42256); she shuttled between that spot and the west seam (14016,34173). Open.
+- **S7L1 (bot fix, opt-in `Autopilot::offmesh_leg`, set by the S7L1 plan):** Saint-Pierre (objective 1) stayed open for
+  the whole 400000-tick fixture. Its last fightable man, crewman #395 of wall crossbow #389, stood on the destroyed crossbow's
+  deck at (38939,19809,670), off the path mesh 250 past the street's last poly; with the crossbow gone his
+  LARGE_WEAPON_PUSH does nothing (AI_large_weapon_push_inf 0x535020 returns while the weapon cannot be attached: faithful).
+  Joan, with an empty quiver and no shop before the capture, walked to the path's end, gave him up, and cycled. `steer()`
+  now walks the last leg straight to such a goal (off-mesh, 150-400 past the best node, same storey): killed in 275 ticks.
+  Shared, it changed 1-4's runs and stalled S5L1 at Jargeau's West Left tower, hence opt-in.
+- **S6L1 (bot fix, shared):** Joan's three skill points with all four combos at level 10 could not be spent; the core's
+  "switch to a hero holding points" then swapped duke ↔ Joan every tick once the plan made the duke the player for the
+  iron workshop (Auxerre never fell). A visit that leaves points unspent now stops those switches for 5 min.
+  `game.campaign_legit` reproduces the same four lines and hashes as before both fixes.
+- **Result** (fresh clean build, `ctest -j4 -R 'campaign_(legit|S[5-9]L1_)'`, 30/30 passed, 2911 s):
+
+| mission | difficulty | result |
+|---|---|---|
+| 1 S1L1 | Normal | WON t23317, 1 attempt |
+| 2 S3L1 | Normal | WON t87820, 2 attempts (1 death) |
+| 3 S2L1 | Normal | WON t50871 |
+| 4 S4L1 | Normal | WON t110725 |
+| 5 S5L1 | Easy | WON in seg2 (t108901) |
+| 6 S9L1 | Easy | WON in seg12 (t41209 into it, 9/12 objectives); seg13-16 and the test proper pass through |
+| 7 S7L1 | Easy | gates open t146901, WON 447431 ticks later (12/17 objectives, no deaths, 462 kills) |
+| 8 S6L1 | Easy | Auxerre t63111 (rep 58), wall t168886, Troyes t199181 (rep 67), rep 77 t299623, WON 42737 later (rep 80), Ending |
 
 ## 9. Gaps
 

@@ -73,7 +73,10 @@ find_file(JOA_VK_VALIDATION_JSON VkLayer_khronos_validation.json
           PATHS ${JOA_VK_LAYER_PATH} /usr/share/vulkan/explicit_layer.d /usr/local/share/vulkan/explicit_layer.d NO_DEFAULT_PATH)
 set(JOA_VK_TEST_ENV "SDL_VIDEO_DRIVER=offscreen;VK_LOADER_LAYERS_DISABLE=~implicit~;XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-cache")
 if(JOA_VK_LAYER_PATH)
-  list(APPEND JOA_VK_TEST_ENV "VK_LAYER_PATH=${JOA_VK_LAYER_PATH}")
+  # Extracted layer packages keep the library in usr/lib next to share/vulkan/explicit_layer.d; the JSON names it
+  # without a path, so the loader needs that directory on the library search path.
+  cmake_path(SET _vvl_lib NORMALIZE "${JOA_VK_LAYER_PATH}/../../../lib")
+  list(APPEND JOA_VK_TEST_ENV "VK_LAYER_PATH=${JOA_VK_LAYER_PATH}" "LD_LIBRARY_PATH=${_vvl_lib}")
 endif()
 if(JOA_VK_VALIDATION_JSON)
   list(APPEND JOA_VK_TEST_ENV "JOA_REQUIRE_VALIDATION=1")  # layer present: tests fail if it does not load

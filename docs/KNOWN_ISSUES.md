@@ -19,7 +19,7 @@ Living list; each entry links the document holding evidence. Severity: **B** blo
 - Sky uses a matched gradient, not the original scattering sky shader; units do not receive stencil shadows (hypothesis).
 
 ## Open (B)
-- **Campaign verified by forced wins, not full legitimate play.** All 8 missions run deterministically with no unhandled builtins, the forced-win chain carries heroes through all 8, and the input-only test bot wins mission 1 on Easy/Normal; mission 2 onwards has not been won legitimately by the bot (needs multi-hero play) and no human play-through has been recorded ([SAVES_AND_CAMPAIGN](SAVES_AND_CAMPAIGN.md) §8).
+- **Campaign bot chain: Easy from mission 5.** The test bot wins all 8 missions legitimately in one CTest fixture chain through the Ending (missions 1–4 on Normal, 5–8 on Easy, a difficulty switch the original's options allow); it has not won S9L1 on Normal (stalls at Orleans / Meung's cannons), and no human play-through has been recorded ([SAVES_AND_CAMPAIGN](SAVES_AND_CAMPAIGN.md) §8.1 "Full legitimate chain").
 - Differential verification against the running original covers mission 1 (stats, movement, damage, blocking, archers, potion, XP/level-up, aggro); later missions are verified statically only.
 
 ## Minor (M)

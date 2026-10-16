@@ -4,14 +4,14 @@
 // One bot run of S5L1 + S9L1 takes far longer than a test may (SAVES_AND_CAMPAIGN.md §8.1), so it is cut into CTest
 // fixture segments of at most kSegmentTicks each (src/game/CMakeLists.txt): game.campaign_S9L1_seg1 starts from
 // campaign_checkpoints/bot-S5L1.jsav (written by the game.campaign_legit fixture when the chain wins mission 4), every
-// segment saves its end for the next one, a win CONTINUEs into the next mission and ends the segment. The test proper
-// (no argument) is the last segment and must have won S9L1. The bot's own memory starts fresh at every segment, as a
-// player loading a save.
+// segment saves its end for the next one, a win CONTINUEs into the next mission and ends the segment. The test proper is
+// the last segment: S9L1 must be won by its end, and it saves the S7L1 start (campaign_checkpoints/bot-S7L1.jsav, fixture
+// of game.campaign_S7L1_charite). The bot's own memory starts fresh at every segment, as a player loading a save.
 //
 //   game_campaign_S9L1_bot_test --segment IN OUT [D]   one segment (D: set difficulty 0 Easy / 1 Normal first): must not
 //                                                      lose; a mission past S9L1 passes through
 //   game_campaign_S9L1_bot_test [IN]                   the last segment (default campaign_checkpoints/bot-S9L1-last.jsav):
-//                                                      S9L1 must be won by its end
+//                                                      S9L1 must be won by its end; saves campaign_checkpoints/bot-S7L1.jsav
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -28,7 +28,7 @@ namespace {
 constexpr int kSegmentTicks = 60000;  // 2.5-8 ms a tick (machine load): inside a test's 600 s
 constexpr int kAfter = 7;             // scenario after S9L1 (S7L1): reached = S9L1 won
 
-int segment(const formats::Vfs& vfs, GameData& gd, const char* in, const char* out, int difficulty) {
+int segment(const formats::Vfs& vfs, GameData& gd, const char* in, const char* out, int difficulty, bool last) {
     std::string err;
     auto bytes = read_file(in);
     if (!bytes) return std::printf("skip: no %s (an earlier segment / game.campaign_legit writes it)\n", in), 77;
@@ -57,8 +57,8 @@ int segment(const formats::Vfs& vfs, GameData& gd, const char* in, const char* o
     } else {
         std::printf("%s: S9L1 already won\n", in);
     }
-    if (out && !fails && !write_save_atomic(out, encode_save(run.save()), 0, &err)) std::printf("FAIL save %s: %s\n", out, err.c_str()), ++fails;
-    if (!out && run.mission()->scenario_no() < kAfter) std::printf("FAIL S9L1 not won by the last segment\n"), ++fails;
+    if (last && run.mission()->scenario_no() < kAfter) std::printf("FAIL S9L1 not won by the last segment\n"), ++fails;
+    if (!fails && !write_save_atomic(out, encode_save(run.save()), 0, &err)) std::printf("FAIL save %s: %s\n", out, err.c_str()), ++fails;
     std::printf(fails ? "%d failures\n" : "ok\n", fails);
     return fails ? 1 : 0;
 }
@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
     auto gd = GameData::load(dir, &err);
     if (!gd) return std::printf("game data: %s\n", err.c_str()), 1;
     const formats::Vfs vfs(dir);
-    if (argc > 3 && std::string(argv[1]) == "--segment") return segment(vfs, *gd, argv[2], argv[3], argc > 4 ? std::atoi(argv[4]) : -1);
-    return segment(vfs, *gd, argc > 1 ? argv[1] : "campaign_checkpoints/bot-S9L1-last.jsav", nullptr, -1);
+    if (argc > 3 && std::string(argv[1]) == "--segment")
+        return segment(vfs, *gd, argv[2], argv[3], argc > 4 ? std::atoi(argv[4]) : -1, false);
+    return segment(vfs, *gd, argc > 1 ? argv[1] : "campaign_checkpoints/bot-S9L1-last.jsav", "campaign_checkpoints/bot-S7L1.jsav", -1, true);
 }

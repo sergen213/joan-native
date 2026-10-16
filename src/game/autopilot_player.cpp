@@ -117,6 +117,11 @@ void Autopilot::steer(InputFrame& f, const Unit& p, Vec3 g, bool replan) {
             for (std::size_t i = 0; i < path_.size(); ++i) drop |= std::fabs(path_[i].z - (i ? path_[i - 1].z : p.pos.z)) > 200;
             if (drop)
                 if (std::vector<Vec3> r = storey_route(*nav, p.pos, g); !r.empty()) path_ = std::move(r);
+            // Opt-in (offmesh_leg): a goal off the path mesh close past the search's best node, on the same storey, gets
+            // its last leg walked straight, as a player does; physics decides.
+            if (offmesh_leg && !drop && !path_.empty() && d2(path_.back(), g) > 150 && d2(path_.back(), g) < 400 &&
+                nav->find_poly_xy(g.x, g.y, g.z) < 0)
+                path_.push_back(g);
         }
         if (path_.empty()) path_.push_back(g);
     }
@@ -742,7 +747,10 @@ InputFrame Autopilot::decide() {
     // The other heroes' points: the in-game hint says "switch to that character to assign their available points". With
     // nobody hostile within 400, switch to a hero holding points (the key path), spend them on his character screen
     // above, switch back (two ticks). Mission 2: Jean holds 10 attribute points (+40 HP), switchable once the attack starts.
+    // Points the character screen above could not spend (S6L1: Joan's 3 skill points with her four combos at level 10)
+    // leave the switching alone for 5 min: the duke, sent to the iron workshop, was switched to Joan and back every tick.
     if (Unit* home = w.unit(home_hero_); home_hero_ && home && p.id != home_hero_) {
+        if (p.attr_points > 0 || p.skill_points > 0) switch_retry_ = tick_ + 9000;
         m_.switch_hero(hero_key(*home));
         home_hero_ = 0;
         return f;

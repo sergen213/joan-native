@@ -3,10 +3,11 @@
 Status per roadmap phase (goal.txt §24). "Verified" means exercised by a command/test whose result is recorded in the
 linked document; implementation, smoke tests and parity with the original are separate claims.
 
-Last full verification (2026-10-14, RX 7900 XTX/RADV, CachyOS, `build/` RelWithDebInfo):
-`cmake --build build` clean; **138/138 CTests pass** — non-GPU suite `ctest -j12`, 42 GPU tests `ctest -j1 -R '^engine\.(gl|vk)_'`,
-`game.campaign_full_run`, and the 8 `release.*` checks with `-DJOA_FFMPEG_PREFIX=work/tools/ffmpeg-prefix`
-(dist, reproducible, appimage, license_audit, install_flow, product_update).
+Last full verification (2026-10-15, RX 7900 XTX/RADV, CachyOS, `build/` RelWithDebInfo, `-DJOA_FFMPEG_PREFIX=work/tools/ffmpeg-prefix`):
+`cmake --build build` clean; **181/181 CTests pass** — 102 non-GPU tests `ctest -j12`, 42 GPU tests (GL + Vulkan with
+Khronos validation) `ctest -j1 -R '^engine\.(gl|vk)_'`, 7 `release.*` checks (dist, reproducible, appimage,
+license_audit, install_flow, product_update, selftest), and the 30-test legitimate campaign fixture chain
+`ctest -j4 -R 'campaign_(legit|S[5-9]L1_)'` (missions 1–8 won by the input-only test bot through the Ending event).
 
 | Phase | Status | Evidence |
 |---|---|---|
@@ -19,7 +20,7 @@ Last full verification (2026-10-14, RX 7900 XTX/RADV, CachyOS, `build/` RelWithD
 | 5 Build infra | Done: CMake C++20, CTest, sanitizer option, own Ghidra/reference tooling | README |
 | 6 Gameplay + OpenGL | Done: native World sim (combat, controller, root motion, items, progression), script VM (399/407 builtins; all 270 used), AI/troops/navmesh, mounts/siege/gates/multimap, interact; OpenGL original-look renderer | [GAMEPLAY_IMPLEMENTATION](GAMEPLAY_IMPLEMENTATION.md), [GRAPHICS_ROADMAP](GRAPHICS_ROADMAP.md) |
 | 7 Camera / widescreen / input | Done: Hor+ preserving 45° vFOV (4:3…32:9, custom), 4:3 UI safe area + edge anchoring, original 55 bindings, remap, gamepad | [CAMERA_AND_WIDESCREEN](CAMERA_AND_WIDESCREEN.md), [PLAYING](PLAYING.md) |
-| 8 Campaign progression | Partially verified: all 8 missions run deterministically with no unhandled builtins; forced-win chain through all 8 with carried heroes; scripted play-through menu → mission 1 → save/load → win → mission 2 in GL and VK; the input-only test bot **wins mission 1 legitimately** (Easy/Normal) but not mission 2 | [SAVES_AND_CAMPAIGN](SAVES_AND_CAMPAIGN.md) §8 |
+| 8 Campaign progression | Verified by the test bot: one legitimate CTest chain wins missions 1–8 through the Ending (1–4 Normal, 5–8 Easy) with carried progression; scripted play-through menu → mission 1 → save/load → win → mission 2 in GL and VK | [SAVES_AND_CAMPAIGN](SAVES_AND_CAMPAIGN.md) §8.1 |
 | 9 Vulkan raster | Done: Vulkan 1.3 backend, validation clean, GL/VK parity 46–60 dB PSNR | [GRAPHICS_ROADMAP](GRAPHICS_ROADMAP.md) |
 | 10 HD + PBR | Done: Original (pixel-identical) / Enhanced / Ultra / Custom presets; HD pack overrides; Real-ESRGAN pack builder | [HD_ASSETS](HD_ASSETS.md) |
 | 11 Ray tracing | Done (optional, Vulkan ray queries): reflections, soft shadows, DDGI-style GI, denoising, fallback | [RAYTRACING](RAYTRACING.md) |
