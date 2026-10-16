@@ -134,7 +134,9 @@ int main() {
         run(w, 5.0f);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 300.0;
         std::fprintf(stderr, "substep %.3f ms\n", ms);
+#ifndef __SANITIZE_ADDRESS__  // ASan/UBSan builds (CI sanitizers job) run several times slower
         CHECK(ms < 2.0);
+#endif
     }
     return test_result();
 }
