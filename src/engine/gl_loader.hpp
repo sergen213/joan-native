@@ -78,17 +78,22 @@
     X(PFNGLBLITFRAMEBUFFERPROC, glBlitFramebuffer)                                  \
     X(PFNGLDRAWBUFFERSPROC, glDrawBuffers)                                          \
     X(PFNGLBLENDEQUATIONPROC, glBlendEquation)                                      \
+    X(PFNGLBLENDFUNCSEPARATEPROC, glBlendFuncSeparate)                              \
     X(PFNGLCLEARBUFFERFVPROC, glClearBufferfv)                                      \
     X(PFNGLUNIFORM4IPROC, glUniform4i)                                              \
     X(PFNGLGETUNIFORMBLOCKINDEXPROC, glGetUniformBlockIndex)                        \
     X(PFNGLUNIFORMBLOCKBINDINGPROC, glUniformBlockBinding)                          \
     X(PFNGLBINDBUFFERBASEPROC, glBindBufferBase)                                    \
     X(PFNGLBUFFERSUBDATAPROC, glBufferSubData)                                      \
+    X(PFNGLCOPYBUFFERSUBDATAPROC, glCopyBufferSubData)                              \
     X(PFNGLGENQUERIESPROC, glGenQueries)                                            \
     X(PFNGLDELETEQUERIESPROC, glDeleteQueries)                                      \
     X(PFNGLQUERYCOUNTERPROC, glQueryCounter)                                        \
     X(PFNGLGETQUERYOBJECTUI64VPROC, glGetQueryObjectui64v)                          \
-    X(PFNGLREADBUFFERPROC, glReadBuffer)
+    X(PFNGLREADBUFFERPROC, glReadBuffer)                                            \
+    X(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC, glRenderbufferStorageMultisample)    \
+    X(PFNGLGETINTEGERVPROC, glGetIntegerv)                                          \
+    X(PFNGLGETTEXPARAMETERIVPROC, glGetTexParameteriv)
 
 namespace joa::engine::gl {
 #define JOA_GL_DECLARE(type, name) extern type name;

@@ -139,6 +139,15 @@ int main() {
     const auto bad = Settings::parse("[renderer]\nbackend=directx\n[display]\nwidth=800\nmode=windowed\n[controller]\ndeadzone=7\n");
     CHECK(bad.backend == "opengl" && bad.width == 0 && bad.height == 0 && bad.mode == "windowed" && bad.deadzone == 0.15);
     CHECK(Settings::load(tmp / "missing.ini").serialize() == Settings{}.serialize());
+    // [graphics] image-quality keys round-trip; unset = preset default (not written); other [graphics] lines survive.
+    const auto gfx = Settings::parse("[graphics]\naa=smaa\nmsaa=4\nanisotropy=16\nrender_scale=1.5\nsharpness=0.25\nhd_packs=a, b\n"
+                                     "ssao=false\n[renderer]\npreset=original\n");
+    CHECK(gfx.aa == "smaa" && gfx.msaa == "4" && gfx.anisotropy == "16" && gfx.render_scale == "1.5" && gfx.sharpness == "0.25");
+    CHECK(gfx.graphics_extra == "hd_packs=a, b\nssao=false\n" && gfx.preset == "original");
+    CHECK(Settings::parse(gfx.serialize()).serialize() == gfx.serialize());
+    const auto bad_gfx = Settings::parse("[graphics]\naa=msaa\nmsaa=3\nanisotropy=0\nrender_scale=4\nsharpness=-1\n");
+    CHECK(bad_gfx.aa.empty() && bad_gfx.msaa.empty() && bad_gfx.anisotropy.empty() && bad_gfx.render_scale.empty() && bad_gfx.sharpness.empty());
+    CHECK(Settings{}.serialize().find("aa=") == std::string::npos);
 
     // uninstall removes only what we created
     put(paths.game_root / "foreign.txt", "user file");

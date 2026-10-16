@@ -61,7 +61,10 @@ int main() {
     {  // TLAS instance classes and culling
         Material m;
         CHECK(rt_instance_class(m, MaterialClass::Building, false).mask == kRtMaskWorld);
+        CHECK(rt_instance_class(m, MaterialClass::Character, false).mask == kRtMaskWorld);  // a unit only via volume_caster
+        m.volume_caster = true;
         CHECK(rt_instance_class(m, MaterialClass::Character, false).mask == kRtMaskCharacter);
+        m.volume_caster = false;
         CHECK(rt_instance_class(m, MaterialClass::Generic, true).mask == kRtMaskTerrain);
         m.blend = BlendMode::AlphaTest;
         m.alpha_cutoff = 0.3f;
@@ -71,13 +74,15 @@ int main() {
         CHECK(rt_instance_class(m, MaterialClass::Building, false).mask == 0);  // water, glass: not traced
         CHECK(rt_instance_class(m, MaterialClass::Vegetation, false).cutoff == 0.5f);  // distance-faded grass
         m.depth_write = true;  // blend state 1 (Joan's head and hair): alpha tested + z-written, so traced
+        m.volume_caster = true;
         const RtInstanceClass head = rt_instance_class(m, MaterialClass::Character, false);
+        m.volume_caster = false;
         CHECK(head.mask == kRtMaskCharacter && head.alpha_test && head.cutoff == 0.3f);
         m.depth_write = false;
         m.blend = BlendMode::Opaque;
         m.unlit = true;
         CHECK(rt_instance_class(m, MaterialClass::Building, false).mask == 0);
-        CHECK((kRtMaskShadow & kRtMaskTerrain) == 0 && (kRtMaskProbe & kRtMaskCharacter) == 0);
+        CHECK((kRtMaskShadow & (kRtMaskTerrain | kRtMaskCharacter)) == 0 && (kRtMaskProbe & kRtMaskCharacter) == 0);
         CHECK(rt_keep_instance({0, 0, 0}, 40.0f, {1000, 0, 0}));
         CHECK(!rt_keep_instance({0, 0, 0}, 2.0f, {3000, 0, 0}));     // sub-pixel far away
         CHECK(!rt_keep_instance({0, 0, 0}, 300.0f, {7000, 0, 0}));   // beyond kRtRange

@@ -24,10 +24,7 @@ std::string RtCaps::missing() const {
 RtInstanceClass rt_instance_class(const Material& m, MaterialClass cls, bool terrain) {
     if (m.unlit) return {};
     const bool foliage = cls == MaterialClass::Vegetation;
-    const std::uint8_t mask = terrain                                                        ? kRtMaskTerrain
-                              : foliage                                                      ? kRtMaskFoliage
-                              : cls == MaterialClass::Character || cls == MaterialClass::Item ? kRtMaskCharacter
-                                                                                             : kRtMaskWorld;
+    const std::uint8_t mask = terrain ? kRtMaskTerrain : foliage ? kRtMaskFoliage : m.volume_caster ? kRtMaskCharacter : kRtMaskWorld;
     switch (m.blend) {
     case BlendMode::Opaque: return {mask, false, 0.0f};
     case BlendMode::AlphaTest: return {mask, true, m.alpha_cutoff};

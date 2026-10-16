@@ -26,6 +26,10 @@ struct Surface {
     float metal;
     float ao;         // material AO (HD pack map), 1 = none
     float shadow_strength;  // 1 = full sun shadow; vegetation 0.5 (dense tufts would otherwise shade themselves brown)
+    // Weight of the sky / RT reflection: 1 with an HD roughness map; legacy textures = their metal fraction only (the
+    // Fresnel sheen of a legacy dielectric lifted every dark texel towards the sky colour: characters lost ~30 % of
+    // their local contrast, docs/KNOWN_ISSUES.md).
+    float env_weight;
 };
 
 // Conservative legacy -> PBR conversion from the albedo alone (no HD maps): only unsaturated bright texels
@@ -154,10 +158,15 @@ vec3 shade(Surface s, vec2 pixel, out vec3 ambient_out) {
             env = rt_screen_reflection(env, s.roughness, pixel);
 #endif
             // Sky radiance scaled to the scene's ambient level; occluded like the ambient light.
-            ambient_out += env * env_brdf(f0, s.roughness, nv) * s.ao;
+            ambient_out += env * env_brdf(f0, s.roughness, nv) * s.ao * s.env_weight;
         }
     }
     return color + ambient_out;
+}
+
+// The surface as the Original look lights it (D3D8 light sum, no shadow map, AO or specular): the auto exposure reference.
+vec3 original_color(Surface s) {
+    return s.albedo * to_linear(min(R.ambient.rgb + s.diffuse * (R.sun_color.rgb * max(dot(s.n, -R.sun_dir.xyz), 0.0) + s.points), vec3(1.0)));
 }
 
 // Original linear vertex fog, mixed in gamma space like D3D8 (v_fog from the vertex shader).

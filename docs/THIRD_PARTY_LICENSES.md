@@ -34,7 +34,7 @@ all 8073 distinct `known_versions.json` hashes and the game-data name patterns).
 | libpng-2.0 | libpng |
 | MIT (MIT-SIPB) | e2fsprogs libcom_err (krb5 dependency); krb5 (custom MIT) |
 | GPL-3.0-or-later WITH GCC-exception-3.1 | libgomp (GCC runtime, via libb2) |
-| Compiled in | GLM (MIT), nlohmann/json (MIT), Vulkan-Headers (Apache-2.0 OR MIT), AMD FidelityFX FSR 1 EASU/RCAS algorithms (MIT, `packaging/licenses/FidelityFX-FSR1-LICENSE.txt`), RenderDoc in-application API header 1.46 (MIT, vendored `third_party/renderdoc/renderdoc_app.h`, `packaging/licenses/RenderDoc-app-API-LICENSE.txt`; RenderDoc itself is loaded only from the user's install with `--renderdoc`) |
+| Compiled in | GLM (MIT), nlohmann/json (MIT), Vulkan-Headers (Apache-2.0 OR MIT), AMD FidelityFX FSR 1 EASU/RCAS algorithms (MIT, `packaging/licenses/FidelityFX-FSR1-LICENSE.txt`), SMAA 1x (Jimenez et al., MIT: `SMAA.hlsl` + `AreaTex.h`/`SearchTex.h` vendored unmodified in `third_party/smaa/` from iryoku/smaa 71c806a, `PROVENANCE.txt`, `packaging/licenses/SMAA-LICENSE.txt`; `aa=smaa`), RenderDoc in-application API header 1.46 (MIT, vendored `third_party/renderdoc/renderdoc_app.h`, `packaging/licenses/RenderDoc-app-API-LICENSE.txt`; RenderDoc itself is loaded only from the user's install with `--renderdoc`) |
 | AppImage runtime (outside the payload) | AppImage type2-runtime (MIT) statically linking libfuse 3.15.0 (LGPL-2.1, patched), squashfuse (BSD-2), musl, zstd, zlib, mimalloc — notices in `share/licenses/appimage-type2-runtime/`, source in the third-party source tarball |
 
 Host-provided, never bundled: glibc, libstdc++/libgcc_s, libGL/GLX/EGL/OpenGL/GLdispatch, Vulkan

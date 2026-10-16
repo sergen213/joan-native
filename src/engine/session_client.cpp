@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 
 namespace joa::engine {
@@ -102,6 +103,7 @@ private:
     UiInputTracker ui_tracker_;
     Autoplay script_;
     bool fixed_dt_ = false, was_paused_ = true, menu_music_ = false;
+    double frame_dt_ = kGameTickSeconds;  // per-frame dt of captures (JOA_CAPTURE_FPS)
     bool loading_ = false;      // the loading-screen sequence runs (UiBridge stages 0..7); the world stays hidden
     float load_progress_ = 0;   // 1 once the pending start/load ran
     int click_release_ = -1;  // frame of a scripted click's button release
@@ -206,6 +208,7 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
     viewport_ = fit_viewport(size, o_.aspect);
     const float aspect = float(viewport_.z) / float(std::max(viewport_.w, 1));
     FrameData f;
+    f.dt = float(dt);
     draws_.clear();
     quads_.clear();
     game::Mission* m = session_.mission();
@@ -322,6 +325,9 @@ int Client::run() {
     const bool headless = o_.headless;
     const bool capture = !o_.screenshot.empty() || !o_.autoplay.empty();
     fixed_dt_ = headless || capture;
+    // Dev: JOA_CAPTURE_FPS=240 makes captures/autoplay advance 1/240 s per frame instead of one 33 ms tick, so
+    // render interpolation between ticks runs as on a high-refresh display (still deterministic).
+    if (const char* fps = std::getenv("JOA_CAPTURE_FPS"); fps && capture && !headless) frame_dt_ = 1.0 / std::clamp(std::atof(fps), 1.0, 1000.0);
     clock_.tick = kGameTickSeconds;
     clock_.max_ticks_per_frame = 8;
     if (!o_.autoplay.empty()) {
@@ -392,7 +398,7 @@ int Client::run() {
         if (platform_ && !platform_->pump(raw_)) break;
         JOA_DEV(if (dev_) dev_->input(platform_->window(), raw_);)
         const std::uint64_t now_ns = SDL_GetTicksNS();
-        const double dt = fixed_dt_ ? kGameTickSeconds : std::min(double(now_ns - last_ns) * 1e-9, 0.25);
+        const double dt = fixed_dt_ ? frame_dt_ : std::min(double(now_ns - last_ns) * 1e-9, 0.25);
         last_ns = now_ns;
         const Autoplay::FrameOut script = script_.apply(frame, raw_);
         for (const std::string& l : script.logs) {
@@ -482,7 +488,7 @@ int Client::run() {
         game_audio_->frame(pose_, float(dt));
         if (fixed_dt_) {  // no device pulls the mixer: advance it in step so voices end and dialogs proceed
             static std::vector<float> scratch;
-            const std::size_t n = std::size_t(kGameTickSeconds * 44100.0);
+            const std::size_t n = std::size_t(frame_dt_ * 44100.0);
             scratch.resize(n * 2);
             audio_->mixer().mix(scratch.data(), n);
         }

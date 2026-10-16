@@ -108,6 +108,7 @@ bool Character::attach(const Model* model, std::string_view bone, const formats:
 }
 
 void Character::build(const glm::mat4& transform, std::vector<DrawItem>& draws) const {
+    const std::size_t first = draws.size();
     for (std::size_t s = 0; s < materials_.size(); ++s)
         if (part_count_[s]) draws.push_back({gpu_, materials_[s], transform, part_first_[s], part_count_[s]});
     for (const Attached& a : attached_) {
@@ -119,6 +120,7 @@ void Character::build(const glm::mat4& transform, std::vector<DrawItem>& draws) 
             draws.back().material.receive_shadow = false;
         }
     }
+    for (std::size_t i = first; i < draws.size(); ++i) draws[i].material.volume_caster = true;
 }
 
 void Character::build_shadow(const glm::mat4& transform, glm::vec3 sun, ShadowKind kind, std::vector<DrawItem>& draws) {

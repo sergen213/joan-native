@@ -61,6 +61,8 @@ STATIC_COMPONENTS = (  # compiled into our binaries (header-only / embedded); li
     {"name": "Vulkan-Headers", "package": "vulkan-headers", "license": "Apache-2.0 OR MIT", "use": "Vulkan API headers (joan-native)"},
     {"name": "AMD FidelityFX FSR 1", "package": None, "license": "MIT", "use": "EASU/RCAS shader algorithms (shaders/common/post_easu.glsl, post_rcas.glsl)",
      "text": "packaging/licenses/FidelityFX-FSR1-LICENSE.txt"},
+    {"name": "SMAA (Jimenez et al.)", "package": None, "license": "MIT",
+     "use": "SMAA 1x shader library + area/search lookup textures (third_party/smaa, aa=smaa)", "text": "packaging/licenses/SMAA-LICENSE.txt"},
     {"name": "RenderDoc in-application API", "package": None, "license": "MIT",
      "use": "third_party/renderdoc/renderdoc_app.h (joan-native --renderdoc)", "text": "packaging/licenses/RenderDoc-app-API-LICENSE.txt"},
 )

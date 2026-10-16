@@ -1,0 +1,6 @@
+SMAA 1x (Jimenez et al., "SMAA: Enhanced Subpixel Morphological Antialiasing", 2012), MIT licence (LICENSE.txt).
+Source: https://github.com/iryoku/smaa commit 71c806a838bdd7d517df19192a20f0c61b3ca29d, files copied unmodified:
+  SMAA.hlsl            (shader library; GLSL path, included by shaders/common/smaa_config.glsl users)
+  Textures/AreaTex.h   (precomputed area lookup, 160x560 RG8)
+  Textures/SearchTex.h (precomputed search lookup, 64x16 R8)
+Used by joan-native's `aa=smaa` post pass (docs/GRAPHICS_ROADMAP.md).

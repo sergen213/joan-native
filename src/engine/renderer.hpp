@@ -85,6 +85,9 @@ struct Material {
     bool two_sided = false;
     bool unlit = false;
     bool receive_shadow = true;  // Opaque/AlphaTest: stencil 128 (shadowed by volumes) or 0
+    // Units (Character::build): their shadow is the original stencil volume / shadow model (Character::build_shadow),
+    // also in the remaster, so the sun shadow map and RT shadow rays skip them (no double or blurred unit shadow).
+    bool volume_caster = false;
     // D3D material diffuse (gamma space) for lit draws; vertex_diffuse = D3DMCS_COLOR1: the vertex
     // colour rgb is the diffuse material instead of a texture multiplier.
     glm::vec3 diffuse{1.0f};
@@ -115,6 +118,9 @@ struct DrawItem {
     // Point lights on this draw: indices into Lighting::point_lights (lit materials only).
     std::uint8_t light_count = 0;
     std::array<std::uint16_t, kMaxDrawLights> lights{};
+    // Stable id of the animated object this draw belongs to (0 = none). Remaster TAA matches draws across frames by
+    // mesh, index range, object and occurrence to find their previous model matrix (motion vectors, post_frame.hpp).
+    std::uint32_t object = 0;
 };
 
 // Matrices use the OpenGL clip convention (glm default: RH, z in [-1,1]). A Vulkan backend
@@ -185,6 +191,7 @@ struct FrameData {
     std::span<const UiQuad> ui;
     std::span<const UiVertex> ui_vertices;
     std::span<const UiTriangles> ui_triangles;
+    float dt = 0.0f;  // seconds since the previous frame (remaster auto exposure smoothing); 0 = unknown, taken as 1/30 s
 };
 
 // sRGB-encoded RGBA8, top row first (ready for PNG).

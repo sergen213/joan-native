@@ -2,12 +2,7 @@
 // Remaster sun shadow map, Vulkan: depth only + the alpha test of mesh_pbr_frag.glsl's shadow pass (blended
 // foliage at 0.5). A separate shader because mesh_pbr.frag statically uses the shadow map it would render to.
 #include "common.glsl"
-
-struct MaterialExtra {
-    uint normal, rough, metal, ao;
-    int cls, blend, pad0, pad1;
-};
-layout(set = 2, binding = 11, std430) readonly buffer Materials { MaterialExtra u_materials[]; };
+#include "remaster_vk.glsl"
 
 layout(location = 2) in vec2 v_uv;
 layout(location = 3) in vec2 v_uv2;

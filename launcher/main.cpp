@@ -133,6 +133,7 @@ private:
     QCheckBox* wine_ = nullptr;
     QComboBox *backend_ = nullptr, *preset_ = nullptr, *resolution_ = nullptr, *aspect_ = nullptr, *mode_ = nullptr, *channel_ = nullptr;
     QCheckBox *rtReflections_ = nullptr, *rtShadows_ = nullptr, *rtGi_ = nullptr;
+    QComboBox *aa_ = nullptr, *msaa_ = nullptr, *anisotropy_ = nullptr, *renderScale_ = nullptr, *sharpness_ = nullptr;
     QDoubleSpinBox *deadzone_ = nullptr, *sensitivity_ = nullptr;
     QTextBrowser* notes_ = nullptr;
     QProcess updater_;
@@ -201,6 +202,23 @@ private:
         rtGi_ = new QCheckBox("Global illumination");
         for (auto* c : {rtReflections_, rtShadows_, rtGi_}) rv->addWidget(c);
         form->addRow(rt);
+        // [graphics] image-quality keys: work with every preset (Original keeps its look); "Preset default" = key unset.
+        auto* quality = new QGroupBox("Anti-aliasing and image quality (all presets)");
+        auto* qf = new QFormLayout(quality);
+        aa_ = combo({{"Preset default", ""}, {"Off", "none"}, {"FXAA", "fxaa"}, {"SMAA", "smaa"}, {"TAA", "taa"}});
+        aa_->setToolTip("Post-process anti-aliasing. TAA needs Enhanced/Ultra/Custom (motion vectors); with Original it runs as SMAA.");
+        msaa_ = combo({{"Preset default", ""}, {"Off", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}});
+        msaa_->setToolTip("Multisampled geometry edges, alpha-to-coverage for foliage, grass and hair.");
+        anisotropy_ = combo({{"Preset default", ""}, {"Off", "1"}, {"2x", "2"}, {"4x", "4"}, {"8x", "8"}, {"16x", "16"}});
+        renderScale_ = combo({{"Preset default", ""}, {"50%", "0.5"}, {"75%", "0.75"}, {"100% (native)", "1"},
+                              {"150% (supersampling)", "1.5"}, {"200% (supersampling)", "2"}});
+        sharpness_ = combo({{"Preset default", ""}, {"Off", "0"}, {"Low", "0.25"}, {"Medium", "0.5"}, {"High", "0.8"}});
+        qf->addRow("Anti-aliasing", aa_);
+        qf->addRow("MSAA", msaa_);
+        qf->addRow("Anisotropic filtering", anisotropy_);
+        qf->addRow("Render scale", renderScale_);
+        qf->addRow("Sharpening", sharpness_);
+        form->addRow(quality);
         QList<QPair<QString, QString>> res = {{"Desktop", "0x0"}};
         QSize screen = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->size() : QSize();
         for (const QSize s : {QSize(1280, 720), QSize(1600, 900), QSize(1920, 1080), QSize(2560, 1440), QSize(3440, 1440), QSize(3840, 2160), screen})
@@ -262,6 +280,12 @@ private:
         rtReflections_->setChecked(s.rt_reflections);
         rtShadows_->setChecked(s.rt_shadows);
         rtGi_->setChecked(s.rt_gi);
+        for (auto [c, v] : {std::pair{aa_, &s.aa}, {msaa_, &s.msaa}, {anisotropy_, &s.anisotropy}, {renderScale_, &s.render_scale},
+                            {sharpness_, &s.sharpness}}) {
+            const QString value = QString::fromStdString(*v);
+            if (c->findData(value) < 0) c->addItem(value, value);  // a hand-edited value stays selectable
+            select(c, value);
+        }
         const QString res = QString("%1x%2").arg(s.width).arg(s.height);
         if (resolution_->findData(res) < 0) resolution_->addItem(res, res);
         select(resolution_, res);
@@ -279,7 +303,7 @@ private:
     }
 
     void connectSettings() {
-        for (auto* c : {backend_, preset_, resolution_, aspect_, mode_, channel_})
+        for (auto* c : {backend_, preset_, resolution_, aspect_, mode_, channel_, aa_, msaa_, anisotropy_, renderScale_, sharpness_})
             connect(c, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
         for (auto* c : {rtReflections_, rtShadows_, rtGi_}) connect(c, &QCheckBox::toggled, this, [this] { saveSettings(); });
         for (auto* d : {deadzone_, sensitivity_}) connect(d, &QDoubleSpinBox::valueChanged, this, [this] { saveSettings(); });
@@ -292,6 +316,11 @@ private:
         s.rt_reflections = rtReflections_->isChecked();
         s.rt_shadows = rtShadows_->isChecked();
         s.rt_gi = rtGi_->isChecked();
+        s.aa = aa_->currentData().toString().toStdString();
+        s.msaa = msaa_->currentData().toString().toStdString();
+        s.anisotropy = anisotropy_->currentData().toString().toStdString();
+        s.render_scale = renderScale_->currentData().toString().toStdString();
+        s.sharpness = sharpness_->currentData().toString().toStdString();
         const auto wh = resolution_->currentData().toString().split('x');
         s.width = wh.value(0).toInt();
         s.height = wh.value(1).toInt();

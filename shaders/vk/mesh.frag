@@ -24,7 +24,10 @@ void main() {
     base.rgb *= v_color.rgb;
     base *= d.tint;
     if (d.lightmap != kNoTexture) base.rgb *= texture(u_textures[nonuniformEXT(d.lightmap)], v_uv2).rgb;
-    if (base.a < d.alpha_cutoff) discard;
+    if ((d.unlit & 4u) != 0u) {  // MSAA alpha-to-coverage: the alpha test becomes a sharpened coverage alpha
+        base.a = clamp((base.a - d.alpha_cutoff) / max(fwidth(base.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (base.a <= 0.0) discard;
+    } else if (base.a < d.alpha_cutoff) discard;
     vec3 c = base.rgb * to_linear(v_light);
     if (v_fog > 0.0) c = to_linear(mix(to_srgb(c), u_frame.fog_color.rgb, v_fog));
     o_color = vec4(c, base.a);

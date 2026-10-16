@@ -22,6 +22,7 @@ UBO(0) RemasterFrame {
     vec4 flags;            // x PBR, y normal maps, z particle lighting, w HDR tone mapping
     vec4 ssao;             // x radius, y intensity, z mesh texture LOD bias (-1 under TAA), w far
     vec4 env;              // x env mip count, y projection[1][1], z projection[0][0], w upscale ratio (output/scene)
+    vec4 exposure;         // auto exposure: x smoothing weight of this frame's target, y 1 = snap (no history), zw clamp range
 } R;
 
 const float kPi = 3.14159265;
@@ -53,6 +54,14 @@ vec3 world_from_depth(vec2 uv, float depth) {
     return p.xyz / p.w;
 }
 
+// Motion vectors (TAA; mesh passes): this frame's unjittered clip position and, in the fragment, previous minus current
+// uv of the interpolated pair (prev_clip = previous view-projection * previous model * previous pose).
+vec4 unjittered_clip(vec4 world) {
+    vec4 p = R.view_proj * world;
+    return vec4(p.xy - R.jitter.xy * p.w, p.zw);
+}
+vec2 motion_uv(vec4 clip, vec4 prev_clip) { return ndc_to_uv(prev_clip.xy / prev_clip.w) - ndc_to_uv(clip.xy / clip.w); }
+
 // Interleaved gradient noise (Jimenez 2014), animated per frame for TAA.
 float ign(vec2 pixel) {
     pixel += 5.588238 * mod(R.fog_range.w, 64.0);
@@ -63,3 +72,7 @@ float ign(vec2 pixel) {
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// Displayed (sRGB-encoded) luma of an exposed HDR colour as the composite maps it; the auto exposure compares it with
+// to_srgb(reference luma) of the Original look (post_exposure_lum.glsl).
+float display_luma(vec3 c) { return to_srgb(vec3(luma(R.flags.w != 0.0 ? aces(c) : clamp(c, 0.0, 1.0)))).x; }

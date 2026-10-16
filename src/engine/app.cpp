@@ -123,6 +123,7 @@ int run_demo(const Options& o) {
         FrameData f;
         f.view.projection = perspective_hor_plus(glm::radians(kOriginalVerticalFovDeg), aspect, kDefaultNear, kDefaultFar);
         f.view.viewport = vp;
+        f.dt = float(frame_dt);
         camera.update(shown.player_position, float(frame_dt));
         draws.clear();
         quads.clear();

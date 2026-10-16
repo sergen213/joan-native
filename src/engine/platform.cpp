@@ -15,7 +15,7 @@ Platform::Platform(const Options& o, bool hidden) {
     const bool vulkan = o.renderer == RendererKind::Vulkan;
     if (!vulkan) gl_set_window_attributes();
     SDL_WindowFlags flags = (vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (hidden) flags |= SDL_WINDOW_HIDDEN;
+    if (hidden && !std::getenv("JOA_SHOW_WINDOWS")) flags |= SDL_WINDOW_HIDDEN;  // tests on the real display
     window_ = SDL_CreateWindow("Wars and Warriors: Joan of Arc (native)", o.width, o.height, flags);
     if (!window_) {
         SDL_Quit();

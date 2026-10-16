@@ -6,6 +6,8 @@ in vec2 v_uv;
 in vec2 v_uv2;
 in vec4 v_color;
 in float v_fog;
+in vec4 v_clip;
+in vec4 v_prev_clip;
 
 const int kMaxLights = 7;
 uniform sampler2D u_albedo;
@@ -24,6 +26,7 @@ uniform int u_class;      // MaterialClass
 uniform int u_blend;      // BlendMode
 uniform vec4 u_tint;
 uniform float u_alpha_cutoff;
+uniform bool u_a2c;  // MSAA alpha-to-coverage: the alpha test becomes a sharpened coverage alpha
 uniform bool u_unlit;
 uniform bool u_no_fog;
 uniform vec3 u_diffuse;
@@ -36,6 +39,9 @@ uniform vec3 u_light_att[kMaxLights];
 
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_ambient;
+layout(location = 2) out vec4 o_motion;  // TAA motion (previous minus current uv); alpha 1 so blending passes it through
+// Auto exposure reference (post_exposure_lum.glsl): linear luma of this pixel in the Original look, blended like o_color.
+layout(location = 3) out vec4 o_reference;
 
 // R.ssao.z: texture LOD bias (negative under TAA jitter: the accumulated image resolves finer mips).
 vec4 tex(sampler2D s, vec2 uv) { return texture(s, uv, R.ssao.z); }
@@ -50,16 +56,21 @@ void main() {
     base.rgb *= vcol.rgb;
     base *= u_tint;
     if (u_has_lightmap) base.rgb *= tex(u_lightmap, v_uv2).rgb;
-    if (base.a < u_alpha_cutoff) discard;
+    if (u_a2c) {
+        base.a = clamp((base.a - u_alpha_cutoff) / max(fwidth(base.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (base.a <= 0.0) discard;
+    } else if (base.a < u_alpha_cutoff) discard;
+    o_motion = vec4(motion_uv(v_clip, v_prev_clip), 0.0, 1.0);
     if (u_pass == 1) {  // shadow caster: depth only
         o_color = vec4(0.0);
         o_ambient = vec4(0.0);
+        o_reference = vec4(0.0);
         return;
     }
     vec3 ambient = vec3(0.0);
-    vec3 c;
+    vec3 c, original;  // original: this pixel in the Original look (o_reference)
     if (u_unlit) {
-        c = base.rgb;
+        c = original = base.rgb;
         if (R.flags.z != 0.0 && !u_no_fog) {  // particles: lit smoke, HDR emissive fire
             if (u_blend == 3) c *= 1.6;
             else {
@@ -90,10 +101,13 @@ void main() {
         if (u_maps.z != 0) s.metal = tex(u_metal_map, uv).r;
         s.ao = u_maps.w != 0 ? tex(u_ao_map, uv).r : 1.0;
         s.shadow_strength = u_class == kClassVegetation ? 0.5 : 1.0;
+        s.env_weight = u_maps.y != 0 ? 1.0 : s.metal;
         c = shade(s, gl_FragCoord.xy, ambient);
+        original = original_color(s);
         if (u_class == kClassVegetation) ambient = vec3(0.0);  // no SSAO on thin foliage
     }
     float fog = u_no_fog ? 0.0 : v_fog;
     o_color = vec4(apply_fog(c, fog), base.a);
     o_ambient = vec4(ambient * (1.0 - fog), 1.0);
+    o_reference = vec4(luma(apply_fog(original, fog)), 0.0, 0.0, base.a);
 }

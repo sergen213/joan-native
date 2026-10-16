@@ -67,7 +67,9 @@ const char* usage() {
            "                           brief-battleground-2d brief-strategy brief-siege\n"
            "  --play-movie FILE        play a movie (e.g. movie/intro.wmv, relative to the game dir); Esc/click skips\n"
            "  --preset NAME            graphics preset: original (faithful, default) | enhanced | ultra | custom\n"
-           "  --graphics K=V[,K=V]     custom preset feature keys (docs/GRAPHICS_ROADMAP.md, e.g. ssao=false,aa=taa)\n"
+           "  --graphics K=V[,K=V]     graphics keys (docs/GRAPHICS_ROADMAP.md). Image-quality keys (aa=none|fxaa|smaa|taa,\n"
+           "                           msaa=1|2|4|8, anisotropy=1..16, render_scale=0.5..2, upscale, sharpness) work with\n"
+           "                           every preset; other keys (e.g. ssao=false) imply --preset custom\n"
            "  --hd-packs A[,B]         HD texture packs (names under $XDG_DATA_HOME/joan-native/hd/ or dirs), first wins\n"
            "  --movie-time SEC         start the movie at SEC (with --screenshot: capture the frame shown at SEC)\n";
 }
@@ -245,14 +247,14 @@ std::string parse_options(int argc, const char* const* argv, Options& o) {
             if (!value(v) || !parse_preset(v, o.graphics.preset)) return "--preset expects original|enhanced|ultra|custom";
         } else if (a == "--graphics") {
             if (!value(v)) return "--graphics expects KEY=VALUE[,KEY=VALUE]";
-            o.graphics.preset = GraphicsPreset::Custom;
             for (std::size_t p = 0; p <= v.size();) {
                 const std::size_t c = std::min(v.find(',', p), v.size());
                 const std::string_view kv = v.substr(p, c - p);
                 const auto eq = kv.find('=');
                 if (eq == std::string_view::npos) return "--graphics expects KEY=VALUE[,KEY=VALUE]";
-                if (auto err = o.graphics.apply("graphics." + std::string(trim(kv.substr(0, eq))), trim(kv.substr(eq + 1))); !err.empty())
-                    return err;
+                const std::string key(trim(kv.substr(0, eq)));
+                if (!quality_key(key)) o.graphics.preset = GraphicsPreset::Custom;  // look keys imply custom
+                if (auto err = o.graphics.apply("graphics." + key, trim(kv.substr(eq + 1))); !err.empty()) return err;
                 p = c + 1;
             }
         } else if (a == "--hd-packs") {

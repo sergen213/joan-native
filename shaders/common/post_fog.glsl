@@ -1,0 +1,42 @@
+// Volumetric height fog with shadowed sun in-scattering (ray-marched against the sun shadow map), shared by the composite
+// and the auto exposure measurement (post_exposure_lum.glsl), so the exposure sees the fog's added light too.
+TEX(1) sampler2DShadow u_shadow;
+TEX(6) sampler2D u_depth;
+
+float sun_visibility(vec3 p) {
+    if (R.sun_dir.w == 0.0) return 1.0;
+    vec4 c = R.shadow_matrix * vec4(p, 1.0);
+    vec3 ndc = c.xyz / c.w;
+    if (any(greaterThan(abs(ndc), vec3(1.0)))) return 1.0;
+    return texture(u_shadow, vec3(ndc_to_uv(ndc.xy), ndc.z * 0.5 + 0.5));
+}
+
+// Extinction per original unit: denser in the valleys below the camera, thinning out above it.
+float density(vec3 p) { return R.fog_color.w * 0.7e-4 * exp(-max(p.y - R.camera_pos.y + 150.0, 0.0) / 450.0); }
+
+// HDR colour c seen through the fog at texture uv / pixel (noise seed); unchanged when the fog is off.
+vec3 volumetric_fog(vec3 c, vec2 uv, vec2 pixel) {
+    if (R.fog_color.w <= 0.0) return c;
+    float d = textureLod(u_depth, uv, 0.0).r;
+    vec3 ro = R.camera_pos.xyz, target = world_from_depth(uv, d);
+    vec3 rd = target - ro;
+    float len = length(rd);
+    rd /= max(len, 1e-4);
+    len = d >= 1.0 ? 2500.0 : min(len, max(R.fog_range.y, 1.0));
+    int steps = int(R.fog_range.z);
+    float dt = len / float(steps), t = dt * ign(pixel);
+    float g = 0.55, cosv = dot(rd, -R.sun_dir.xyz);
+    float phase = (1.0 - g * g) / (4.0 * kPi * pow(1.0 + g * g - 2.0 * g * cosv, 1.5));
+    vec3 sun = to_linear(min(R.sun_color.rgb, vec3(1.0))) * phase * 6.0;
+    vec3 amb = to_linear(min(R.fog_color.rgb, vec3(1.0))) * 0.35;
+    float trans = 1.0;
+    vec3 scatter = vec3(0.0);
+    for (int i = 0; i < steps; ++i, t += dt) {
+        vec3 p = ro + rd * t;
+        float sigma = density(p);
+        float step_t = exp(-sigma * dt);
+        scatter += trans * (1.0 - step_t) * (sun * sun_visibility(p) + amb);
+        trans *= step_t;
+    }
+    return c * trans + scatter;
+}

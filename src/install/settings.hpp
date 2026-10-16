@@ -11,6 +11,13 @@ struct Settings {
     bool rt_reflections = false;          // [raytracing]
     bool rt_shadows = false;
     bool rt_gi = false;
+    // [graphics] image-quality keys (any preset); empty = the preset's default (key not written).
+    std::string aa;            // none|fxaa|smaa|taa
+    std::string msaa;          // 1|2|4|8
+    std::string anisotropy;    // 1..16
+    std::string render_scale;  // 0.5..2
+    std::string sharpness;     // 0..1
+    std::string graphics_extra;  // every other [graphics] line (custom preset keys, hd_packs), kept verbatim
     int width = 0, height = 0;            // [display] 0 = desktop resolution
     std::string aspect = "auto";          // [display] auto|4:3|16:9|16:10|21:9
     std::string mode = "fullscreen";      // [display] windowed|fullscreen|borderless

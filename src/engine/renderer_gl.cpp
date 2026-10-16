@@ -104,6 +104,7 @@ public:
         mesh_.light_pos_range = u("u_light_pos_range");
         mesh_.light_color = u("u_light_color");
         mesh_.light_att = u("u_light_att");
+        mesh_.a2c = u("u_a2c");
         glUseProgram(mesh_.program);
         glUniform1i(u("u_albedo"), 0);
         glUniform1i(u("u_layer2"), 1);
@@ -184,9 +185,28 @@ public:
     bool update_mesh(MeshHandle h, const MeshData& data) override {
         const auto it = meshes_.find(h.id);
         if (it == meshes_.end()) return false;
-        glBindVertexArray(it->second.vao);  // its element binding is the mesh ibo
-        glBindBuffer(GL_ARRAY_BUFFER, it->second.vbo);
-        fill(it->second, data);
+        Mesh& m = it->second;
+        glBindVertexArray(m.vao);  // its element binding is the mesh ibo
+        // TAA motion vectors: the first update of a frame keeps the replaced (last shown) vertices as attribute 7.
+        if (m.updated != frame_) {
+            m.updated = frame_;
+            m.prev_count = data.vertices.size() == m.vertex_count ? m.vertex_count : 0;
+            if (m.prev_count) {
+                const GLsizeiptr bytes = GLsizeiptr(m.vertex_count * sizeof(Vertex));
+                if (!m.prev_vbo) {
+                    glGenBuffers(1, &m.prev_vbo);
+                    glBindBuffer(GL_ARRAY_BUFFER, m.prev_vbo);
+                    glEnableVertexAttribArray(7);
+                    glVertexAttribPointer(7, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, position)));
+                }
+                glBindBuffer(GL_COPY_WRITE_BUFFER, m.prev_vbo);
+                glBufferData(GL_COPY_WRITE_BUFFER, bytes, nullptr, GL_STREAM_COPY);
+                glBindBuffer(GL_COPY_READ_BUFFER, m.vbo);
+                glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes);
+            }
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        fill(m, data);
         glBindVertexArray(0);
         return true;
     }
@@ -214,11 +234,26 @@ public:
 
     void set_graphics(const GraphicsSettings& g) override {
         if (g.shadow_map_size != gfx_.shadow_map_size) destroy_shadow_map();
+        if (g.anisotropy != gfx_.anisotropy)  // already uploaded mipmapped textures follow the new setting
+            for (const auto& [id, t] : textures_) {
+                GLint min = 0;
+                glBindTexture(GL_TEXTURE_2D, t);
+                glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &min);
+                if (min == GL_LINEAR_MIPMAP_LINEAR) glTexParameteri(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, g.anisotropy);
+            }
+        if (g.msaa != gfx_.msaa) destroy_original_target();
         gfx_ = g;
+        if (gfx_.msaa > 1) {  // clamp to what the colour and depth formats support
+            GLint max_samples = 1;
+            glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+            gfx_.msaa = std::min(gfx_.msaa, std::max(max_samples, 1));
+        }
         remaster_ = g.remastered();
         history_.valid = false;
         if (remaster_)
             std::fprintf(stderr, "joan-native: opengl graphics preset %s (remaster path)\n", preset_name(g.preset));
+        else if (g.original_post())
+            std::fprintf(stderr, "joan-native: opengl graphics preset %s (original look + image-quality post)\n", preset_name(g.preset));
         if (remaster_ && g.rt.any())  // docs/RAYTRACING.md: ray tracing is Vulkan-only
             std::fputs("joan-native: opengl: ray tracing needs the Vulkan renderer, using the raster path\n", stderr);
     }
@@ -244,9 +279,11 @@ public:
         glEnable(GL_FRAMEBUFFER_SRGB);
         const bool timed = timing_begin();
         if (remaster_) draw_scene_remaster(f);
-        else draw_scene(f);
+        else if (gfx_.original_post()) draw_scene_original_post(f);
+        else draw_scene(f, viewport(f), target_size_.y);
         if (timed) glQueryCounter(timing_.queries[1], GL_TIMESTAMP);
         draw_ui(f);
+        ++frame_;
     }
 
     void end_frame() override {
@@ -288,12 +325,17 @@ public:
 private:
     struct Mesh {
         GLuint vao = 0, vbo = 0, ibo = 0;
-        std::uint32_t index_count = 0;
+        std::uint32_t index_count = 0, vertex_count = 0;
+        // update_mesh: prev_vbo holds the vertices shown before the update of frame `updated` (prev_count of them, 0 = none).
+        GLuint prev_vbo = 0;
+        std::uint32_t prev_count = 0;
+        std::uint64_t updated = ~0ull;
+        bool prev_pose(std::uint64_t frame) const { return updated == frame && prev_count && prev_count == vertex_count; }
     };
     struct MeshProgram {
         GLuint program = 0;
         GLint model, view_proj, normal_matrix, tint, alpha_cutoff, unlit, no_fog, sun_dir, sun_color, ambient, fog_color, fog_range, camera_pos,
-            has_layer2, has_lightmap, light_count, light_pos_range, light_color, light_att, bump_scale, diffuse, vertex_diffuse;
+            has_layer2, has_lightmap, light_count, light_pos_range, light_color, light_att, bump_scale, diffuse, vertex_diffuse, a2c;
     };
     struct UiProgram {
         GLuint program = 0;
@@ -303,6 +345,7 @@ private:
     static void release(Mesh& m) {
         glDeleteBuffers(1, &m.vbo);
         glDeleteBuffers(1, &m.ibo);
+        if (m.prev_vbo) glDeleteBuffers(1, &m.prev_vbo);
         glDeleteVertexArrays(1, &m.vao);
     }
 
@@ -311,6 +354,7 @@ private:
         glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(data.vertices.size() * sizeof(Vertex)), data.vertices.data(), GL_STATIC_DRAW);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(data.indices.size() * sizeof(std::uint32_t)), data.indices.data(), GL_STATIC_DRAW);
         m.index_count = std::uint32_t(data.indices.size());
+        m.vertex_count = std::uint32_t(data.vertices.size());
     }
 
     GLuint upload(const TextureData& t) {
@@ -333,7 +377,7 @@ private:
         if (!t.mip_pixels.empty()) glTexParameteri(GL_TEXTURE_2D, 0x813D /* GL_TEXTURE_MAX_LEVEL */, GLint(t.mip_pixels.size()));
         if (t.mipmaps) {
             if (t.mip_pixels.empty()) glGenerateMipmap(GL_TEXTURE_2D);
-            glTexParameteri(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY; ignored (GL error) if unsupported */, 8);
+            glTexParameteri(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY; ignored (GL error) if unsupported */, gfx_.anisotropy);
         }
         return tex;
     }
@@ -367,9 +411,83 @@ private:
         target_size_ = {0, 0};
     }
 
-    void draw_scene(const FrameData& f) {
-        const glm::ivec4 vp = f.view.viewport.z > 0 ? f.view.viewport : glm::ivec4(0, 0, target_size_.x, target_size_.y);
-        const GLint y = target_size_.y - vp.y - vp.w;  // top-left origin -> GL bottom-left
+    glm::ivec4 viewport(const FrameData& f) const {
+        return f.view.viewport.z > 0 ? f.view.viewport : glm::ivec4(0, 0, target_size_.x, target_size_.y);
+    }
+
+    // ---- Original look + image-quality options (msaa, aa, render_scale, sharpness): docs/GRAPHICS_ROADMAP.md
+    // The unchanged Original passes render into a scene-size sRGB target (multisampled when msaa > 1, resolved),
+    // then the shared post tail (FXAA/SMAA -> EASU -> RCAS/downsample) writes the viewport of the display target.
+    struct OriginalTarget {
+        glm::ivec2 size{0, 0};
+        int samples = 0;
+        GLuint color = 0, fbo = 0, depth_rb = 0, ms_color = 0, ms_fbo = 0;
+    };
+
+    void ensure_original_target(glm::ivec2 size) {
+        OriginalTarget& t = ot_;
+        if (t.size == size && t.samples == gfx_.msaa && t.fbo) return;
+        destroy_original_target();
+        t.size = size;
+        t.samples = gfx_.msaa;
+        t.color = make_texture(GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, size, GL_LINEAR);
+        // Post passes read the stored (encoded) bytes, like the remaster LDR target (EXT_texture_sRGB_decode).
+        glTexParameteri(GL_TEXTURE_2D, 0x8A48 /* GL_TEXTURE_SRGB_DECODE_EXT */, 0x8A4A /* GL_SKIP_DECODE_EXT */);
+        glGenRenderbuffers(1, &t.depth_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, t.depth_rb);
+        if (t.samples > 1) {
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, t.samples, GL_DEPTH24_STENCIL8, size.x, size.y);
+            glGenRenderbuffers(1, &t.ms_color);
+            glBindRenderbuffer(GL_RENDERBUFFER, t.ms_color);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, t.samples, GL_SRGB8_ALPHA8, size.x, size.y);
+            glGenFramebuffers(1, &t.ms_fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, t.ms_fbo);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, t.ms_color);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth_rb);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) throw std::runtime_error("GL MSAA framebuffer incomplete");
+            t.fbo = make_fbo({t.color}, 0);  // resolve target
+        } else {
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, size.x, size.y);
+            t.fbo = make_fbo({t.color}, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth_rb);
+        }
+    }
+
+    void destroy_original_target() {
+        OriginalTarget& t = ot_;
+        for (GLuint f : {t.fbo, t.ms_fbo})
+            if (f) glDeleteFramebuffers(1, &f);
+        for (GLuint r : {t.depth_rb, t.ms_color})
+            if (r) glDeleteRenderbuffers(1, &r);
+        if (t.color) glDeleteTextures(1, &t.color);
+        t = {};
+    }
+
+    void draw_scene_original_post(const FrameData& f) {
+        const glm::ivec4 vp = viewport(f);
+        const glm::ivec2 output(vp.z, vp.w), scene = scene_size(gfx_, output);
+        ensure_remaster_programs();
+        ensure_original_target(scene);
+        const RemasterFrame rf = build_remaster_frame(gfx_, f, scene, output, 1, history_);
+        glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof rf, &rf);
+        glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
+        glBindFramebuffer(GL_FRAMEBUFFER, ot_.samples > 1 ? ot_.ms_fbo : ot_.fbo);
+        glEnable(GL_FRAMEBUFFER_SRGB);
+        draw_scene(f, glm::ivec4(0, 0, scene), scene.y, ot_.samples > 1);
+        if (ot_.samples > 1) {  // resolve (linear-space average: the sRGB conversion is on)
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, ot_.ms_fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ot_.fbo);
+            glBlitFramebuffer(0, 0, scene.x, scene.y, 0, 0, scene.x, scene.y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+        glDisable(GL_FRAMEBUFFER_SRGB);  // the post passes write encoded bytes
+        finish_post(ot_.color, scene, output, vp);
+        glEnable(GL_FRAMEBUFFER_SRGB);
+    }
+
+    // vp: scene viewport in pixels (top-left origin) of a target `target_h` pixels high; multisampled: alpha-to-coverage.
+    void draw_scene(const FrameData& f, glm::ivec4 vp, int target_h, bool multisampled = false) {
+        const GLint y = target_h - vp.y - vp.w;  // top-left origin -> GL bottom-left
         glViewport(vp.x, y, vp.z, vp.w);
         glScissor(vp.x, y, vp.z, vp.w);
         glEnable(GL_SCISSOR_TEST);
@@ -401,6 +519,7 @@ private:
         glEnable(GL_STENCIL_TEST);
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         int receive = -1;
+        bool a2c_on = false;  // alpha-tested draws into a multisampled target: alpha-to-coverage
         for (const DrawItem& d : f.draws) {
             const BlendMode b = d.material.blend;
             if (b == BlendMode::ShadowVolume) volumes_.push_back(&d);
@@ -408,8 +527,18 @@ private:
             else {
                 if (int(d.material.receive_shadow) != receive)
                     receive = d.material.receive_shadow, glStencilFunc(GL_ALWAYS, receive ? 128 : 0, 0xff);
+                if (const bool a2c = multisampled && b == BlendMode::AlphaTest; a2c != a2c_on) {
+                    a2c_on = a2c;
+                    if (a2c) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    else glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    glUniform1i(mesh_.a2c, a2c ? 1 : 0);
+                }
                 draw_item(d);
             }
+        }
+        if (a2c_on) {
+            glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            glUniform1i(mesh_.a2c, 0);
         }
         if (!volumes_.empty() && l.shadow_color.a > 0.0f) {
             // z-pass volumes: front faces +1, back faces -1 (clamped), no colour or depth writes.
@@ -561,19 +690,34 @@ private:
     }
 
     // ---- remaster (Enhanced/Ultra): docs/GRAPHICS_ROADMAP.md "Remaster" ------------------------------
-    // Passes: sun shadow map -> opaque (HDR colour + ambient MRT, depth-stencil texture) [-> stencil
-    // volumes if no shadow map] -> SSAO -> AO apply (reverse subtract) -> translucent -> composite
-    // (volumetric fog, exposure, ACES, sRGB encode) -> TAA -> EASU -> RCAS/copy into the display target.
+    // Passes: sun shadow map -> opaque (HDR colour + ambient + motion + auto exposure reference MRTs, depth-stencil texture)
+    // [-> stencil volumes if no shadow map] -> SSAO -> AO apply (reverse subtract) -> translucent -> auto exposure measure +
+    // adapt -> composite (volumetric fog, exposure, ACES, sRGB encode) -> TAA -> EASU -> RCAS/copy into the display target.
 
     struct PbrProgram {
         GLuint program = 0;
         GLint model, normal_matrix, no_fog, pass, tint, alpha_cutoff, unlit, has_layer2, has_lightmap, bump_scale, maps, cls, blend, diffuse,
-            vertex_diffuse, light_count, light_pos_range, light_color, light_att;
+            vertex_diffuse, light_count, light_pos_range, light_color, light_att, prev_model, prev_pose, a2c;
     };
     struct RemasterTargets {
         glm::ivec2 scene{0, 0}, output{0, 0};
-        GLuint hdr = 0, ambient = 0, depth = 0, ao = 0, ldr = 0, hist[2]{}, easu = 0;
-        GLuint fbo_opaque = 0, fbo_trans = 0, fbo_hdr = 0, fbo_ao = 0, fbo_ldr = 0, fbo_hist[2]{}, fbo_easu = 0;
+        GLuint hdr = 0, ambient = 0, depth = 0, ao = 0, ldr = 0, hist[2]{};
+        GLuint velocity = 0;  // RG16F TAA motion (previous minus current uv) of the opaque + depth-writing blended draws
+        GLuint reference = 0;  // R16F auto exposure reference: Original-look luma (mesh_pbr_frag.glsl o_reference)
+        GLuint lum = 0, exposure[2]{};  // auto exposure: 64x32 measurement, 1x1 R32F state (ping-pong by frame parity)
+        GLuint fbo_opaque = 0, fbo_trans = 0, fbo_hdr = 0, fbo_ao = 0, fbo_ldr = 0, fbo_hist[2]{}, fbo_lum = 0, fbo_exposure[2]{};
+        // msaa > 1: multisampled scene renderbuffers (same attachment layout as fbo_opaque / fbo_trans / fbo_hdr), resolved
+        // into the textures above after the opaque pass (depth, ambient, motion) and after the translucent pass (hdr, motion,
+        // reference, depth).
+        int samples = 1;
+        GLuint ms_hdr = 0, ms_ambient = 0, ms_velocity = 0, ms_reference = 0, ms_depth = 0, fbo_opaque_ms = 0, fbo_trans_ms = 0, fbo_hdr_ms = 0;
+        GLuint fbo_ambient = 0, fbo_velocity = 0, fbo_reference = 0;  // single-attachment resolve destinations
+    };
+    // Image-quality post tail (any preset): FXAA/SMAA at scene size, EASU at output size.
+    struct PostTargets {
+        glm::ivec2 scene{0, 0}, output{0, 0};
+        GLuint edges = 0, weights = 0, out = 0, easu = 0;
+        GLuint fbo_edges = 0, fbo_weights = 0, fbo_out = 0, fbo_easu = 0;
     };
 
     // GL texture units of the remaster samplers: Vulkan set-2 binding b <-> unit b + 7 (remaster_prelude.glsl).
@@ -585,7 +729,9 @@ private:
         static const std::pair<const char*, int> units[] = {
             {"u_albedo", 0},  {"u_layer2", 1},  {"u_lightmap", 2},    {"u_bump", 3},  {"u_normal_map", 4}, {"u_rough_map", 5}, {"u_metal_map", 6},
             {"u_ao_map", 7},  {"u_shadow", 8},  {"u_env", 9},         {"u_irradiance", 10}, {"u_hdr", 11},  {"u_ambient", 12}, {"u_depth", 13},
-            {"u_ao", 14},     {"u_ldr", 15},    {"u_history", 16},    {"u_src", 17},  {"u_final", 19}};
+            {"u_ao", 14},     {"u_ldr", 15},    {"u_history", 16},    {"u_src", 17},  {"u_final", 19}, {"u_velocity", 20},
+            {"u_aa_a", 21},   {"u_aa_b", 22},   {"u_area", 23},       {"u_search", 24}, {"u_exposure_prev", 25}, {"u_lum", 26},
+            {"u_exposure", 27}, {"u_reference", 28}};
         for (const auto& [n, unit] : units)
             if (const GLint loc = glGetUniformLocation(p, n); loc >= 0) glUniform1i(loc, unit);
         if (const GLuint block = glGetUniformBlockIndex(p, "RemasterFrame"); block != GL_INVALID_INDEX) glUniformBlockBinding(p, block, 0);
@@ -598,13 +744,22 @@ private:
         auto u = [&](const char* n) { return glGetUniformLocation(pbr_.program, n); };
         pbr_ = {pbr_.program, u("u_model"), u("u_normal_matrix"), u("u_no_fog"), u("u_pass"), u("u_tint"), u("u_alpha_cutoff"), u("u_unlit"),
                 u("u_has_layer2"), u("u_has_lightmap"), u("u_bump_scale"), u("u_maps"), u("u_class"), u("u_blend"), u("u_diffuse"),
-                u("u_vertex_diffuse"), u("u_light_count"), u("u_light_pos_range"), u("u_light_color"), u("u_light_att")};
+                u("u_vertex_diffuse"), u("u_light_count"), u("u_light_pos_range"), u("u_light_color"), u("u_light_att"), u("u_prev_model"),
+                u("u_prev_pose"), u("u_a2c")};
         prog_ssao_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ssao, false);
         prog_ao_apply_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_ao_apply, false);
-        prog_composite_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_composite, false);
+        const std::string fog = gl_shaders::post_fog;
+        prog_composite_ = link_remaster(gl_shaders::post_vert, (fog + gl_shaders::post_composite).c_str(), false);
+        prog_exposure_[0] = link_remaster(gl_shaders::post_vert, (fog + gl_shaders::post_exposure_lum).c_str(), false);
+        prog_exposure_[1] = link_remaster(gl_shaders::post_vert, gl_shaders::post_exposure_adapt, false);
         prog_taa_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_taa, false);
         prog_easu_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_easu, false);
         prog_rcas_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_rcas, false);
+        prog_fxaa_ = link_remaster(gl_shaders::post_vert, gl_shaders::post_fxaa, false);
+        const std::string smaa = std::string(gl_shaders::smaa_config) + gl_shaders::SMAA;
+        prog_smaa_[0] = link_remaster(gl_shaders::post_vert, (smaa + gl_shaders::post_smaa_edges).c_str(), false);
+        prog_smaa_[1] = link_remaster(gl_shaders::post_vert, (smaa + gl_shaders::post_smaa_weights).c_str(), false);
+        prog_smaa_[2] = link_remaster(gl_shaders::post_vert, (smaa + gl_shaders::post_smaa_blend).c_str(), false);
         glGenBuffers(1, &ubo_);
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
         glBufferData(GL_UNIFORM_BUFFER, sizeof(RemasterFrame), nullptr, GL_DYNAMIC_DRAW);
@@ -642,34 +797,160 @@ private:
 
     void ensure_remaster_targets(glm::ivec2 scene, glm::ivec2 output) {
         RemasterTargets& t = rt_;
-        if (t.scene == scene && t.output == output && t.hdr) return;
+        if (t.scene == scene && t.output == output && t.samples == gfx_.msaa && t.hdr) return;
         destroy_remaster_targets();
         t.scene = scene;
         t.output = output;
+        t.samples = gfx_.msaa;
         t.hdr = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_LINEAR);
         t.ambient = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, scene, GL_NEAREST);
         t.depth = make_texture(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, scene, GL_NEAREST);
         t.ao = make_texture(GL_R8, GL_RED, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
         t.ldr = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
         for (GLuint& h : t.hist) h = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
-        t.easu = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, output, GL_LINEAR);
-        t.fbo_opaque = make_fbo({t.hdr, t.ambient}, t.depth);
-        t.fbo_trans = make_fbo({t.hdr}, t.depth);
+        t.velocity = make_texture(GL_RG16F, GL_RG, GL_HALF_FLOAT, scene, GL_NEAREST);
+        t.reference = make_texture(GL_R16F, GL_RED, GL_HALF_FLOAT, scene, GL_NEAREST);
+        t.lum = make_texture(GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, {64, 32}, GL_NEAREST);
+        t.fbo_lum = make_fbo({t.lum}, 0);
+        for (int i = 0; i < 2; ++i) {
+            t.exposure[i] = make_texture(GL_R32F, GL_RED, GL_FLOAT, {1, 1}, GL_NEAREST);
+            t.fbo_exposure[i] = make_fbo({t.exposure[i]}, 0);
+        }
+        t.fbo_opaque = make_fbo({t.hdr, t.ambient, t.velocity, t.reference}, t.depth);
+        // Draw buffers set per draw: o_motion (location 2) -> attachment 1, o_reference (location 3) -> attachment 2.
+        t.fbo_trans = make_fbo({t.hdr, t.velocity, t.reference}, t.depth);
         t.fbo_hdr = make_fbo({t.hdr}, 0);
         t.fbo_ao = make_fbo({t.ao}, 0);
         t.fbo_ldr = make_fbo({t.ldr}, 0);
         for (int i = 0; i < 2; ++i) t.fbo_hist[i] = make_fbo({t.hist[i]}, 0);
-        t.fbo_easu = make_fbo({t.easu}, 0);
+        if (t.samples > 1) {
+            const auto rb = [&](GLenum format) {
+                GLuint r = 0;
+                glGenRenderbuffers(1, &r);
+                glBindRenderbuffer(GL_RENDERBUFFER, r);
+                glRenderbufferStorageMultisample(GL_RENDERBUFFER, t.samples, format, scene.x, scene.y);
+                return r;
+            };
+            t.ms_hdr = rb(GL_RGBA16F);
+            t.ms_ambient = rb(GL_RGBA16F);
+            t.ms_velocity = rb(GL_RG16F);
+            t.ms_reference = rb(GL_R16F);
+            t.ms_depth = rb(GL_DEPTH24_STENCIL8);
+            t.fbo_opaque_ms = make_rb_fbo({t.ms_hdr, t.ms_ambient, t.ms_velocity, t.ms_reference}, t.ms_depth);
+            t.fbo_trans_ms = make_rb_fbo({t.ms_hdr, t.ms_velocity, t.ms_reference}, t.ms_depth);
+            t.fbo_hdr_ms = make_rb_fbo({t.ms_hdr}, 0);
+            t.fbo_ambient = make_fbo({t.ambient}, 0);
+            t.fbo_velocity = make_fbo({t.velocity}, 0);
+            t.fbo_reference = make_fbo({t.reference}, 0);
+        }
         history_.valid = false;
+    }
+
+    static GLuint make_rb_fbo(std::initializer_list<GLuint> colors, GLuint depth) {
+        GLuint f = 0;
+        glGenFramebuffers(1, &f);
+        glBindFramebuffer(GL_FRAMEBUFFER, f);
+        GLenum bufs[4] = {GL_NONE, GL_NONE, GL_NONE, GL_NONE};
+        GLsizei n = 0;
+        for (GLuint c : colors) {
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + n, GL_RENDERBUFFER, c);
+            bufs[n] = GL_COLOR_ATTACHMENT0 + n;
+            ++n;
+        }
+        if (depth) glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+        glDrawBuffers(n, bufs);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) throw std::runtime_error("GL MSAA remaster framebuffer incomplete");
+        return f;
+    }
+
+    // MSAA resolve: colour attachment `index` of the multisampled `from` into the single-attachment `to` (average), or depth.
+    void resolve(GLuint from, int index, GLuint to, glm::ivec2 size) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, from);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, to);
+        if (index >= 0) glReadBuffer(GL_COLOR_ATTACHMENT0 + GLenum(index));
+        glBlitFramebuffer(0, 0, size.x, size.y, 0, 0, size.x, size.y, index >= 0 ? GL_COLOR_BUFFER_BIT : GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
     }
 
     void destroy_remaster_targets() {
         RemasterTargets& t = rt_;
-        for (GLuint f : {t.fbo_opaque, t.fbo_trans, t.fbo_hdr, t.fbo_ao, t.fbo_ldr, t.fbo_hist[0], t.fbo_hist[1], t.fbo_easu})
+        for (GLuint f : {t.fbo_opaque, t.fbo_trans, t.fbo_hdr, t.fbo_ao, t.fbo_ldr, t.fbo_hist[0], t.fbo_hist[1], t.fbo_opaque_ms, t.fbo_trans_ms,
+                         t.fbo_hdr_ms, t.fbo_ambient, t.fbo_velocity, t.fbo_reference, t.fbo_lum, t.fbo_exposure[0], t.fbo_exposure[1]})
             if (f) glDeleteFramebuffers(1, &f);
-        for (GLuint x : {t.hdr, t.ambient, t.depth, t.ao, t.ldr, t.hist[0], t.hist[1], t.easu})
+        for (GLuint r : {t.ms_hdr, t.ms_ambient, t.ms_velocity, t.ms_reference, t.ms_depth})
+            if (r) glDeleteRenderbuffers(1, &r);
+        for (GLuint x : {t.hdr, t.ambient, t.depth, t.ao, t.ldr, t.hist[0], t.hist[1], t.velocity, t.reference, t.lum, t.exposure[0], t.exposure[1]})
             if (x) glDeleteTextures(1, &x);
         t = {};
+    }
+
+    void ensure_post_targets(glm::ivec2 scene, glm::ivec2 output) {
+        PostTargets& t = pt_;
+        if (t.scene == scene && t.output == output && t.out) return;
+        destroy_post_targets();
+        t.scene = scene;
+        t.output = output;
+        t.edges = make_texture(GL_RG8, GL_RG, GL_UNSIGNED_BYTE, scene, GL_LINEAR);  // SMAA samples edges bilinearly
+        t.weights = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
+        t.out = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, scene, GL_LINEAR);
+        t.easu = make_texture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, output, GL_LINEAR);
+        t.fbo_edges = make_fbo({t.edges}, 0);
+        t.fbo_weights = make_fbo({t.weights}, 0);
+        t.fbo_out = make_fbo({t.out}, 0);
+        t.fbo_easu = make_fbo({t.easu}, 0);
+    }
+
+    void destroy_post_targets() {
+        PostTargets& t = pt_;
+        for (GLuint f : {t.fbo_edges, t.fbo_weights, t.fbo_out, t.fbo_easu})
+            if (f) glDeleteFramebuffers(1, &f);
+        for (GLuint x : {t.edges, t.weights, t.out, t.easu})
+            if (x) glDeleteTextures(1, &x);
+        t = {};
+    }
+
+    // Shared tail of both paths: src (scene size, encoded LDR) -> [FXAA | SMAA] -> [EASU] -> RCAS/copy/downsample
+    // into the viewport `vp` of the display target. Expects the frame block bound and GL_FRAMEBUFFER_SRGB off.
+    void finish_post(GLuint src, glm::ivec2 scene, glm::ivec2 output, glm::ivec4 vp) {
+        ensure_post_targets(scene, output);
+        if (gfx_.aa == AntiAliasing::Fxaa) {
+            bind_unit(15, src);
+            fullscreen(prog_fxaa_, pt_.fbo_out, scene);
+            src = pt_.out;
+        } else if (gfx_.aa == AntiAliasing::Smaa) {
+            if (!smaa_area_) {
+                smaa_area_ = create_texture(smaa_area_texture());
+                smaa_search_ = create_texture(smaa_search_texture());
+            }
+            bind_unit(15, src);
+            glBindFramebuffer(GL_FRAMEBUFFER, pt_.fbo_edges);
+            const glm::vec4 zero(0.0f);
+            glClearBufferfv(GL_COLOR, 0, glm::value_ptr(zero));  // the edge pass discards edge-free pixels
+            fullscreen(prog_smaa_[0], pt_.fbo_edges, scene);
+            bind_unit(21, pt_.edges);
+            bind_unit(23, texture(smaa_area_));
+            bind_unit(24, texture(smaa_search_));
+            fullscreen(prog_smaa_[1], pt_.fbo_weights, scene);
+            bind_unit(22, pt_.weights);
+            fullscreen(prog_smaa_[2], pt_.fbo_out, scene);
+            for (int unit : {21, 22, 23, 24}) bind_unit(unit, 0);
+            src = pt_.out;
+        }
+        if (gfx_.upscale == Upscaler::Fsr1 && scene.x < output.x) {
+            bind_unit(17, src);
+            fullscreen(prog_easu_, pt_.fbo_easu, output);
+            src = pt_.easu;
+        }
+        bind_unit(19, src);
+        for (int unit : {17, 16, 15, 13}) bind_unit(unit, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        const GLint y = target_size_.y - vp.y - vp.w;  // top-left origin -> GL bottom-left
+        glViewport(vp.x, y, vp.z, vp.w);
+        glUseProgram(prog_rcas_);
+        glBindVertexArray(fill_vao_);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        bind_unit(19, 0);
+        glActiveTexture(GL_TEXTURE0);
     }
 
     void ensure_shadow_map() {
@@ -689,8 +970,11 @@ private:
 
     void destroy_remaster() {
         destroy_remaster_targets();
+        destroy_post_targets();
+        destroy_original_target();
         destroy_shadow_map();
-        for (GLuint p : {pbr_.program, prog_ssao_, prog_ao_apply_, prog_composite_, prog_taa_, prog_easu_, prog_rcas_})
+        for (GLuint p : {pbr_.program, prog_ssao_, prog_ao_apply_, prog_composite_, prog_exposure_[0], prog_exposure_[1], prog_taa_, prog_easu_,
+                         prog_rcas_, prog_fxaa_, prog_smaa_[0], prog_smaa_[1], prog_smaa_[2]})
             if (p) glDeleteProgram(p);
         if (ubo_) glDeleteBuffers(1, &ubo_);
     }
@@ -729,6 +1013,8 @@ private:
         const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(d.model)));
         glUniformMatrix3fv(pbr_.normal_matrix, 1, GL_FALSE, glm::value_ptr(nm));
         glUniform1i(pbr_.pass, pass);
+        glUniformMatrix4fv(pbr_.prev_model, 1, GL_FALSE, glm::value_ptr(prev_models_[std::size_t(&d - draws_base_)]));
+        glUniform1i(pbr_.prev_pose, m.prev_pose(frame_) ? 1 : 0);
         glUniform4fv(pbr_.tint, 1, glm::value_ptr(mat.tint));
         // Shadow pass: blended foliage casts through an alpha test at 0.5.
         const float cutoff = pass == 1 && mat.blend == BlendMode::AlphaBlend ? 0.5f : alpha_test_cutoff(mat);
@@ -797,6 +1083,8 @@ private:
         const Lighting& l = f.lighting;
         point_lights_ = l.point_lights;
         const RemasterFrame rf = build_remaster_frame(gfx_, f, scene, output, env_levels_, history_);
+        previous_models(f.draws, motion_, prev_models_);
+        draws_base_ = f.draws.data();
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof rf, &rf);
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo_);
@@ -825,12 +1113,18 @@ private:
         }
         bind_unit(8, shadow_tex_);
 
-        // Opaque + alpha-tested into HDR colour + ambient, stencil as the original (volumes fallback).
-        glBindFramebuffer(GL_FRAMEBUFFER, rt_.fbo_opaque);
+        // Opaque + alpha-tested into HDR colour + ambient, stencil as the original: the units' shadow volumes stay
+        // (Material::volume_caster); the shadow map adds the world's shadows.
+        const bool ms = rt_.samples > 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, ms ? rt_.fbo_opaque_ms : rt_.fbo_opaque);
         glViewport(0, 0, scene.x, scene.y);
         const glm::vec4 cc = l.clear_color, zero(0.0f);
         glClearBufferfv(GL_COLOR, 0, glm::value_ptr(cc));
         glClearBufferfv(GL_COLOR, 1, glm::value_ptr(zero));
+        glClearBufferfv(GL_COLOR, 2, glm::value_ptr(zero));
+        // Auto exposure reference: the background is the clear colour in both looks.
+        const glm::vec4 reference_clear(glm::dot(glm::vec3(cc), glm::vec3(0.299f, 0.587f, 0.114f)), 0.0f, 0.0f, 0.0f);
+        glClearBufferfv(GL_COLOR, 3, glm::value_ptr(reference_clear));
         glStencilMask(0xff);
         glClearStencil(0);
         glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -839,6 +1133,7 @@ private:
         glEnable(GL_STENCIL_TEST);
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
         int receive = -1;
+        bool a2c_on = false;  // alpha-tested draws into the MSAA target: alpha-to-coverage
         for (const DrawItem& d : f.draws) {
             const BlendMode b = d.material.blend;
             if (b == BlendMode::ShadowVolume) volumes_.push_back(&d);
@@ -846,12 +1141,23 @@ private:
             else {
                 if (int(d.material.receive_shadow) != receive)
                     receive = d.material.receive_shadow, glStencilFunc(GL_ALWAYS, receive ? 128 : 0, 0xff);
+                if (const bool a2c = ms && b == BlendMode::AlphaTest; a2c != a2c_on) {
+                    a2c_on = a2c;
+                    if (a2c) glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    else glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+                    glUniform1i(pbr_.a2c, a2c ? 1 : 0);
+                }
                 draw_pbr(d, 0);
             }
         }
-        if (!shadow_tex_ && !volumes_.empty() && l.shadow_color.a > 0.0f) {
-            const GLenum first_only[2] = {GL_COLOR_ATTACHMENT0, GL_NONE};
-            glDrawBuffers(2, first_only);
+        if (a2c_on) {
+            glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
+            glUniform1i(pbr_.a2c, 0);
+        }
+        if (!volumes_.empty() && l.shadow_color.a > 0.0f) {
+            // Colour, ambient and reference only (the fill darkens them alike: shadow_fill_frag.glsl), never the motion target.
+            const GLenum shaded[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_NONE, GL_COLOR_ATTACHMENT3};
+            glDrawBuffers(4, shaded);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
             glDepthMask(GL_FALSE);
             glStencilFunc(GL_ALWAYS, 0, 0xff);
@@ -872,12 +1178,16 @@ private:
             glDrawArrays(GL_TRIANGLES, 0, 3);
             glDisable(GL_BLEND);
             glEnable(GL_DEPTH_TEST);
-            const GLenum both[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-            glDrawBuffers(2, both);
+            const GLenum all[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
+            glDrawBuffers(4, all);
         }
         glDisable(GL_STENCIL_TEST);
         glDisable(GL_CULL_FACE);
         glDisable(GL_DEPTH_TEST);
+        if (ms) {  // SSAO and the AO apply read single-sample depth and ambient
+            resolve(rt_.fbo_opaque_ms, -1, rt_.fbo_opaque, scene);
+            resolve(rt_.fbo_opaque_ms, 1, rt_.fbo_ambient, scene);
+        }
 
         if (gfx_.ssao) {
             bind_unit(13, rt_.depth);
@@ -887,14 +1197,14 @@ private:
             glEnable(GL_BLEND);
             glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
             glBlendFunc(GL_ONE, GL_ONE);
-            fullscreen(prog_ao_apply_, rt_.fbo_hdr, scene);
+            fullscreen(prog_ao_apply_, ms ? rt_.fbo_hdr_ms : rt_.fbo_hdr, scene);
             glBlendEquation(GL_FUNC_ADD);
             glDisable(GL_BLEND);
             bind_unit(13, 0);
         }
 
         // Translucent back to front (same order as the Original path), depth writes only for depth_write blends.
-        glBindFramebuffer(GL_FRAMEBUFFER, rt_.fbo_trans);
+        glBindFramebuffer(GL_FRAMEBUFFER, ms ? rt_.fbo_trans_ms : rt_.fbo_trans);
         glViewport(0, 0, scene.x, scene.y);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
@@ -904,7 +1214,14 @@ private:
             const glm::vec3 pa(a->model[3]), pb(b->model[3]);
             return glm::dot(pa - cam, pa - cam) > glm::dot(pb - cam, pb - cam);
         });
+        // Depth-writing blends (alpha-tested hair, ...) also write their motion: o_motion (location 2) -> attachment 1; every
+        // draw blends its auto exposure reference (location 3) -> attachment 2.
+        const GLenum color_only[4] = {GL_COLOR_ATTACHMENT0, GL_NONE, GL_NONE, GL_COLOR_ATTACHMENT2},
+                     with_motion[4] = {GL_COLOR_ATTACHMENT0, GL_NONE, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+        int motion = -1;
         for (const DrawItem* d : blended_) {
+            if (int(d->material.depth_write) != motion)
+                motion = d->material.depth_write, glDrawBuffers(4, motion ? with_motion : color_only);
             glDepthMask(d->material.depth_write ? GL_TRUE : GL_FALSE);
             glBlendFunc(GL_SRC_ALPHA, d->material.blend == BlendMode::Additive ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
             draw_pbr(*d, 0);
@@ -913,39 +1230,45 @@ private:
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE);
+        if (ms) {  // composite (colour, fog depth), TAA (motion) and the auto exposure (reference) read single-sample images
+            glDrawBuffers(4, color_only);
+            resolve(rt_.fbo_trans_ms, 0, rt_.fbo_hdr, scene);
+            resolve(rt_.fbo_trans_ms, 1, rt_.fbo_velocity, scene);
+            resolve(rt_.fbo_trans_ms, 2, rt_.fbo_reference, scene);
+            resolve(rt_.fbo_trans_ms, -1, rt_.fbo_trans, scene);
+        }
 
-        // Post chain.
+        // Auto exposure: the scene with its volumetric fog measured against the Original-look reference, the 1x1 state
+        // adapted on the GPU (post_exposure_lum/adapt.glsl); the composite reads it.
+        const int ew = int(history_.frame & 1u);
         bind_unit(11, rt_.hdr);
         bind_unit(13, rt_.depth);
+        bind_unit(25, rt_.exposure[1 - ew]);
+        bind_unit(28, rt_.reference);
+        fullscreen(prog_exposure_[0], rt_.fbo_lum, {64, 32});
+        bind_unit(26, rt_.lum);
+        fullscreen(prog_exposure_[1], rt_.fbo_exposure[ew], {1, 1});
+        bind_unit(27, rt_.exposure[ew]);
+
+        // Post chain.
         fullscreen(prog_composite_, rt_.fbo_ldr, scene);
         GLuint src = rt_.ldr;
         if (gfx_.aa == AntiAliasing::Taa) {
             const int w = int(history_.frame & 1u), r = 1 - w;
             bind_unit(15, rt_.ldr);
             bind_unit(16, rt_.hist[r]);
+            bind_unit(20, rt_.velocity);
             fullscreen(prog_taa_, rt_.fbo_hist[w], scene);
             src = rt_.hist[w];
         }
-        if (gfx_.upscale == Upscaler::Fsr1 && scene != output) {
-            bind_unit(17, src);
-            fullscreen(prog_easu_, rt_.fbo_easu, output);
-            src = rt_.easu;
-        }
-        bind_unit(19, src);
-        for (int unit : {17, 16, 15, 13}) bind_unit(unit, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-        const GLint y = target_size_.y - vp.y - vp.w;  // top-left origin -> GL bottom-left
-        glViewport(vp.x, y, vp.z, vp.w);
-        glUseProgram(prog_rcas_);
-        glBindVertexArray(fill_vao_);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        bind_unit(19, 0);
-        glActiveTexture(GL_TEXTURE0);
+        for (int unit : {20, 25, 26, 27, 28}) bind_unit(unit, 0);
+        finish_post(src, scene, output, vp);
         glEnable(GL_FRAMEBUFFER_SRGB);
     }
 
+    // Units cast their original stencil volumes instead (Material::volume_caster).
     static bool casts_sun_shadow(const Material& m) {
-        return !m.unlit && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m);
+        return !m.unlit && !m.volume_caster && m.blend != BlendMode::ShadowVolume && m.blend != BlendMode::Additive && !is_terrain(m);
     }
 
     // Optional GPU timing of the scene (JOA_GPU_TIMING=1): timestamp pair around draw_scene*, read one frame late.
@@ -986,12 +1309,21 @@ private:
     std::unordered_map<std::uint32_t, MaterialMaps> material_maps_;  // by albedo texture id
     PbrProgram pbr_{};
     GLuint prog_ssao_ = 0, prog_ao_apply_ = 0, prog_composite_ = 0, prog_taa_ = 0, prog_easu_ = 0, prog_rcas_ = 0, ubo_ = 0;
+    GLuint prog_exposure_[2]{};  // post_exposure_lum, post_exposure_adapt
+    GLuint prog_fxaa_ = 0, prog_smaa_[3]{};
     RemasterTargets rt_{};
+    PostTargets pt_{};
+    OriginalTarget ot_{};
+    TextureHandle smaa_area_{}, smaa_search_{};
     GLuint shadow_tex_ = 0, shadow_fbo_ = 0;
     TextureHandle env_radiance_{}, env_irradiance_{};
     std::uint64_t env_key_ = 0;
     int env_levels_ = 1;
     RemasterHistory history_{};
+    MotionHistory motion_;
+    std::vector<glm::mat4> prev_models_;  // per FrameData::draws index, of the frame being drawn
+    const DrawItem* draws_base_ = nullptr;
+    std::uint64_t frame_ = 0;  // submits so far: Mesh::updated
     struct {
         bool enabled = std::getenv("JOA_GPU_TIMING") != nullptr;
         bool pending = false;

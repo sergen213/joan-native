@@ -203,42 +203,99 @@ water Reflection = High, weather, combat particle features (orbits, SMO particle
 ## Remaster (Enhanced / Ultra presets)
 
 `[renderer] preset=original|enhanced|ultra|custom` + `[graphics]` keys (docs/LAUNCHER.md), CLI `--preset`,
-`--graphics k=v,...` (implies custom), `--hd-packs` ([HD_ASSETS.md](HD_ASSETS.md)). `src/engine/preset.*` resolves
+`--graphics k=v,...` (look keys imply custom; image-quality keys do not), `--hd-packs` ([HD_ASSETS.md](HD_ASSETS.md)). `src/engine/preset.*` resolves
 them into `GraphicsSettings`; the app calls `IRenderer::set_graphics()` after creating the backend (may be called
 again between frames). Without a settings file the engine runs **Original**.
 
 - **Original** = the faithful D3D8-emulating path, untouched: verified byte-identical to the pre-remaster build
   (S1L1 1920×1080 and the demo frame, GL and Vulkan: `work/remaster/baseline` vs current), and
   `engine.gl_remaster` / `engine.vk_remaster` check Original stays bit-identical after Enhanced/Ultra frames.
+- **Image-quality keys work with every preset** (section below): `aa`, `msaa`, `anisotropy`, `render_scale`, `upscale`,
+  `sharpness` are applied on top of any preset (Original included) and never switch the renderer to the remaster path;
+  the remaster path runs only for the look keys (`pbr`, `normal_maps`, `ibl`, `hdr`, `shadow_map_size`, `ssao`,
+  `volumetric_fog`, `particle_lighting`: `GraphicsSettings::remastered()`), which apply only with `custom`.
 - **Enhanced / Ultra** (Custom = Enhanced + keys). Every feature has its own key:
 
 | Feature | Key | Enhanced | Ultra | Implementation |
 |---|---|---|---|---|
 | PBR metallic-roughness | `pbr` | on | on | `shaders/common/pbr_shade.glsl`: per-pixel D3D8 light sum kept as the reference brightness (ambient part × sky irradiance shape × AO, direct part × shadow), GGX sun specular + prefiltered sky reflection on top. Legacy conversion by `MaterialClass` + albedo: only unsaturated bright (steel) / saturated yellow (gilding) texels of characters (≤0.55) and carried items (≤0.75) become metallic; terrain 0.95, buildings 0.88 roughness |
 | Normal maps | `normal_maps` | on | on | HD pack `_n` maps, screen-space cotangent frame (no vertex tangents) |
-| IBL | `ibl` | on | on | `pbr_env.cpp`: 64×32 equirect sky (sky_dome gradient + lit ground) with 7 GGX-prefiltered mips + 32×16 irradiance normalised to the up normal (terrain keeps its Original ambient); rebuilt when the lighting changes |
-| HDR + tone map | `hdr`, `exposure` | 0.85 | 0.85 | RGBA16F scene, Narkowicz ACES fit, sRGB encode |
-| Sun shadows | `shadow_map_size`, `shadow_softness`, `shadow_distance` | 2048, 1.5 texel, 2500 | 4096, 2.5, 4000 | replaces the stencil volumes (0 = volumes, also in the HDR path); casters = lit opaque/alpha-test/blended (alpha 0.5) draws except terrain; texel-snapped bounding-sphere ortho, slope bias + normal offset, 12-tap rotated Poisson PCF on hardware compare; vegetation receives at 50 % |
+| IBL | `ibl` | on | on | `pbr_env.cpp`: 64×32 equirect sky (sky_dome gradient + lit ground) with 7 GGX-prefiltered mips + 32×16 irradiance normalised to the up normal (terrain keeps its Original ambient); rebuilt when the lighting changes. Sky/RT reflection weight = metal fraction on legacy textures (1 with an HD roughness map): the 4 % Fresnel sheen on every legacy dielectric lifted dark texels towards the sky and cost characters ~30 % local contrast (Joan crop Laplacian variance 0.69–0.72× Original → 0.96–1.15×, 1080p/4K, 1 tick and 240 fps pacing) |
+| HDR + tone map | `hdr`, `exposure` | 0.85 | 0.85 | RGBA16F scene, auto exposure, Narkowicz ACES fit, sRGB encode. Auto exposure tracks the Original look's displayed brightness: every mesh/fill draw also writes the pixel as the Original would light it (D3D8 light sum, Original fog, no shadow map/AO/specular; unlit = its colour) as linear luma into an R16F reference MRT (location 3), blended like the colour (translucent draws and the units' shadow fill included, cleared to the clear colour). After the translucent pass `post_exposure_lum.glsl` takes 4×4 samples per cell of a 64×32 target: mean displayed luma (sRGB of the luma after the volumetric fog, exposure, ACES) of the scene at e/2, e, 2e and of the reference; `post_exposure_adapt.glsl` (1×1 R32F, ping-pong) averages the 2048 cells, interpolates log-log to the exposure where both match, clamps to 0.5–4× `exposure` and approaches it with a 0.5 s time constant (`FrameData::dt`), snapping without history (first frame, resize, settings change, camera jump ≥ 256 units). All on the GPU, no readback; the composite reads the state. Mean luma at 1080p, Original; Enhanced before → after; Ultra before → after (GL; Vulkan within 0.6): night (`JOA_WORLD_CLOCK=1450`) m1 run 33.2; 25.8 → 32.9; 26.1 → 33.2 — m7 run 48.7; 39.3 → 48.4; 39.3 → 48.4 — S4L1 church z=100 45.5; 26.3 → 44.7; 26.1 → 44.7 (Vulkan Ultra RT GI 18.7 → 45.1) — z=300 51.6; 34.9 → 50.9; → 51.2 — S1L1 day 66.1; 64.9 → 66.0; → 66.8. Joan crop sharpness Enhanced 0.97–1.09× Original (1 tick and 240 fps, GL and Vulkan). The 4× upper clamp is for RT GI interiors (2.5× left the church at −11 %) |
+| Sun shadows | `shadow_map_size`, `shadow_softness`, `shadow_distance` | 2048, 1.5 texel, 2500 | 4096, 2.5, 4000 | world shadows; the units keep the original stencil volumes / shadow models (`Material::volume_caster`, also with RT shadows: units are not in `kRtMaskShadow`) — at ~3 units/texel the map blurred unit shadows away and self-shadowed hair/armour in blotches. The fill darkens the HDR colour, the ambient MRT and the auto exposure reference alike (`shadow_fill_rm.frag`), so SSAO does not over-subtract inside unit shadows. Casters = lit opaque/alpha-test/blended (alpha 0.5) non-unit draws except terrain; texel-snapped bounding-sphere ortho, slope bias + normal offset (1.5 texels; the texel size comes from the length of the shadow matrix's x row — its `[0][0]` element alone collapsed for night suns, offsetting receivers by 100+ units: Vulkan shadowed, GL lit the whole m7 terrain), 12-tap rotated Poisson PCF on hardware compare; vegetation receives at 50 % |
 | SSAO | `ssao`, `ssao_radius`, `ssao_intensity` | 48 | 64 | 12 world-space samples from depth, applied only to the ambient/environment MRT (reverse-subtract pass, 3×3 depth-aware blur); not on foliage |
-| AA | `aa=taa` | none | TAA | Halton(2,3) jitter, depth reprojection with the jitter removed (static pixels read their own history texel), 5-tap Catmull-Rom history, YCoCg variance clip, mesh texture LOD bias −1. Off in Enhanced: without per-object motion vectors the always-animating characters/grass/foliage smeared (S1L1 Laplacian variance 0.09× Original); IGN noise is then static instead of per-frame |
+| AA | `aa`, `msaa` | 4× MSAA | TAA | Halton(2,3) jitter; per-pixel motion vectors (RG16F MRT of the opaque and depth-writing blended mesh draws: previous minus current uv, both unjittered; previous model matrix per draw matched by mesh/index range/`DrawItem::object`/occurrence in `post_frame.cpp previous_models`, previous CPU-skinned pose kept by `update_mesh` as a second vertex stream; new or >256-unit jumps = camera-only), taken from the nearest-depth texel of the 3×3 neighbourhood; cleared background reprojects the far plane; 5-tap Catmull-Rom history, YCoCg variance clip (mean ± 1.25 σ), 10 % new sample rising to 30 % with the sub-pixel part (full at ¼ px) or speed (full at 8 px) of the motion; mesh texture LOD bias −1. Camera-only reprojection doubled the running hero and left her greaves semi-transparent; now opaque and single at 30 and 240 fps pacing (GL and Vulkan) |
 | Volumetric fog | `volumetric_fog`, `fog_density` | 12 steps | 24 steps | height fog below the camera with shadow-mapped HG(0.55) sun in-scattering, on top of the original linear fog |
 | Particle lighting | `particle_lighting` | on | on | alpha-blended smoke lit by ambient + shadowed sun; additive fire ×1.6 HDR |
-| Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0 | off, 1.0, 0.3 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX); set `sharpness` (~0.3) with `aa=taa` |
+| Upscaling | `upscale=fsr1`, `render_scale`, `sharpness` | off, 1.0, 0 | off, 1.0, 1.0 | FSR1 EASU (12-tap, texelFetch port) + RCAS (MIT, AMD FidelityFX). Ultra RCAS 1.0 after TAA: a converged TAA image is ~0.5× the no-AA Laplacian variance (demo static view 0.49–0.59×); at 1.0 the running Joan crop (`work/gfxbug/run.txt` shots 130/160/185, 1080p, torso) is 1.07/0.90/1.11× (GL) and 1.07/0.92/1.13× (Vulkan) the `aa=none` frame at the old 0.3, 1.18/0.94/1.18× at 240 fps pacing; motion-vector TAA at 0.3 gives 0.33/0.32/0.45×, the old camera-only TAA 0.17/0.21/0.19× |
+
+`auto_exposure=false` (any remaster preset, like `sharpness`) pins the exposure to `exposure` — A/B comparisons and
+`engine.vk_rt_smoke` use it so a feature's local change is not rescaled by the brightness tracking.
 
 Passes (both backends, same shader bodies in `shaders/common/`, same CPU constants from `post_frame.cpp`): shadow map →
-opaque (HDR colour + ambient MRT, depth-stencil) [→ stencil volumes + fill when shadow maps are off] → SSAO → AO apply →
-translucent → composite (volumetric fog, exposure, ACES) → TAA → EASU → RCAS/copy into the display target → UI.
+opaque (HDR colour + ambient + motion + auto exposure reference MRTs, depth-stencil; multisampled with `msaa`, then depth +
+ambient resolved) [→ stencil volumes + fill when shadow maps are off] → SSAO → AO apply → translucent (resolves HDR, motion,
+reference, depth) → auto exposure measure (64×32) + adapt (1×1) → composite (volumetric fog `post_fog.glsl`, exposure,
+ACES) → TAA | FXAA | SMAA → EASU → RCAS/copy/downsample into the display target → UI.
 GL: units = Vulkan set-2 binding + 7, block binding 0 (`shaders/gl/remaster_prelude.glsl`). Vulkan: set 2 (frame
 block, textures, per-draw `MaterialExtra` SSBO), separate depth-only shadow caster shader, `independentBlend` required.
 
-Tests: `engine.preset` (names, ini/CLI keys, custom semantics, jitter/LOD bias/noise index, shadow texel snapping),
+Tests: `engine.preset` (names, ini/CLI keys, custom semantics, image-quality keys on every preset incl. Original + `taa` →
+`smaa`, `--graphics` quality keys not implying custom, supersampling scene size, jitter/LOD bias/noise index, shadow texel snapping),
 `engine.gl_remaster` (Original bit-identical incl. after toggling; Enhanced/Ultra/FSR1 sane and within ±25 % mean luma
 of Original; TAA static-view sharpness; blend-state-1 layer/halo pixels for Original/Enhanced/Ultra; S1L1 when data
 present, incl. Enhanced Laplacian variance ≥ 0.95× Original), `engine.vk_remaster` (GL vs Vulkan parity: Enhanced, Ultra
-(TAA), FSR1 67 %, S1L1 Enhanced; thresholds 40 dB / 1.0; layer pixels and S1L1 sharpness as GL; 0 validation errors),
+(TAA, RCAS pinned to 0.3: 1.0 amplifies sub-LSB API differences to 38.6 dB), FSR1 67 %, Original look with `msaa=4,aa=smaa` and
+with FXAA + `render_scale=2` + RCAS + 16× anisotropy (also: differs from plain Original), S1L1 Enhanced; thresholds 40 dB / 1.0; layer pixels and S1L1 sharpness as GL; 0 validation errors),
 `engine.hd_pack`, `tools.hd_upscale`.
 
-Remaster gaps: SMAA not implemented (TAA only, off in Enhanced); no soft particles (GL 3.3 cannot sample the attached
-depth); characters ghost and soften under TAA (Ultra / `aa=taa`: no per-object motion vectors, CPU skinning); GL GPU timing (`JOA_GPU_TIMING=1`)
+Remaster gaps: no soft particles (GL 3.3 cannot sample the attached
+depth); TAA motion vectors cover only the mesh passes (particles and non-depth-writing blends reproject with what lies behind them; the RT denoiser history is still camera-only); GL GPU timing (`JOA_GPU_TIMING=1`)
 uses timestamps that include driver submission bubbles; no bloom; the volumetric density is relative to the camera
 height (no absolute ground reference); the in-game options menu does not expose presets yet.
+
+### Image quality on every preset (`aa`, `msaa`, `anisotropy`, `render_scale`, `sharpness`)
+
+The original game offers none of these: `VSetting.exe` exposes only device, 1024×768×32/16, reflection and bump
+detail, and `CreateDevice` uses `MultiSampleType = 0` (reverse-engineering/ORIGINAL_BEHAVIOR.md, RENDERING_PIPELINE.md);
+D3D8 texture filtering was the driver default, which the native build has always replaced with 8× anisotropic. The keys
+below are therefore native additions, named like the remaster keys and resolved by `GraphicsConfig::resolve` for every
+preset (`quality_key()`); unset keys keep the preset's value. Original with all of them at their defaults (msaa 1, aa
+none, scale 1, sharpness 0) keeps the direct faithful path (bit-identical, `engine.gl_remaster` / `engine.vk_remaster`).
+
+| Key | Values | Original / Enhanced / Ultra | Implementation |
+|---|---|---|---|
+| `msaa` | 1, 2, 4, 8 | 1 / 4 / 1 | Original look: the unchanged Original passes render into a scene-size multisampled sRGB colour + D24S8 target, resolved (linear-space average) before post and UI. Remaster: HDR, ambient, motion and depth-stencil multisampled; after the opaque pass depth (sample 0) and ambient are resolved for SSAO, after the translucent pass HDR, motion (average) and depth. Alpha-tested draws use alpha-to-coverage (alpha sharpened by `fwidth` around the cutoff, `mesh_frag.glsl`/`mesh.frag`/`mesh_pbr*`), so foliage, grass cards and fences antialias too. Clamped to the device's supported counts; ignored (1×) on the Vulkan ray-traced path. Cost at 3840×2160 4×: ~0.3 GB (Original) / ~0.9 GB (remaster) extra VRAM |
+| `aa` | none, fxaa, smaa, taa | none / none / taa | Post passes on the tone-mapped (sRGB-encoded) LDR image at scene resolution, before EASU/RCAS and the UI. `fxaa`: FXAA 3.11 quality algorithm (`post_fxaa.glsl`, own implementation, 12-step search, subpix 0.75). `smaa`: SMAA 1x HIGH (luma edges, 16 + 8 diagonal search steps, corner rounding 25) from the unmodified MIT `third_party/smaa/SMAA.hlsl` + area/search lookup textures (`smaa_luts.cpp`), 3 passes. `taa` needs the PBR pass's motion vectors: on the Original look `resolve()` turns it into `smaa`. FXAA/SMAA soften texture detail too (S1L1 640×360 Laplacian variance 0.74× with SMAA), so Enhanced uses MSAA by default |
+| `anisotropy` | 1–16 | 8 / 8 / 8 | GL `GL_TEXTURE_MAX_ANISOTROPY` on mipmapped textures (updated in place when changed); Vulkan anisotropic samplers recreated and every mipmapped bindless slot rewritten |
+| `render_scale` | 0.5–2 | 1 / 1 / 1 | scene size = output × scale. < 1: EASU with `upscale=fsr1`, else bilinear. > 1 = supersampling: the final pass averages a 2×2 bilinear box per output pixel (exact 2×2 box at 2.0; RCAS then sharpens at output resolution) |
+| `sharpness` | 0–1 | 0 / 0 / 1.0 | RCAS in the final pass, usable without TAA |
+
+Original-look post path (`draw_scene_original_post` / `render_original_post`): the frame block of the remaster path is
+filled by `build_remaster_frame` (no jitter, no TAA), the scene goes through `draw_scene` unchanged into the scene target,
+and the shared post tail (`finish_post` / `post_tail`) runs AA → EASU → final into the viewport of the display target.
+Vulkan writes set 2 with valid dummies (white texture, 1×1 shadow map) for the remaster-only bindings; bindings 14–17 are
+the SMAA edges, weights, area and search textures (GL units 21–24).
+
+Measured (S1L1 cut scene, `--frames 40`, 1920×1080, soldier + sword crop 690,470–870,620; `work/gfxbug/AaOptions/`):
+
+| Image | strong 1-px steps (>48/255) | mean step height | Laplacian variance |
+|---|---|---|---|
+| Original (GL / Vulkan) | 2.42 % / 2.43 % | 89.2 / 89.1 | 2504 / 2505 |
+| Original `msaa=4,aa=smaa` | 1.85 % / 1.89 % | 65.9 / 65.5 | 1222 / 1229 |
+| Original `aa=fxaa` | 1.97 % / 1.97 % | 78.1 / 78.1 | 1306 / 1303 |
+| Original `render_scale=2` | 2.46 % / 2.47 % | 75.5 / 75.4 | 1999 / 1995 |
+
+Joan running (`work/gfxbug/run.txt` shot 130, crop 840,340–1080,760, `--preset original`, GL / Vulkan): plain 2.98 % /
+2.98 % strong steps, mean step 75.3 / 75.2; `msaa=4,aa=smaa` 1.95 % / 1.93 %, 64.9 / 65.7; `render_scale=2,sharpness=0.25`
+keeps more detail (Laplacian variance 1.18× plain) at mean step 67.5. `anisotropy=1` vs the default 8: ground strip
+(y 800–1000) mean |Δ| 2.1 and 9 % lower horizontal second-derivative variance (both APIs).
+
+GL vs Vulkan (whole frame): Original look `msaa=4,aa=smaa` mean |Δ| 0.17, `aa=fxaa` 0.05, `render_scale=2` 0.03 (8-bit);
+Enhanced 4× MSAA 46.8 dB, Enhanced SMAA 44.9 dB; `engine.vk_remaster` demo frames 49.5 dB (Original `msaa=4,aa=smaa`) and
+59.0 dB (Original FXAA + 2× supersampling + RCAS 0.5 + 16× anisotropy); 0 Vulkan validation errors.
+
+Dev: `JOA_CAPTURE_FPS=240` makes `--screenshot`/`--autoplay-script` runs advance 1/240 s per frame instead of one
+33 ms tick, so render interpolation runs as on a high-refresh display (scale script frame numbers by fps/30).
+`JOA_WORLD_CLOCK=<minutes>` picks the world's `.day` lighting stage (the port otherwise starts at 720 = noon), e.g.
+1450 = `Normal_Night`.

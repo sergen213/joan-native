@@ -44,14 +44,18 @@ std::vector<std::string> split_list(std::string_view v) {
 bool feature(GraphicsSettings& s, std::string_view k, std::string_view v) {
     int i = 0;
     const std::string l = lowered(v);
+    const auto integer = [&](int lo, int hi) {
+        const auto r = std::from_chars(v.data(), v.data() + v.size(), i);
+        return r.ec == std::errc{} && r.ptr == v.data() + v.size() && i >= lo && i <= hi;
+    };
     if (k == "pbr") return boolean(v, s.pbr);
     if (k == "normal_maps") return boolean(v, s.normal_maps);
     if (k == "ibl") return boolean(v, s.ibl);
     if (k == "hdr") return boolean(v, s.hdr);
     if (k == "exposure") return real(v, s.exposure, 0.05f, 16.0f);
+    if (k == "auto_exposure") return boolean(v, s.auto_exposure);
     if (k == "shadow_map_size") {
-        const auto r = std::from_chars(v.data(), v.data() + v.size(), i);
-        if (r.ec != std::errc{} || r.ptr != v.data() + v.size() || (i != 0 && i != 1024 && i != 2048 && i != 4096 && i != 8192)) return false;
+        if (!integer(0, 8192) || (i != 0 && i != 1024 && i != 2048 && i != 4096 && i != 8192)) return false;
         return s.shadow_map_size = i, true;
     }
     if (k == "shadow_softness") return real(v, s.shadow_softness, 0.0f, 8.0f);
@@ -61,9 +65,16 @@ bool feature(GraphicsSettings& s, std::string_view k, std::string_view v) {
     if (k == "ssao_intensity") return real(v, s.ssao_intensity, 0.0f, 4.0f);
     if (k == "aa") {
         if (l == "none" || l == "off") return s.aa = AntiAliasing::None, true;
+        if (l == "fxaa") return s.aa = AntiAliasing::Fxaa, true;
+        if (l == "smaa") return s.aa = AntiAliasing::Smaa, true;
         if (l == "taa") return s.aa = AntiAliasing::Taa, true;
         return false;
     }
+    if (k == "msaa") {
+        if (!integer(1, 8) || (i & (i - 1))) return false;  // 1, 2, 4, 8
+        return s.msaa = i, true;
+    }
+    if (k == "anisotropy") return integer(1, 16) && (s.anisotropy = i, true);
     if (k == "volumetric_fog") return boolean(v, s.volumetric_fog);
     if (k == "fog_density") return real(v, s.fog_density, 0.0f, 10.0f);
     if (k == "particle_lighting") return boolean(v, s.particle_lighting);
@@ -72,7 +83,7 @@ bool feature(GraphicsSettings& s, std::string_view k, std::string_view v) {
         if (l == "fsr1" || l == "fsr") return s.upscale = Upscaler::Fsr1, true;
         return false;
     }
-    if (k == "render_scale") return real(v, s.render_scale, 0.5f, 1.0f);
+    if (k == "render_scale") return real(v, s.render_scale, 0.5f, 2.0f);
     if (k == "sharpness") return real(v, s.sharpness, 0.0f, 1.0f);
     return false;
 }
@@ -103,8 +114,16 @@ bool rt_feature(RayTracingSettings& rt, std::string_view k, std::string_view v) 
 }  // namespace
 
 bool GraphicsSettings::remastered() const {
-    return pbr || normal_maps || ibl || hdr || shadow_map_size > 0 || ssao || aa != AntiAliasing::None || volumetric_fog ||
-           particle_lighting || upscale != Upscaler::None || render_scale < 1.0f || sharpness > 0.0f;
+    return pbr || normal_maps || ibl || hdr || shadow_map_size > 0 || ssao || volumetric_fog || particle_lighting;
+}
+
+bool GraphicsSettings::original_post() const {
+    return msaa > 1 || aa != AntiAliasing::None || render_scale != 1.0f || sharpness > 0.0f;
+}
+
+bool quality_key(std::string_view k) {
+    return k == "aa" || k == "msaa" || k == "anisotropy" || k == "render_scale" || k == "upscale" || k == "sharpness" ||
+           k == "auto_exposure";  // remaster only; a viewing preference like sharpness, so it overrides Enhanced/Ultra too
 }
 
 GraphicsSettings preset_settings(GraphicsPreset preset) {
@@ -112,15 +131,17 @@ GraphicsSettings preset_settings(GraphicsPreset preset) {
     s.preset = preset;
     if (preset == GraphicsPreset::Original) return s;
     s.pbr = s.normal_maps = s.ibl = s.hdr = true;
-    // ACES lifts mid-tones (0.2 -> 0.30); 0.85 keeps S1L1's mean luma near Original (measured +3%, docs).
+    // Auto exposure start; it tracks the Original's displayed mean luma within 0.5..4x of this (post_frame.cpp).
     s.exposure = 0.85f;
     s.shadow_map_size = 2048;
     s.shadow_softness = 1.5f;
     s.shadow_distance = 2500.0f;
     s.ssao = true;
-    // No TAA: it has no per-object motion vectors (CPU skinning), so the always-animating characters, grass and
-    // foliage smear; the native image keeps Original's sharpness. Ultra keeps TAA for its RT noise.
+    // No TAA (it smeared the always-animating characters, grass and foliage before per-object motion vectors) and no
+    // post AA (SMAA/FXAA also soften texture detail: S1L1 sharpness 0.74x at 640x360): 4x MSAA smooths geometry and,
+    // through alpha-to-coverage, alpha-tested foliage while textures keep Original's sharpness. Ultra keeps TAA.
     s.aa = AntiAliasing::None;
+    s.msaa = 4;
     s.volumetric_fog = true;
     s.fog_density = 1.0f;
     s.particle_lighting = true;
@@ -131,7 +152,10 @@ GraphicsSettings preset_settings(GraphicsPreset preset) {
         s.shadow_distance = 4000.0f;
         s.ssao_radius = 64.0f;
         s.aa = AntiAliasing::Taa;
-        s.sharpness = 0.3f;  // RCAS after TAA
+        s.msaa = 1;          // TAA resolves the edges
+        // RCAS after TAA: an accumulated, jittered image is ~0.5x as detailed as one sample; full strength brings the
+        // running hero back to ~0.9x the no-AA Laplacian variance (docs/GRAPHICS_ROADMAP.md AA row).
+        s.sharpness = 1.0f;
         s.rt.reflections = s.rt.shadows = s.rt.gi = true;  // used only on ray-query hardware (Vulkan)
     }
     return s;
@@ -177,9 +201,11 @@ std::string GraphicsConfig::apply(std::string_view key, std::string_view value) 
 GraphicsSettings GraphicsConfig::resolve(std::string* error) const {
     GraphicsSettings s = preset_settings(preset == GraphicsPreset::Custom ? GraphicsPreset::Enhanced : preset);
     s.preset = preset;
-    if (preset == GraphicsPreset::Custom)
-        for (const auto& [k, v] : keys)
-            if (!feature(s, k, v) && error && error->empty()) *error = "settings: bad graphics." + k;
+    for (const auto& [k, v] : keys)
+        if ((preset == GraphicsPreset::Custom || quality_key(k)) && !feature(s, k, v) && error && error->empty())
+            *error = "settings: bad graphics." + k;
+    // TAA reprojects with the PBR pass's motion vectors; the Original look has none (docs/GRAPHICS_ROADMAP.md).
+    if (s.aa == AntiAliasing::Taa && !s.remastered()) s.aa = AntiAliasing::Smaa;
     for (const auto& [k, v] : rt_keys) rt_feature(s.rt, k, v);  // validated by apply()
     s.hd_packs = hd_packs;
     return s;

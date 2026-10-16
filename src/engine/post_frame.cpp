@@ -17,7 +17,7 @@ float halton(std::uint32_t i, std::uint32_t base) {
 }  // namespace
 
 glm::ivec2 scene_size(const GraphicsSettings& g, glm::ivec2 output) {
-    const float s = std::clamp(g.render_scale, 0.5f, 1.0f);
+    const float s = std::clamp(g.render_scale, 0.5f, 2.0f);
     return glm::max(glm::ivec2(glm::round(glm::vec2(output) * s)), glm::ivec2(1));
 }
 
@@ -75,19 +75,52 @@ RemasterFrame build_remaster_frame(const GraphicsSettings& g, const FrameData& f
     const float noise_frame = taa || g.rt.any() ? float(h.frame % 64) : 0.0f;
     r.fog_range = glm::vec4(l.fog_start, l.fog_end, g.preset == GraphicsPreset::Ultra ? 24.0f : 12.0f, noise_frame);
     r.camera_pos = glm::vec4(f.view.camera_position, g.ssao ? 1.0f : 0.0f);
-    const float texel_world = shadows ? 2.0f / std::abs(r.shadow_matrix[0][0] * float(g.shadow_map_size)) : 0.0f;
+    // World size of a shadow texel from the length of the matrix's x row: [0][0] alone shrank towards 0 for suns whose
+    // light-space x axis lies off world x (night stages: normal offsets of 100+ units, Vulkan shadowed and GL lit all terrain).
+    const float row0 = glm::length(glm::vec3(r.shadow_matrix[0][0], r.shadow_matrix[1][0], r.shadow_matrix[2][0]));
+    const float texel_world = shadows ? 2.0f / (row0 * float(g.shadow_map_size)) : 0.0f;
     r.shadow_params = glm::vec4(shadows ? 1.0f / float(g.shadow_map_size) : 0.0f, g.shadow_softness, g.shadow_distance, texel_world * 1.5f);
     r.screen = glm::vec4(glm::vec2(scene), 1.0f / glm::vec2(scene));
     r.jitter = glm::vec4(jitter, taa && h.valid ? 1.0f : 0.0f, g.sharpness);
     r.flags = glm::vec4(g.pbr ? 1.0f : 0.0f, g.normal_maps ? 1.0f : 0.0f, g.particle_lighting ? 1.0f : 0.0f, g.hdr ? 1.0f : 0.0f);
     r.ssao = glm::vec4(g.ssao_radius, g.ssao_intensity, taa ? -1.0f : 0.0f, 3000.0f);
     r.env = glm::vec4(float(env_mips), f.view.projection[1][1], f.view.projection[0][0], float(output.x) / float(scene.x));
+    // Auto exposure (post_exposure_adapt.glsl): time constant 0.5 s; snaps to its target without history (first frame,
+    // resize, settings change) or on a camera cut, so short captures are deterministic; clamped to 0.5..4x the preset exposure
+    // (`auto_exposure=false`: clamped to exactly the preset exposure).
+    const float dt = f.dt > 0.0f ? f.dt : 1.0f / 30.0f, base = r.sun_color.w;
+    const bool snap = !h.valid || glm::distance(f.view.camera_position, h.camera) >= kMotionTeleport;
+    const float lo = g.auto_exposure ? 0.5f : 1.0f, hi = g.auto_exposure ? 4.0f : 1.0f;
+    r.exposure = glm::vec4(1.0f - std::exp(-dt / 0.5f), snap ? 1.0f : 0.0f, base * lo, base * hi);
 
     h.prev_view_proj = unjittered;
     h.size = scene;
+    h.camera = f.view.camera_position;
     h.valid = true;
     ++h.frame;
     return r;
+}
+
+std::size_t MotionHistory::Hash::operator()(const Key& k) const noexcept {
+    const std::uint64_t a = (std::uint64_t(k.mesh) << 32 | k.first) * 0x9E3779B97F4A7C15ull;
+    const std::uint64_t b = (std::uint64_t(k.object) << 32 | k.n) * 0xC2B2AE3D27D4EB4Full;
+    return std::size_t(a ^ (b + (a << 6) + (a >> 2)));
+}
+
+void previous_models(std::span<const DrawItem> draws, MotionHistory& h, std::vector<glm::mat4>& prev) {
+    prev.resize(draws.size());
+    h.next.clear();
+    h.counts.clear();
+    for (std::size_t i = 0; i < draws.size(); ++i) {
+        const DrawItem& d = draws[i];
+        MotionHistory::Key k{d.mesh.id, d.first_index, d.object, 0};
+        k.n = h.counts[k]++;
+        const auto it = h.models.find(k);
+        const bool known = it != h.models.end() && glm::distance(glm::vec3(it->second[3]), glm::vec3(d.model[3])) < kMotionTeleport;
+        prev[i] = known ? it->second : d.model;
+        h.next.emplace(k, d.model);
+    }
+    std::swap(h.models, h.next);
 }
 
 }  // namespace joa::engine

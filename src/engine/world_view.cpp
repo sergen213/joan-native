@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace joa::engine {
@@ -46,7 +47,9 @@ WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::M
         maps.push_back({n.name, {n.ox, n.oy}});
     const std::string& wf = mission.info().step.world_file;  // "scenario3\S3L1w"
     const std::string world = wf.substr(wf.find_last_of("\\/") + 1);
-    scene_ = std::make_unique<WorldScene>(*assets_, dir, maps, world);
+    // Dev: JOA_WORLD_CLOCK=1440 (minutes after midnight) picks another .day lighting stage, e.g. Normal_Night.
+    const char* clock = std::getenv("JOA_WORLD_CLOCK");
+    scene_ = std::make_unique<WorldScene>(*assets_, dir, maps, world, clock ? float(std::atof(clock)) : 720.0f);
     lighting_ = scene_->lighting();
     sky_ = std::make_unique<SkyDome>(*assets_, glm::convertSRGBToLinear(lighting_.fog_color), scene_->cloud_textures());
     // map/scenarioN -> DynGrass.res "_M<N>" variants.
@@ -327,7 +330,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         // counts to 1 point + 1 directional): the first light of their sector.
         const std::size_t first = draws.size();
         c.build(t, draws);
-        for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(at, 1, draws[i]);
+        for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(at, 1, draws[i]), draws[i].object = std::uint32_t(id) + 1;
         // Scene::draw_shadow actor loop 0x5f1cc0: a volume within 1000 units of the eye (mode 3: every
         // unit, mode 2: the player's hero), else the ShadowModel within 2000 (CONFIRMED thresholds).
         if (shadow_mode <= 0) continue;

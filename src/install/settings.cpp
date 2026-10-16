@@ -24,10 +24,15 @@ void boolean(bool& out, const std::string& v) {
     if (v == "true" || v == "1") out = true;
     else if (v == "false" || v == "0") out = false;
 }
-template <class T> void number(T& out, const std::string& v, T lo, T hi) {
+template <class T> bool number(T& out, const std::string& v, T lo, T hi) {
     T x{};
     const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), x);
-    if (ec == std::errc{} && end == v.data() + v.size() && x >= lo && x <= hi) out = x;
+    if (ec == std::errc{} && end == v.data() + v.size() && x >= lo && x <= hi) return out = x, true;
+    return false;
+}
+// Optional key kept as text: accepted when it parses into [lo, hi].
+template <class T> void ranged(std::string& out, const std::string& v, T lo, T hi) {
+    if (T x{}; number(x, v, lo, hi)) out = v;
 }
 } // namespace
 
@@ -48,6 +53,12 @@ Settings Settings::parse(const std::string& text) {
         else if (key == "raytracing.reflections") boolean(s.rt_reflections, v);
         else if (key == "raytracing.shadows") boolean(s.rt_shadows, v);
         else if (key == "raytracing.gi") boolean(s.rt_gi, v);
+        else if (key == "graphics.aa") pick(s.aa, v, {"none", "fxaa", "smaa", "taa"});
+        else if (key == "graphics.msaa") pick(s.msaa, v, {"1", "2", "4", "8"});
+        else if (key == "graphics.anisotropy") ranged(s.anisotropy, v, 1, 16);
+        else if (key == "graphics.render_scale") ranged(s.render_scale, v, 0.5, 2.0);
+        else if (key == "graphics.sharpness") ranged(s.sharpness, v, 0.0, 1.0);
+        else if (section == "graphics") s.graphics_extra += trim(line.substr(0, eq)) + "=" + v + "\n";
         else if (key == "display.width") number(s.width, v, 0, 16384);
         else if (key == "display.height") number(s.height, v, 0, 16384);
         else if (key == "display.aspect") pick(s.aspect, v, {"auto", "4:3", "16:9", "16:10", "21:9"});
@@ -75,6 +86,11 @@ std::string Settings::serialize() const {
     o << "# joan-native settings (schema: docs/LAUNCHER.md)\n"
       << "[renderer]\nbackend=" << backend << "\npreset=" << preset << "\n\n"
       << "[raytracing]\nreflections=" << b(rt_reflections) << "\nshadows=" << b(rt_shadows) << "\ngi=" << b(rt_gi) << "\n\n"
+      << "[graphics]\n";
+    for (const auto& [k, v] : {std::pair<const char*, const std::string&>{"aa", aa}, {"msaa", msaa}, {"anisotropy", anisotropy},
+                               {"render_scale", render_scale}, {"sharpness", sharpness}})
+        if (!v.empty()) o << k << "=" << v << "\n";
+    o << graphics_extra << "\n"
       << "[display]\nwidth=" << width << "\nheight=" << height << "\naspect=" << aspect << "\nmode=" << mode << "\n\n"
       << "[controller]\ndeadzone=" << deadzone << "\nsensitivity=" << sensitivity << "\n\n"
       << "[update]\nchannel=" << channel << "\n\n"

@@ -46,7 +46,7 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer RtF
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer RtUints { uint v[]; };
 
 const uint kRtMaskWorld = 0x01u, kRtMaskTerrain = 0x02u, kRtMaskCharacter = 0x04u, kRtMaskFoliage = 0x08u;  // rt_scene.hpp
-const uint kRtMaskShadow = kRtMaskWorld | kRtMaskCharacter | kRtMaskFoliage, kRtMaskProbe = kRtMaskWorld | kRtMaskTerrain | kRtMaskFoliage,
+const uint kRtMaskShadow = kRtMaskWorld | kRtMaskFoliage, kRtMaskProbe = kRtMaskWorld | kRtMaskTerrain | kRtMaskFoliage,
            kRtMaskAll = 0xffu;
 const int kProbeInactive = 1 << 30;
 

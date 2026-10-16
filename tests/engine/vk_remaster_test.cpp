@@ -1,8 +1,9 @@
 // Vulkan remaster presets: Original bit-identical after remastered frames; Enhanced / Ultra / FSR1 parity
-// with OpenGL (same shaders in shaders/common, same CPU constants in post_frame.cpp / pbr_env.cpp);
-// validation clean. Thresholds: PSNR >= 40 dB, mean abs diff <= 1.0 (8-bit RGB). RX 7900 XTX radeonsi vs
-// RADV measured: Enhanced 53.1 dB / 0.26, Ultra 52.4 / 0.30, FSR1 67% 51.6 / 0.32, S1L1 Enhanced 50.8 / 0.38
-// (no pixel off by > 32). The noise of PCF/SSAO/volumetric dither is identical in both (same IGN seed).
+// with OpenGL (same shaders in shaders/common, same CPU constants in post_frame.cpp / pbr_env.cpp); image-quality
+// keys on the Original look; validation clean. Thresholds: PSNR >= 40 dB, mean abs diff <= 1.0 (8-bit RGB).
+// RX 7900 XTX radeonsi vs RADV measured: Enhanced (4x MSAA) 44.8 dB / 0.34, Ultra 47.1 / 0.54, FSR1 67% 44.2 / 0.41,
+// Original msaa=4 aa=smaa 49.5 / 0.06, Original fxaa + 2x supersampling 59.0 / 0.01, S1L1 Enhanced 42.0 / 0.42
+// (MSAA resolves differ slightly between the drivers: a few hundred edge pixels off by > 32). The noise of PCF/SSAO/volumetric dither is identical in both (same IGN seed).
 // Exit 77 without Vulkan 1.3 or GL.
 #include "remaster_util.hpp"
 
@@ -45,13 +46,17 @@ int main() {
 
     for (GraphicsPreset p : {GraphicsPreset::Enhanced, GraphicsPreset::Ultra}) {
         Image gl;
+        // Parity at Ultra's former RCAS 0.3: full strength (Ultra's 1.0) amplifies sub-LSB GL/Vulkan differences
+        // (measured 38.6 dB / 1.50 at 1.0, 47.7 dB / 0.44 at 0.3 with motion-vector TAA).
+        Options go = demo_options(RendererKind::OpenGL, p), vo = demo_options(RendererKind::Vulkan, p);
+        if (p == GraphicsPreset::Ultra) go.graphics.apply("graphics.sharpness", "0.3"), vo.graphics.apply("graphics.sharpness", "0.3");
         try {
-            gl = render(demo_options(RendererKind::OpenGL, p), 6);
+            gl = render(go, 6);
         } catch (const std::exception& e) {
             std::fprintf(stderr, "SKIP: OpenGL unavailable (%s)\n", e.what());
             return 77;
         }
-        Options vo = demo_options(RendererKind::Vulkan, p);  // raster parity: Ultra's ray tracing (vk_rt_*) off
+        // raster parity: Ultra's ray tracing (vk_rt_*) off
         for (const char* k : {"raytracing.reflections", "raytracing.shadows", "raytracing.gi"}) vo.graphics.apply(k, "false");
         const Image vk = render(vo, 6);
         const bool enh = p == GraphicsPreset::Enhanced;
@@ -69,6 +74,29 @@ int main() {
         const Image vk = render(o, 4);
         save(vk, "vk_remaster_fsr1_vk.png");
         parity("custom fsr1 67%", gl, vk, 40.0, 1.0);
+    }
+    // Image-quality keys on the Original look (no remaster path): GL/Vulkan parity, and the image actually changes.
+    const std::vector<std::vector<std::pair<const char*, const char*>>> quality = {
+        {{"msaa", "4"}, {"aa", "smaa"}}, {{"aa", "fxaa"}, {"render_scale", "2"}, {"sharpness", "0.5"}, {"anisotropy", "16"}}};
+    for (const auto& keys : quality) {
+        Options o = demo_options(RendererKind::OpenGL, GraphicsPreset::Original);
+        std::string name = "original";
+        for (const auto& [k, v] : keys) {
+            CHECK(o.graphics.apply(std::string("graphics.") + k, v).empty());
+            name += std::string(" ") + k + "=" + v;
+        }
+        const GraphicsSettings g = o.graphics.resolve();
+        CHECK(g.preset == GraphicsPreset::Original && !g.remastered() && g.original_post());
+        const auto set = [&](int frame, Platform&, IRenderer& r) {
+            if (frame == 0) r.set_graphics(g);
+        };
+        const Image gl = render(o, 4, set);
+        o.renderer = RendererKind::Vulkan;
+        o.vk_validation = true;
+        const Image vk = render(o, 4, set);
+        save(vk, keys.size() == 2 ? "vk_remaster_original_msaa_smaa_vk.png" : "vk_remaster_original_fxaa_ss2_vk.png");
+        parity(name.c_str(), gl, vk, 40.0, 1.0);
+        CHECK(diff(vk.rgba, vk_plain.rgba).mad > 0.05);  // smoothed edges differ from the plain Original frame
     }
     // Blend state 1 (hair): near layer not overdrawn by later far layers, sub-reference alpha discarded.
     for (GraphicsPreset p : {GraphicsPreset::Original, GraphicsPreset::Enhanced, GraphicsPreset::Ultra}) {

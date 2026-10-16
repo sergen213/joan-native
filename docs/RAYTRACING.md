@@ -144,11 +144,13 @@ costs ~1 ms at 1080p for GI) and the extra barriers. Reproduce: `work/RayTracing
   instance classes, culling, probe addressing; Ultra with `JOA_VK_DISABLE_RT=1` = Ultra with RT keys off
   bit-identically (no crash), OpenGL ignores RT bit-identically, RT-on demo frame differs (RT hardware only);
   0 validation errors.
-- `engine.vk_rt_smoke` (S1L1 via `run()`, 640×360, 24 frames): all effects with validation (incl.
-  synchronization) → 0 errors, mean luma within 15 % of raster Ultra (measured 70.6 → 66.5); reflections change
-  Joan's armour (MAD 1.3) but not the tree line/sky (0.000); RT shadows change the units/grass (contact shadows)
-  and agree with the shadow map under the courtyard houses (MAD 0.04); GI changes the covered alley under the castle
-  walkway (MAD 2.6) but not the sky (0.000).
+- `engine.vk_rt_smoke` (S1L1 via `run()`, 640×360, 24 frames, `auto_exposure=false` so every effect set runs at the
+  same fixed exposure and only local changes are compared): all effects with validation (incl. synchronization) → 0
+  errors, mean luma within 15 % of raster Ultra (measured 69.0 → 64.8); reflections change Joan's armour (MAD 1.27;
+  legacy textures reflect by their metal fraction only) but not the tree line/sky (0.000); RT shadows change the
+  grass/units (MAD 1.13; units receive but cast through their stencil volumes) and agree with the shadow map under
+  the courtyard houses (MAD 0.29); GI changes the covered alley under the castle walkway (MAD 3.4) but not the sky
+  (0.000).
 - `engine.vk_remaster` (Ultra GL/Vulkan parity now runs Vulkan with RT keys off; Original stays bit-identical
   after an Ultra+RT frame), `engine.preset`.
 - Screenshots (viewed side by side): `work/RayTracing/shots/final_s1l1_1080p.png` (raster, shadows,

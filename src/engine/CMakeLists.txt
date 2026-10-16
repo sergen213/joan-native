@@ -17,6 +17,7 @@ cmake_path(ABSOLUTE_PATH CMAKE_CURRENT_SOURCE_DIR OUTPUT_VARIABLE JOA_ROOT)
 cmake_path(GET JOA_ROOT PARENT_PATH JOA_ROOT)
 cmake_path(GET JOA_ROOT PARENT_PATH JOA_ROOT)
 file(GLOB JOA_GL_SHADERS CONFIGURE_DEPENDS "${JOA_ROOT}/shaders/gl/*.glsl" "${JOA_ROOT}/shaders/common/*.glsl")
+list(APPEND JOA_GL_SHADERS "${JOA_ROOT}/third_party/smaa/SMAA.hlsl")  # gl_shaders::SMAA (MIT, PROVENANCE.txt)
 set(JOA_GL_SHADER_DEFS "")
 foreach(s ${JOA_GL_SHADERS})
   file(READ ${s} body)
@@ -76,7 +77,14 @@ file(GLOB JOA_ENGINE_TESTS CONFIGURE_DEPENDS "${JOA_ROOT}/tests/engine/*_test.cp
 if(NOT JOA_DEV_OVERLAY)
   list(FILTER JOA_ENGINE_TESTS EXCLUDE REGEX "_dev_overlay_test\\.cpp$")
 endif()
-find_program(JOA_XVFB_RUN xvfb-run)
+option(JOA_TEST_XVFB "GPU tests off the desktop: GL under a private Xvfb (llvmpipe), Vulkan offscreen; OFF = visible windows on the real display/GPU" ON)
+if(JOA_TEST_XVFB)
+  find_program(JOA_XVFB_RUN xvfb-run)
+  set(_vk_driver "SDL_VIDEO_DRIVER=offscreen")
+else()
+  unset(JOA_XVFB_RUN CACHE)
+  set(_vk_driver "JOA_SHOW_WINDOWS=1")
+endif()
 # Vulkan tests: SDL offscreen driver (surfaceless rendering), user implicit layers off, validation on.
 # The Khronos layer is not always installed system-wide; point JOA_VK_LAYER_PATH at an extracted copy.
 set(_vvl "${JOA_ROOT}/work/vvl/usr/share/vulkan/explicit_layer.d")
@@ -86,7 +94,7 @@ endif()
 set(JOA_VK_LAYER_PATH "${_vvl}" CACHE PATH "Directory holding VkLayer_khronos_validation.json for vk_ tests (empty = system layers)")
 find_file(JOA_VK_VALIDATION_JSON VkLayer_khronos_validation.json
           PATHS ${JOA_VK_LAYER_PATH} /usr/share/vulkan/explicit_layer.d /usr/local/share/vulkan/explicit_layer.d NO_DEFAULT_PATH)
-set(JOA_VK_TEST_ENV "SDL_VIDEO_DRIVER=offscreen;VK_LOADER_LAYERS_DISABLE=~implicit~;XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-cache")
+set(JOA_VK_TEST_ENV "${_vk_driver};VK_LOADER_LAYERS_DISABLE=~implicit~;XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-cache")
 if(JOA_VK_LAYER_PATH)
   # Extracted layer packages keep the library in usr/lib next to share/vulkan/explicit_layer.d; the JSON names it
   # without a path, so the loader needs that directory on the library search path.
@@ -102,13 +110,13 @@ foreach(t ${JOA_ENGINE_TESTS})
   add_executable(engine_${n} ${t})
   target_link_libraries(engine_${n} PRIVATE joa_engine)
   if(short MATCHES "^gl_")
-    # GPU tests never touch the user's desktop: private Xvfb server (llvmpipe), else SDL's offscreen/EGL driver.
+    # GPU tests: private Xvfb server (llvmpipe), else visible windows on the user's real display (JOA_TEST_XVFB=OFF).
     if(JOA_XVFB_RUN)
       add_test(NAME engine.${short} COMMAND ${JOA_XVFB_RUN} -a -s "-screen 0 1280x720x24" $<TARGET_FILE:engine_${n}>)
       set(env "SDL_VIDEO_DRIVER=x11")
     else()
       add_test(NAME engine.${short} COMMAND engine_${n})
-      set(env "SDL_VIDEO_DRIVER=offscreen")
+      set(env "JOA_SHOW_WINDOWS=1")
     endif()
     set_tests_properties(engine.${short} PROPERTIES
                          ENVIRONMENT "${env};JOA_GAME_DIR=${JOA_GAME_DIR};JOA_TEST_OUT=${CMAKE_CURRENT_BINARY_DIR};XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}"

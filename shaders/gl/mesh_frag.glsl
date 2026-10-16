@@ -14,6 +14,7 @@ uniform bool u_has_layer2;
 uniform bool u_has_lightmap;
 uniform vec4 u_tint;
 uniform float u_alpha_cutoff;  // < 0 disables alpha test
+uniform bool u_a2c;            // MSAA alpha-to-coverage: the alpha test becomes a sharpened coverage alpha
 uniform vec3 u_fog_color;      // gamma space
 
 out vec4 o_color;
@@ -31,7 +32,10 @@ void main() {
     base.rgb *= v_color.rgb;
     base *= u_tint;
     if (u_has_lightmap) base.rgb *= texture(u_lightmap, v_uv2).rgb;
-    if (base.a < u_alpha_cutoff) discard;
+    if (u_a2c) {
+        base.a = clamp((base.a - u_alpha_cutoff) / max(fwidth(base.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (base.a <= 0.0) discard;
+    } else if (base.a < u_alpha_cutoff) discard;
     vec3 c = base.rgb * to_linear(v_light);
     if (v_fog > 0.0) c = to_linear(mix(to_srgb(c), u_fog_color, v_fog));
     o_color = vec4(c, base.a);

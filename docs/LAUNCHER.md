@@ -8,7 +8,7 @@ Built when `JOA_BUILD_LAUNCHER=ON`. Runs on Wayland and X11 through Qt's platfor
 | Tab | Controls |
 |---|---|
 | Game | Play; Import Game Folder…; Install from GOG Installer…; "Allow Wine-assisted install" (opt-in); Verify Files; Repair… (defaults to the folder recorded in `.joa-install.json`, otherwise asks); Open Logs |
-| Graphics | Renderer (OpenGL/Vulkan), preset (Original/Enhanced/Ultra/Custom), ray tracing reflections/shadows/GI (enabled only with Vulkan), resolution, aspect, display mode |
+| Graphics | Renderer (OpenGL/Vulkan), preset (Original/Enhanced/Ultra/Custom), ray tracing reflections/shadows/GI (enabled only with Vulkan), "Anti-aliasing and image quality (all presets)": anti-aliasing (Preset default/Off/FXAA/SMAA/TAA), MSAA (Off/2×/4×/8×), anisotropic filtering (Off–16×), render scale (50 %–200 %, > 100 % = supersampling), sharpening (Off/Low/Medium/High); each "Preset default" = key not written; resolution, aspect, display mode |
 | Controller | Stick deadzone, stick sensitivity |
 | Updates | Channel, Check for Updates, Update Game, Update Launcher, Roll Back Update, release notes (Markdown from `joa-updater check`) |
 
@@ -37,7 +37,8 @@ The launcher looks for `joan-native`, `joa-updater` (and the updater swaps `joa-
 | `renderer` | `preset` | `original` \| `enhanced` \| `ultra` \| `custom` | `enhanced` (launcher); the engine without a settings file uses `original` |
 | `graphics` | `hd_packs` | comma list of pack names / absolute dirs, first wins ([HD_ASSETS.md](HD_ASSETS.md)); works with every preset | empty |
 | `graphics` | `pbr`, `normal_maps`, `ibl`, `hdr`, `ssao`, `volumetric_fog`, `particle_lighting` | bool; read only when `preset=custom` (unset keys = Enhanced values) | Enhanced |
-| `graphics` | `exposure` 0.05–16, `shadow_map_size` 0\|1024\|2048\|4096\|8192 (0 = original stencil volumes), `shadow_softness` 0–8, `shadow_distance` 200–8192, `ssao_radius` 1–500, `ssao_intensity` 0–4, `aa` none\|taa, `fog_density` 0–10, `upscale` none\|fsr1, `render_scale` 0.5–1, `sharpness` 0–1 | custom only; see GRAPHICS_ROADMAP.md "Remaster" | Enhanced |
+| `graphics` | `exposure` 0.05–16, `shadow_map_size` 0\|1024\|2048\|4096\|8192 (0 = original stencil volumes), `shadow_softness` 0–8, `shadow_distance` 200–8192, `ssao_radius` 1–500, `ssao_intensity` 0–4, `fog_density` 0–10 | custom only; see GRAPHICS_ROADMAP.md "Remaster" | Enhanced |
+| `graphics` | `aa` none\|fxaa\|smaa\|taa, `msaa` 1\|2\|4\|8, `anisotropy` 1–16, `render_scale` 0.5–2 (> 1 supersamples), `upscale` none\|fsr1, `sharpness` 0–1 (RCAS) | image-quality keys: **every preset**, Original included (keeps the Original look, never the remaster path; `taa` there runs as `smaa`); unset = the preset's value. The launcher writes only the ones not set to "Preset default". See GRAPHICS_ROADMAP.md "Image quality on every preset" | Original: none, 1, 8, 1, none, 0; Enhanced: none, 4, 8, 1, none, 0; Ultra: taa, 1, 8, 1, none, 1.0 |
 | `raytracing` | `reflections`, `shadows`, `gi` | `true` \| `false` (`1`/`0` accepted); any remastered preset, Vulkan + ray-query GPU only, else logged and the raster path runs ([RAYTRACING.md](RAYTRACING.md)) | unset = preset (Ultra on, others off) |
 | `raytracing` | `rays_per_pixel` 1–4, `max_roughness` 0–1, `denoise` bool, `probe_density` low\|medium\|high | quality of the above | 1, 0.6, true, medium |
 | `display` | `width`, `height` | integer 0–16384; `0` = desktop resolution; if only one is 0 both become 0 | `0` |
@@ -59,6 +60,9 @@ preset=enhanced
 reflections=false
 shadows=false
 gi=false
+[graphics]
+msaa=4
+aa=smaa
 [display]
 width=2560
 height=1440

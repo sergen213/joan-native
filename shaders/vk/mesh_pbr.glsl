@@ -10,14 +10,6 @@
 
 layout(push_constant) uniform Push { uint pass; } u_push;  // 0 scene, 1 shadow caster, 2 RT G-buffer prepass
 
-struct MaterialExtra {
-    uint normal, rough, metal, ao;  // bindless slots, kNoTexture = none
-    int cls;                        // MaterialClass
-    int blend;                      // BlendMode
-    int pad0, pad1;
-};
-layout(set = 2, binding = 11, std430) readonly buffer Materials { MaterialExtra u_materials[]; };
-
 layout(location = 0) in vec3 v_world;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec2 v_uv;
@@ -25,9 +17,14 @@ layout(location = 3) in vec2 v_uv2;
 layout(location = 4) in vec4 v_color;
 layout(location = 5) in float v_fog;
 layout(location = 6) flat in uint v_draw;
+layout(location = 7) in vec4 v_clip;
+layout(location = 8) in vec4 v_prev_clip;
 
 layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_ambient;
+layout(location = 2) out vec4 o_motion;  // TAA motion (previous minus current uv); unused attachment in blend passes
+// Auto exposure reference (post_exposure_lum.glsl): linear luma of this pixel in the Original look, blended like o_color.
+layout(location = 3) out vec4 o_reference;
 
 // R.ssao.z: texture LOD bias (negative under TAA jitter: the accumulated image resolves finer mips).
 vec4 tex(uint slot, vec2 uv) { return texture(u_textures[nonuniformEXT(slot)], uv, R.ssao.z); }
@@ -45,14 +42,18 @@ void main() {
     base.rgb *= vcol.rgb;
     base *= d.tint;
     if (d.lightmap != kNoTexture) base.rgb *= tex(d.lightmap, v_uv2).rgb;
-    if (base.a < d.alpha_cutoff) discard;
+    if ((d.unlit & 4u) != 0u) {  // MSAA alpha-to-coverage: the alpha test becomes a sharpened coverage alpha
+        base.a = clamp((base.a - d.alpha_cutoff) / max(fwidth(base.a), 1e-4) + 0.5, 0.0, 1.0);
+        if (base.a <= 0.0) discard;
+    } else if (base.a < d.alpha_cutoff) discard;
+    o_motion = vec4(motion_uv(v_clip, v_prev_clip), 0.0, 1.0);
     if (u_push.pass == 1u) {
         o_color = vec4(0.0);
         o_ambient = vec4(0.0);
         return;
     }
     vec3 ambient = vec3(0.0);
-    vec3 c;
+    vec3 c, original;  // original: this pixel in the Original look (o_reference)
     if (unlit) {
 #ifdef RAY_TRACED
         if (u_push.pass == 2u) {  // G-buffer: never reflective
@@ -61,7 +62,7 @@ void main() {
             return;
         }
 #endif
-        c = base.rgb;
+        c = original = base.rgb;
         if (R.flags.z != 0.0 && !no_fog) {  // particles: lit smoke, HDR emissive fire
             if (x.blend == 3) c *= 1.6;
             else {
@@ -100,7 +101,9 @@ void main() {
         }
         s.ao = x.ao != kNoTexture ? tex(x.ao, uv).r : 1.0;
         s.shadow_strength = x.cls == kClassVegetation ? 0.5 : 1.0;
+        s.env_weight = x.rough != kNoTexture ? 1.0 : s.metal;
         c = shade(s, gl_FragCoord.xy, ambient);
+        original = original_color(s);
         if (x.cls == kClassVegetation) ambient = vec3(0.0);  // no SSAO on thin foliage
 #ifdef RAY_TRACED
         if (x.blend == 2 && d.bump != kNoTexture && RT.effects.x != 0.0) {  // bump-mapped water: inline mirror ray
@@ -113,4 +116,5 @@ void main() {
     float fog = no_fog ? 0.0 : v_fog;
     o_color = vec4(apply_fog(c, fog), base.a);
     o_ambient = vec4(ambient * (1.0 - fog), 1.0);
+    o_reference = vec4(luma(apply_fog(original, fog)), 0.0, 0.0, base.a);
 }

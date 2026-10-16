@@ -31,8 +31,10 @@ int main() {
     const GraphicsSettings enh = preset_settings(GraphicsPreset::Enhanced), ultra = preset_settings(GraphicsPreset::Ultra);
     CHECK(enh.remastered() && ultra.remastered());
     CHECK(enh.pbr && enh.ibl && enh.hdr && enh.ssao && enh.volumetric_fog && enh.shadow_map_size == 2048);
-    // Enhanced renders native and unfiltered (TAA smeared the animated scene, gl/vk_remaster sharpness check).
+    // Enhanced renders native with 4x MSAA, no post AA (TAA smeared the animated scene, SMAA softened textures:
+    // gl/vk_remaster sharpness check).
     CHECK(enh.aa == AntiAliasing::None && enh.upscale == Upscaler::None && enh.render_scale == 1.0f && enh.sharpness == 0.0f);
+    CHECK(enh.msaa == 4 && ultra.msaa == 1 && enh.anisotropy == 8 && orig.msaa == 1 && orig.anisotropy == 8 && !orig.original_post());
     CHECK(ultra.shadow_map_size == 4096 && ultra.shadow_softness > enh.shadow_softness && ultra.shadow_distance > enh.shadow_distance);
     CHECK(ultra.aa == AntiAliasing::Taa && ultra.sharpness > 0.0f);
 
@@ -69,13 +71,44 @@ int main() {
         Options o6;
         CHECK(!apply_settings_ini("[raytracing]\nrays_per_pixel=0\n", o6).empty());
     }
+    // Image-quality keys apply to every preset; Original keeps its look (no remaster path), TAA there means SMAA.
+    {
+        Options o;
+        CHECK(apply_settings_ini("[renderer]\npreset=original\n[graphics]\nmsaa=4\naa=smaa\nanisotropy=16\nrender_scale=2\n"
+                                 "sharpness=0.5\nssao=true\n",
+                                 o)
+                  .empty());
+        const GraphicsSettings g = o.graphics.resolve();
+        CHECK(g.preset == GraphicsPreset::Original && !g.remastered() && !g.ssao);  // look key ignored: not custom
+        CHECK(g.msaa == 4 && g.aa == AntiAliasing::Smaa && g.anisotropy == 16 && g.render_scale == 2.0f && g.sharpness == 0.5f);
+        CHECK(g.original_post());
+        Options o2;
+        CHECK(apply_settings_ini("[renderer]\npreset=original\n[graphics]\naa=taa\n", o2).empty());
+        CHECK(o2.graphics.resolve().aa == AntiAliasing::Smaa && !o2.graphics.resolve().remastered());
+        Options o3;  // Ultra + quality override: still Ultra's look
+        CHECK(apply_settings_ini("[renderer]\npreset=ultra\n[graphics]\naa=fxaa\nmsaa=2\n", o3).empty());
+        const GraphicsSettings u = o3.graphics.resolve();
+        CHECK(u.preset == GraphicsPreset::Ultra && u.remastered() && u.aa == AntiAliasing::Fxaa && u.msaa == 2 && u.shadow_map_size == 4096);
+        Options o4;
+        CHECK(!apply_settings_ini("[graphics]\nmsaa=3\n", o4).empty());
+        Options o5;
+        CHECK(!apply_settings_ini("[graphics]\nanisotropy=17\n", o5).empty());
+        Options o6;
+        CHECK(!apply_settings_ini("[graphics]\naa=msaa\n", o6).empty());
+        Options o7;  // Custom with every look feature off is the Original look + quality options
+        CHECK(apply_settings_ini("[renderer]\npreset=custom\n[graphics]\npbr=false\nnormal_maps=false\nibl=false\nhdr=false\n"
+                                 "shadow_map_size=0\nssao=false\nvolumetric_fog=false\nparticle_lighting=false\naa=fxaa\n",
+                                 o7)
+                  .empty());
+        CHECK(!o7.graphics.resolve().remastered() && o7.graphics.resolve().aa == AntiAliasing::Fxaa);
+    }
     // No settings: Original.
     {
         Options o;
         CHECK(parse({}, o).empty());
         CHECK(o.graphics.resolve().preset == GraphicsPreset::Original && !o.graphics.resolve().remastered());
     }
-    // CLI: --preset wins over defaults, --graphics implies custom, --hd-packs.
+    // CLI: --preset wins over defaults, --graphics look keys imply custom (quality keys do not), --hd-packs.
     {
         Options o;
         CHECK(parse({"--preset", "ultra"}, o).empty());
@@ -94,7 +127,16 @@ int main() {
         Options o2;
         CHECK(!parse({"--graphics", "ssao"}, o2).empty());
         Options o3;
-        CHECK(!parse({"--graphics", "render_scale=2"}, o3).empty());
+        CHECK(!parse({"--graphics", "render_scale=3"}, o3).empty());
+    }
+    {
+        Options o;
+        CHECK(parse({"--preset", "original", "--graphics", "msaa=4,aa=smaa"}, o).empty());
+        const GraphicsSettings g = o.graphics.resolve();
+        CHECK(g.preset == GraphicsPreset::Original && !g.remastered() && g.msaa == 4 && g.aa == AntiAliasing::Smaa);
+        Options o2;  // order does not matter for quality keys
+        CHECK(parse({"--graphics", "render_scale=1.5", "--preset", "enhanced"}, o2).empty());
+        CHECK(o2.graphics.resolve().preset == GraphicsPreset::Enhanced && o2.graphics.resolve().render_scale == 1.5f);
     }
 
     // Frame constants: scene size, TAA jitter within half a pixel, stable shadow frustum.
@@ -103,6 +145,8 @@ int main() {
         CHECK(scene_size(g, {1920, 1080}) == glm::ivec2(1920, 1080));
         g.render_scale = 0.5f;
         CHECK(scene_size(g, {3440, 1440}) == glm::ivec2(1720, 720));
+        g.render_scale = 2.0f;  // supersampling
+        CHECK(scene_size(g, {1920, 1080}) == glm::ivec2(3840, 2160));
         g.render_scale = 1.0f;
         g.aa = AntiAliasing::Taa;  // Enhanced is native; TAA is opt-in (Ultra)
         FrameData f;

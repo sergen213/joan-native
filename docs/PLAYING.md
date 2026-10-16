@@ -153,9 +153,11 @@ F10 (Capture Screen) writes the presented frame, UI included, as `JOAN000.png`, 
 
 ## Settings applied at startup
 
-settings.ini (docs/LAUNCHER.md): `[renderer] backend/preset`, `[display] width/height/aspect/mode`,
+settings.ini (docs/LAUNCHER.md): `[renderer] backend/preset`, `[graphics]` image-quality keys (`aa`, `msaa`,
+`anisotropy`, `render_scale`, `sharpness`: any preset, Original keeps its look), `[display] width/height/aspect/mode`,
 `[controller] deadzone/sensitivity/camera_fix/rumble`, `[audio] master/music/sound/environment` (0–100, override the in-game
-volumes), `[paths] game_dir`. Explicit CLI flags win. In-game options (shadows, volumes, input method, bindings) live in
+volumes), `[paths] game_dir`. Explicit CLI flags win (`--preset original --graphics msaa=4,aa=smaa`; only non-quality
+`--graphics` keys switch to `custom`). In-game options (shadows, volumes, input method, bindings) live in
 `$XDG_CONFIG_HOME/joan-native/options.ini`.
 
 ## CLI shortcuts (tests, debugging)
@@ -187,6 +189,10 @@ volumes), `[paths] game_dir`. Explicit CLI flags win. In-game options (shadows, 
   over it.
 - Tracy (builds configured with `-DJOA_TRACY=ON`): connect the Tracy profiler/`tracy-capture` v0.11.1 to the running
   client; zones `sim.tick`, `render.submit`, `render.present`, `audio.mix`.
+- `JOA_WORLD_CLOCK=<minutes>` picks the world's `.day` lighting stage at that clock (the port otherwise starts at
+  720 = noon), e.g. `JOA_WORLD_CLOCK=1450` = `Normal_Night`.
+- `JOA_CAPTURE_FPS=<fps>`: `--screenshot` / `--autoplay-script` runs advance 1/fps s per frame instead of one 33 ms
+  game tick (render interpolation as on a high-refresh display, still deterministic); scale script frame numbers by fps/30.
 
 ### Autoplay scripts (`src/engine/session_autoplay.hpp`)
 
