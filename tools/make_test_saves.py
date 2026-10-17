@@ -4,11 +4,11 @@
 Phase 1, per mission: `joan-native --headless --scenario <MAP> --seed 1`, saved (`cmd Save 0 <file> <description>`)
 as Test_<MAP>_00_start.jsav once the opening cut scene / brief is over and the player has control. S9L1 only exists
 as the continuation of S5L1's world, so its start comes from S5L1 forced won (`win`) + ContinueCampaign.
-Phase 2, per place: `--load` that start save, `spawn <place>` (hero and party to the place centre / facility point,
-or the nearest point on the way back toward the start beyond every hostile's search range: then described "near"),
-settle until controllable, save as Test_<MAP>_<NN>_<slug>.jsav, description "TEST <MAP> - [near ]<place>".
-Every save is checked with `--headless --load <file>`: right mission, controllable, hero within RADIUS of the spawn
-point (start: of where she was saved) and still alive after IDLE idle frames.
+Phase 2, per place: `--load` that start save, `spawn <place>` (hero and party onto the navmesh at the place centre /
+facility point, or the nearest point on her path back toward the start beyond every hostile's search range: then
+described "near"), settle until controllable, save as Test_<MAP>_<NN>_<slug>.jsav, description "TEST <MAP> - [near ]<place>".
+Every save is checked with `--headless --load <file>`: right mission, controllable, hero within RADIUS of where she was
+saved (a place's cut scene may walk her off the spawn point) and still alive after IDLE idle frames.
 Saves are written under a private $XDG_DATA_HOME and moved to --out (existing Test_<MAP>_* there are replaced).
 
     tools/make_test_saves.py [--binary B] [--game-dir G] [--out DIR] [--missions S1L1,S3L1] [--jobs N]
@@ -161,18 +161,18 @@ def make_one(a, stem, nn, place, margin):
         for f in made.parent.glob(made.stem + ".*"):  # .jsav (+ .bmp thumbnail if any)
             if f.suffix in (".jsav", ".bmp"):
                 shutil.move(str(f), Path(a.out, f.name))
-    # Verify: right mission, controllable at once, hero where saved (and at the spawn point), alive after IDLE frames.
+    # Verify: right mission, controllable at once, hero where saved, alive after IDLE frames.
     rc, log = run(base + ["--load", str(Path(a.out, name)), "--frames", str(IDLE + 2)], dict(os.environ),
                   f"2 log verify\n{IDLE} log idle\n")
     rs = records(log)
     if rc != 0 or len(rs) != 2 or rs[0][2] != mission:
         return name, desc, f"FAIL load: exit {rc}, {rs[0] if rs else 'no log'}"
     (_, ok, _, at, hp, foe, _), hp_idle = rs[0], rs[1][4]
-    want = spawn or (saved[0][3] if saved else None)
+    want = saved[0][3] if saved else spawn
     if not ok or hp <= 0:
         return name, desc, f"FAIL load: not controllable / dead (hp {hp})"
     if want is None or math.dist(at, want) > RADIUS:
-        return name, desc, f"FAIL load: hero at {at}, spawn point {want}"
+        return name, desc, f"FAIL load: hero at {at}, saved at {want}"
     if hp_idle * 2 < hp:  # attacked at once: not out of hostile reach
         return name, desc, f"FAIL load: hero hp {hp}->{hp_idle} after {IDLE} idle frames at {at}"
     where = f"{math.dist(at, target):.0f} from target {target[0]},{target[1]}, margin {margin}, party {s[5]}" if spawn else "start"

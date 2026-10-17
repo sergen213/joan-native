@@ -70,6 +70,10 @@ void AiSystem::update_movement(Unit& u) {  // 0x52daa0
     // Unit_process phase 1 runs movement only for units with a body actor (+0x2f5): inactive units
     // (+0x2ed == 0, e.g. in a streamed-out level) keep their path but stand still.
     if (!u.m.active) return;
+    // 0x52daa0 asm 0x52e75d..0x52e79f: the hero the player steers (+0x102 == 0) follows no path outside cut scenes and
+    // point & click (controller +0x10 == 2). An order her troop copies to her as its leader (give_order APPROACH_ENEMY)
+    // otherwise set RUN every tick after the keyboard controller had stopped her: she ran in place.
+    if (!w_.cut_scene && u.id == w_.player_id() && w_.controller().mode != 2 && !u.ai_controlled) return;
     if (s.path.empty()) { s.stuck_since = -1; s.last_pos = u.pos; return; }
     const int a = u.action;
     // Riders keep steering during H_RUN / H_ATTACK: 0x52daa0 runs the path step for every live unit and

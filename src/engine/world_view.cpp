@@ -62,8 +62,11 @@ WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::M
         n.offset = sn.offset();
         n.grass = std::make_unique<GrassField>(*assets_, sn.grid, scenario_no);
         n.particles = std::make_unique<ParticleSystem>(*assets_, sn.map.name, n.offset);
-        n.water = std::make_unique<WaterField>(*assets_, sn.map.name, sn.map.origin);
+        n.water = std::make_unique<WaterField>(*assets_, dir + "/" + sn.map.name + ".stg", sn.map.origin);
     }
+    // The world's own CreateWater (.wor parser FUN_0054a6c0 -> FUN_00553aa0, world coordinates): the rivers spanning the
+    // nodes of S2L1, S4L1, S5L1, S6L1.
+    if (vfs_.exists(dir + "/" + world + ".wor")) world_water_ = std::make_unique<WaterField>(*assets_, dir + "/" + world + ".wor");
     effects_ = std::make_unique<ParticleSystem>(*assets_, "");
     // Tie each .stg object the game turned into a map item to that item (same res code, same position); one
     // without a live item was deleted before this view (a loaded save) and is hidden.
@@ -334,6 +337,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     const glm::vec3 horizon = glm::convertSRGBToLinear(lighting_.fog_color);
     sky_->build(eye, time_s_, glm::clamp(horizon / glm::max(sky_noon_, glm::vec3(1e-3f)), 0.0f, 4.0f), draws);
     scene_->build(view_proj, eye, draws);
+    if (world_water_) world_water_->build(time_s_, eye, draws);
     for (Node& n : nodes_) {
         n.water->build(time_s_, eye, draws);
         // Grass patches live in node-local space.

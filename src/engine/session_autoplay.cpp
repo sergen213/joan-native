@@ -2,6 +2,7 @@
 
 #include "game/ai_system.hpp"
 #include "game/mission.hpp"
+#include "game/multimap_nav.hpp"
 #include "game/terrain_query.hpp"
 
 #include <SDL3/SDL_keyboard.h>
@@ -237,9 +238,10 @@ bool Autoplay::apply_item_hook(game::Mission& m, const FrameOut::ItemHook& h) {
     }
     // TestSaves (tools/make_test_saves.py): `spawn <facility | place>[@margin]` = warp with the party (heroes with the
     // player and the members of their troops, rings of 10 every 150 around her) to the first walkable point, stepping
-    // from the target back toward where she stands, beyond every live hostile's engage range (AiSystem::unit_range 1,
-    // >= 400) + margin (default 500). Logs the spawn point. ponytail: straight-line search; a path-aware one if a spawn
-    // lands behind a wall.
+    // back from the target along the way she would walk there (navmesh path; a straight line without one or when she
+    // stands off the mesh), beyond every live hostile's engage range (AiSystem::unit_range 1, >= 400) + margin (default
+    // 500). Walkable = on the navmesh CharPhysics walks (terrain only without one): a unit put on terrain off the mesh
+    // (the S2L1 dock, town squares) can never move and runs in place. Logs the spawn point.
     if (h.verb == "spawn") {
         const std::size_t at_sign = h.code.rfind('@');
         const std::string name = h.code.substr(0, at_sign);
@@ -249,21 +251,39 @@ bool Autoplay::apply_item_hook(game::Mission& m, const FrameOut::ItemHook& h) {
         if (!f && !pl) return false;
         const game::Vec3 to = f ? f->pos : pl->pos, from = p->pos;
         const game::ITerrainQuery* t = w.terrain();
+        const game::NavWorld* nav = m.ai().nav();
+        const auto floor = [&](float x, float y, float& z) {  // CharPhysics::walkable / floor
+            z = t ? t->height(x, y) : to.z;
+            if (!nav) return !t || t->walkable(x, y);
+            const int poly = nav->find_poly_xy(x, y, z);
+            return poly >= 0 && (z = nav->poly_height(poly, x, y), true);
+        };
         const auto safe = [&](float x, float y) {
-            if (t && !t->walkable(x, y)) return false;
+            if (float z; !floor(x, y, z)) return false;
             for (const game::Unit& u : w.units())
                 if (!u.deleted && !w.dead(u) && !u.no_react && w.hostile_to_player(u) &&
                     std::hypot(u.pos.x - x, u.pos.y - y) < float(std::max(m.ai().unit_range(u, 1), 400) + margin))
                     return false;
             return true;
         };
-        const float len = std::hypot(from.x - to.x, from.y - to.y);
+        std::vector<game::Vec3> way{from};
+        if (nav) {
+            game::PathQuery q;
+            q.from = {from.x, from.y, from.z}, q.to = {to.x, to.y, to.z};
+            q.max_expand = 20000;  // whole map (orders pass 500..2000)
+            for (const game::NavPt& pt : nav->find_path(q).points) way.push_back({pt.x, pt.y, pt.z});
+        }
+        if (way.size() == 1) way.push_back(to);
         float x = from.x, y = from.y;
-        for (float d = 0; d < len; d += 100.0f)
-            if (const float k = d / len; safe(to.x + (from.x - to.x) * k, to.y + (from.y - to.y) * k)) {
-                x = to.x + (from.x - to.x) * k, y = to.y + (from.y - to.y) * k;
-                break;
+        bool found = false;
+        for (std::size_t i = way.size() - 1; i > 0 && !found; --i) {
+            const game::Vec3 &a = way[i], &b = way[i - 1];
+            const float len = std::hypot(b.x - a.x, b.y - a.y);
+            for (float d = 0; d < len && !found; d += 100.0f) {
+                const float k = d / len, px = a.x + (b.x - a.x) * k, py = a.y + (b.y - a.y) * k;
+                if ((found = safe(px, py))) x = px, y = py;
             }
+        }
         std::vector<game::Unit*> party;
         for (game::Unit& u : w.units()) {
             if (u.cls < 0) continue;
@@ -279,15 +299,16 @@ bool Autoplay::apply_item_hook(game::Mission& m, const FrameOut::ItemHook& h) {
             if (hero) add(&u);
         }
         const auto put = [&](game::Unit& u, float ux, float uy) {
-            u.pos = {ux, uy, t ? t->height(ux, uy) : to.z};
+            float z;
+            if (!floor(ux, uy, z)) ux = x, uy = y, floor(ux, uy, z);
+            u.pos = {ux, uy, z};
             u.vel = {};
             w.stop(u);
         };
         put(*p, x, y);
         for (std::size_t i = 0; i < party.size(); ++i) {
             const float a = 6.2831853f * float(i % 10) / 10.0f, r = 150.0f * float(1 + i / 10);
-            const float ux = x + r * std::cos(a), uy = y + r * std::sin(a);
-            put(*party[i], t && !t->walkable(ux, uy) ? x : ux, t && !t->walkable(ux, uy) ? y : uy);
+            put(*party[i], x + r * std::cos(a), y + r * std::sin(a));
         }
         std::fprintf(stderr, "autoplay: spawn %s at %.0f,%.0f (target %.0f,%.0f, party %zu)\n", h.code.c_str(), x, y, to.x, to.y, party.size());
         return true;

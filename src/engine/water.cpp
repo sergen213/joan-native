@@ -127,13 +127,12 @@ TextureData water_normal_map(const TextureData& h) {
 
 }  // namespace
 
-WaterField::WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 origin) : assets_(assets) {
+WaterField::WaterField(AssetCache& assets, const std::string& path, glm::vec2 origin) : assets_(assets) {
     const auto& vfs = assets.vfs();
-    const auto paths = find_scenario(vfs, scenario);
-    const auto bytes = paths ? vfs.read(paths->dir + "/" + paths->name + ".stg") : std::nullopt;
+    const auto bytes = vfs.read(path);
     const auto stg = bytes ? formats::parse_block_text(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()))
                            : std::nullopt;
-    if (!stg) throw std::runtime_error("water: .stg missing or malformed for " + std::string(scenario));
+    if (!stg) throw std::runtime_error("water: " + path + " missing or malformed");
     IRenderer& r = assets.renderer();
     for (const auto& b : stg->blocks) {
         if (b.type != "CreateWater") continue;

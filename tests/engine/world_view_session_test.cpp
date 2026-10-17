@@ -187,5 +187,13 @@ int main() {
     std::fprintf(stderr, "S3L1 units=%zu actors=%d missing=%d\n", s.current().units.size(), v2.unit_stats().actors, v2.unit_stats().missing);
     CHECK(v2.unit_stats().actors + v2.unit_stats().missing == int(s.current().units.size()));
     CHECK(v2.unit_stats().actors > 0);
+
+    // Mission 3: S2L1's river is the world's own CreateWater (S2L1w.wor X 16384, Y 10900, 32768 x 6200, Z -150), not a
+    // node's .stg one.
+    CHECK(s.new_game(3, 1, &err));
+    WorldView v3(r, vfs, *s.mission());
+    CHECK(v3.world_water() && v3.world_water()->count() == 1 && v3.world_water()->bump_count() == 1);
+    const std::optional<float> river = v3.water_height(to_engine(16384.0f, 10900.0f, 0.0f));
+    CHECK(river && *river == -150.0f);
     return test_result();
 }

@@ -6,16 +6,16 @@
 #include "engine/assets_cache.hpp"
 
 #include <optional>
-#include <string_view>
+#include <string>
 #include <vector>
 
 namespace joa::engine {
 
 class WaterField {
 public:
-    // Reads the scenario's .stg CreateWater blocks (see find_scenario), placed at the map node `origin`
-    // (original X/Y). Throws if the .stg is missing.
-    WaterField(AssetCache& assets, std::string_view scenario, glm::vec2 origin = glm::vec2(0.0f));
+    // Reads the CreateWater blocks of the block-text file `path` (game path of a map node's .stg, placed at the node
+    // `origin`, original X/Y; or of the world's .wor, whose surfaces span the nodes). Throws if it is missing.
+    WaterField(AssetCache& assets, const std::string& path, glm::vec2 origin = glm::vec2(0.0f));
     ~WaterField();
     WaterField(const WaterField&) = delete;
     WaterField& operator=(const WaterField&) = delete;

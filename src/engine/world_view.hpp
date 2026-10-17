@@ -41,7 +41,8 @@ public:
     void frame(float alpha, const CameraPose& pose, float dt, FrameView& view, std::vector<DrawItem>& draws);
 
     float ground_height(glm::vec3 engine_pos) const { return scene_->ground_height(engine_pos); }
-    // Engine-space water surface height over engine_pos (WaterField::surface_height of every node), nullopt if dry.
+    // Engine-space water surface height over engine_pos (WaterField::surface_height of every node and the world), nullopt
+    // if dry.
     std::optional<float> water_height(glm::vec3 engine_pos) const;
     // Interactive water (world_view_water.cpp): the wave field after the last frame() (FrameData::waves via data()).
     const WaveField& waves() const { return waves_; }
@@ -66,6 +67,7 @@ public:
     const GrassField& grass(std::size_t node = 0) const { return *nodes_[node].grass; }
     const ParticleSystem& particles(std::size_t node = 0) const { return *nodes_[node].particles; }
     const WaterField& water(std::size_t node = 0) const { return *nodes_[node].water; }
+    const WaterField* world_water() const { return world_water_.get(); }  // <world>.wor CreateWater; null without a .wor
     const ParticleSystem& effects() const { return *effects_; }  // event emitters
     struct UnitStats {
         int actors = 0, missing = 0;        // live actors / snapshot units without a loadable look
@@ -185,6 +187,7 @@ private:
     std::unique_ptr<AssetCache> assets_;
     std::unique_ptr<WorldScene> scene_;
     std::vector<Node> nodes_;
+    std::unique_ptr<WaterField> world_water_;
     std::unique_ptr<SkyDome> sky_;
     std::unique_ptr<ParticleSystem> effects_;
     UnitDb db_;

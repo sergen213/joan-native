@@ -10,7 +10,7 @@
 namespace joa::engine {
 
 std::optional<float> WorldView::water_height(glm::vec3 engine_pos) const {
-    std::optional<float> h;
+    std::optional<float> h = world_water_ ? world_water_->surface_height(engine_pos) : std::nullopt;
     for (const Node& n : nodes_)
         if (const auto s = n.water->surface_height(engine_pos)) h = std::max(h.value_or(*s), *s);
     return h;
