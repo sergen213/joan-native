@@ -212,6 +212,13 @@ game::InputFrame GameInput::take() {
     return f;
 }
 
+glm::vec2 GameInput::pending_look() const {
+    if (key_scheme(opt_.input_method) == 2) return glm::vec2(0.0f);  // the mouse is a pointer
+    const float k = (std::clamp(opt_.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f;
+    // take(): the game turns camera 0 by -trunc(acc); before_tick: pitch += dy * k * 0.2 * invert.
+    return {-(yaw_rem_deg_ + dx_ * k * (camera_fix_ ? 1.0f : 0.2f) + pad_yaw_deg_), dy_ * k * 0.2f * (opt_.invert_mouse ? -1.0f : 1.0f)};
+}
+
 void GameInput::reset() {
     queue_.clear();
     latched_.reset();

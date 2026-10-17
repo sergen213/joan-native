@@ -151,6 +151,24 @@ F10 (Capture Screen) writes the presented frame, UI included, as `JOAN000.png`, 
 `ScreenShot\JOAN%03d.JPG` numbering, never overwriting) into `$XDG_PICTURES_DIR` (environment, else
 `~/.config/user-dirs.dirs`, else `$XDG_STATE_HOME/joan-native/screenshots`).
 
+### Test saves (`tools/make_test_saves.py`)
+
+`tools/make_test_saves.py` writes ready-made saves for every campaign mission into the native save dir: per mission
+`Test_<MAP>_00_start.jsav` ("TEST <MAP> - start", right after the opening) plus one per key place
+(`Test_<MAP>_<NN>_<place>.jsav`, "TEST <MAP> - <place>": camps, towns, castles, gates, objectives; the list is
+`MISSIONS` in the script). Each comes from a headless run (`--scenario`, then `--load` of the start save, autoplay
+`warp <place>` and `cmd Save 0 <file> <description>`) and is checked by loading it (`--load <file> --frames 60`:
+right mission, hero alive where she was saved). S9L1 starts from S5L1 forced won + CONTINUE (its world is S5L1's,
+so S5L1's places are untaken). Regenerate after save-format or mission changes:
+
+```
+tools/make_test_saves.py                       # all missions, build/src/engine/joan-native, ~30 s
+tools/make_test_saves.py --missions S3L1,S6L1 --binary ~/.local/share/joan-native/app/current/bin/joan-native
+tools/make_test_saves.py --out /tmp/saves      # elsewhere (--game-dir defaults to the installed game)
+```
+Existing `Test_<MAP>_*` files of the chosen missions are replaced. The Load list shows them newest first, 10 a page
+(the page arrows wrap).
+
 ## Settings applied at startup
 
 settings.ini (docs/LAUNCHER.md): `[renderer] backend/preset`, `[graphics]` image-quality keys (`aa`, `msaa`,
@@ -217,6 +235,8 @@ frame advances exactly one 33 ms tick, so scripts are deterministic with `--seed
 346  crit                     # test hook: critical attacks on + HP trail > CRI_DIFF: next tick starts a crit sequence
 350  shot work/run/combat.png # capture this frame
 360  type Before Orleans      # text input (rest of the line), e.g. the save description
+362  warp Camp 1 Place        # test hook: hero to a facility point / place centre (by name, map/*/*.pla)
+364  cmd Save 0 T.jsav TEST 1 # save <native save dir>/T.jsav, description = rest of the line ("TEST 1")
 370  pad south tap            # gamepad button (south/east/west/north = a/b/x/y, lb/rb, start, back, dpup, ...): down|up|tap [frames]
 380  axis lefty -1            # gamepad axis (leftx/lefty/rightx/righty/lefttrigger/righttrigger), held until changed
 900  quit

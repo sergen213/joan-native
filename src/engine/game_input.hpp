@@ -106,6 +106,9 @@ public:
     void feed(const RawInput& raw, float dt, glm::vec2 pointer = glm::vec2(-1.0f));
     game::InputFrame take();                   // once per 33 ms sim tick
     void reset();                              // drop queued events, motion and yaw remainder (pause/resume, load)
+    // Look motion not yet handed to the game (this tick's mouse / right-stick motion plus the sub-degree yaw
+    // remainder): x = camera 0 yaw, y = follow pitch, degrees. GameCamera::pose renders it ahead of the next tick.
+    glm::vec2 pending_look() const;
     bool pressed(int action) const { return valid(action) && frame_pressed_[std::size_t(action)]; }
     bool held(int action) const { return valid(action) && frame_held_[std::size_t(action)]; }
     float wheel() const { return wheel_; }

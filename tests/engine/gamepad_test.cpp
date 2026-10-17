@@ -221,6 +221,10 @@ int main() {
         CHECK(!r.pad_buttons[SDL_GAMEPAD_BUTTON_SOUTH] && r.pad_buttons[SDL_GAMEPAD_BUTTON_DPAD_UP]);
         b.apply(6, r);
         CHECK(r.pad_buttons.none());
+        Autoplay c;  // cmd: text2 is the rest of the line (save description with spaces)
+        CHECK(c.parse("0 cmd Save 0 Test_S1L1_00_start.jsav TEST S1L1  start \n", &err));
+        const Autoplay::FrameOut co = c.apply(0, r);
+        CHECK(co.commands.size() == 1 && co.commands[0].text == "Test_S1L1_00_start.jsav" && co.commands[0].text2 == "TEST S1L1  start");
     }
 
     const char* game = std::getenv("JOA_GAME_DIR");

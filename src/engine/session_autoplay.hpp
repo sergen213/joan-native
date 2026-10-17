@@ -9,7 +9,9 @@
 //   wheel <steps>
 //   pointer <x> <y>                       cursor in 1024x768 design units of the 4:3 canvas
 //   click <x> <y>                         pointer + left click (menus)
-//   cmd <UiCommand> [value] [text]        inject a command (NewGame 1, ContinueCampaign, QuickLoad, Resume, ...)
+//   cmd <UiCommand> [value] [text] [text2] inject a command (NewGame 1, ContinueCampaign, QuickLoad, Resume, ...);
+//                                         text2 = rest of the line: `cmd Save 0 Test.jsav TEST S1L1 start` writes
+//                                         <native save dir>/Test.jsav with that description
 //   win                                   test hook: finish every WIN objective (normal win-delay path)
 //   shot <file.png>                       capture after this frame is drawn
 //   log <text>                            print flow state + text to stderr

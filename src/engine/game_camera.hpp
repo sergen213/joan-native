@@ -86,7 +86,12 @@ public:
     // Rts_deinit 0x4404c0 with camera, before the gameplay part (Session::on_rts_exit): the commander last chosen by
     // key / portrait (+0x1237) becomes the player if he is a playable hero.
     void rts_deinit(game::Mission& m);
-    CameraPose pose(float alpha) const;
+    // `look` = GameInput::pending_look(): the follow camera renders mouse look at frame rate, i.e. the last tick's
+    // turn without interpolation lag plus the motion the next tick will apply (the game still turns in whole
+    // degrees per 33 ms tick; rendering only that stutters).
+    CameraPose pose(float alpha, glm::vec2 look = glm::vec2(0.0f)) const;
+    // Yaw the follow camera renders on top of the interpolated tick yaw; the hero's actor turns with it.
+    float look_yaw_offset(float alpha, float pending_yaw) const;
 
     // Free fly camera (--free-camera / --camera X,Y,Z,H,P): eye in original units, heading as unit yaw,
     // pitch positive up (WorldView's former free camera conventions).
@@ -191,8 +196,9 @@ private:
     bool cut_cam_ = false, cut_back_ = false;
     Playing play_;
     game::InputFrame tick_in_;
-    CamState cur_;
+    CamState cur_, prev_;
     CameraPose prev_pose_, cur_pose_;
+    float mouse_yaw_ = 0, mouse_pitch_ = 0;  // degrees the last tick's look input turned the follow camera
     Mode mode_ = Mode::Follow;
     bool snap_ = true;
 

@@ -214,7 +214,9 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
     game::Mission* m = session_.mission();
     const float alpha = flow_.paused() ? 1.0f : clock_.alpha();
     if (mission_visible()) {
-        pose_ = camera_.pose(alpha);
+        const glm::vec2 look = flow_.paused() ? glm::vec2(0.0f) : input_.pending_look();
+        pose_ = camera_.pose(alpha, look);
+        view_->player_yaw_offset = camera_.look_yaw_offset(alpha, look.x);
         f.view.projection = perspective_hor_plus(std::atan(pose_.fov_k), aspect, kDefaultNear, kDefaultFar);
         f.view.viewport = viewport_;
         view_->selection = session_.in_rts() ? &camera_.rts_selection() : nullptr;  // RTS selection rings

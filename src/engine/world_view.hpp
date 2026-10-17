@@ -56,6 +56,9 @@ public:
     int shadow_mode = 3;
     // RTS highlight (Unit 0x519250): units drawn with their select*.SMO ring (world_view_rings.cpp); null = none.
     const std::vector<int>* selection = nullptr;
+    // Degrees added to the player's rendered yaw: the frame-rate mouse look of GameCamera::look_yaw_offset, so the
+    // hero turns with the camera between ticks.
+    float player_yaw_offset = 0.0f;
 
     // --- stats / tests ---------------------------------------------------------------------------
     const WorldScene& scene() const { return *scene_; }

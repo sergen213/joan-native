@@ -75,12 +75,18 @@ bool Autoplay::parse(std::string_view text, std::string* err) {
             return false;
         }
         ls >> e.verb;
-        if (e.verb == "log" || e.verb == "shot" || e.verb == "type" || e.verb == "warp" || e.verb == "clear" || e.verb == "owner") {  // rest of the line (paths / names may contain spaces)
+        const auto rest_of_line = [&] {
             std::string rest;
             std::getline(ls, rest);
             rest.erase(0, rest.find_first_not_of(" \t"));
             rest.erase(rest.find_last_not_of(" \t\r") + 1);
-            e.args.push_back(rest);
+            return rest;
+        };
+        if (e.verb == "log" || e.verb == "shot" || e.verb == "type" || e.verb == "warp" || e.verb == "clear" || e.verb == "owner") {  // rest of the line (paths / names may contain spaces)
+            e.args.push_back(rest_of_line());
+        } else if (e.verb == "cmd") {  // cmd <type> [value] [text] [text2 = rest of the line, e.g. a save description]
+            for (std::string a; e.args.size() < 3 && ls >> a;) e.args.push_back(a);
+            if (std::string r = rest_of_line(); !r.empty()) e.args.push_back(std::move(r));
         } else {
             for (std::string a; ls >> a;) e.args.push_back(a);
         }

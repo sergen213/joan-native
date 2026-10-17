@@ -350,7 +350,8 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     for (auto& [id, a] : actors_) {
         if (!a.character) continue;
         const glm::vec3 p = glm::mix(a.p0, a.p1, alpha);
-        const glm::mat4 t = unit_frame({p.x, p.y, p.z}, a.yaw0 + wrap180(a.yaw1 - a.yaw0) * alpha);
+        const float yaw = a.yaw0 + wrap180(a.yaw1 - a.yaw0) * alpha + (id == player_ ? player_yaw_offset : 0.0f);
+        const glm::mat4 t = unit_frame({p.x, p.y, p.z}, yaw);
         frames_[id] = t;
         const glm::vec3 at(t[3]);
         if (glm::distance(eye, at) > kWorldFar + 200.0f) continue;  // beyond the far plane: no skinning

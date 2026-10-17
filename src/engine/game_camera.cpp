@@ -241,6 +241,7 @@ void GameCamera::before_tick(const game::Mission& cm, game::InputFrame& f) {
     const game::PlayerController& pc = m.world().controller();
     const float t = (std::clamp(f.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f;  // 0x4322d0 curve
     const float inv = f.invert_mouse ? -1.0f : 1.0f;
+    mouse_pitch_ = 0;
     if (aiming_ && pc.range_mode) {
         // Camera_mouse_aim 0x42bcd0, scheme 3: yaw free, pitch within AIM_HA (60) of the base pitch. Other modes aim
         // with keys / the stick in the controller (range_update); after_tick reads that back.
@@ -259,7 +260,7 @@ void GameCamera::before_tick(const game::Mission& cm, game::InputFrame& f) {
                 CamState c = follow_state(w, false);
                 c.pitch = p;
                 const glm::vec3 e = cam_eye(c);
-                if (p >= follow_pitch_ || e.z >= ground(w, e)) follow_pitch_ = p;
+                if (p >= follow_pitch_ || e.z >= ground(w, e)) mouse_pitch_ = p - follow_pitch_, follow_pitch_ = p;
             }
             // Zoom 0x438720: distance -/+ frame_ms * 0.6 for actions 48 / 49 (wheel), [80, 350].
             if (f.held[48]) follow_dist_ -= kTickMs * kZoomPerMs;
@@ -276,7 +277,13 @@ void GameCamera::after_tick(game::Mission& m, const GameInput& input) {  // keys
     game::World& w = m.world();
     game::PlayerController& pc = w.controller();
     game::MissionUi& ui = m.ui();
+    const float yaw0 = yaw_;
     yaw_ = wrap360(pc.camera_yaw_out);  // controller turns camera 0 with the hero (0x431790: camera yaw -= d)
+    {  // the part of this tick's turn that came from look input (0x431790: d = int(mouse_dx * t * 0.2))
+        const float want = -std::trunc(tick_in_.mouse_dx * ((std::clamp(tick_in_.mouse_sensitivity, -1.0f, 1.0f) + 1.0f) * 0.7f + 0.2f) * 0.2f);
+        const float got = std::remainder(yaw_ - yaw0, 360.0f);
+        mouse_yaw_ = want * got > 0.0f ? std::copysign(std::min(std::fabs(got), std::fabs(want)), want) : 0.0f;
+    }
     if (aiming_ && pc.range_mode && w.game_mode != 3) aim_yaw_ = yaw_, aim_pitch_ = -pc.camera_pitch_out;  // modes 0/1 aim
     // Action mode keys (PlayerCtrl_process 0x42e1a0): Shift + 25..32 = Unit_toggle_hold of that commander; 24 / 25..28
     // = Ctrl_switch_commander 0 / 1..4 outside range mode (+0xac) when the scenario is > 1 or +0x79 (rts_unlocked),
@@ -387,6 +394,7 @@ bool GameCamera::play_track(game::Mission& m, CamState& out) {
 void GameCamera::set(const CamState& s, Mode mode) {
     // Camera switches outside tracks are instant in the original (CamMan_start_transition(x, x)).
     if (mode != mode_ && mode != Mode::Track && mode != Mode::Rts && mode_ != Mode::Track) snap_ = true;
+    prev_ = snap_ ? s : cur_;
     cur_ = s;
     const CameraPose p = to_pose(s);
     prev_pose_ = snap_ ? p : cur_pose_;
@@ -395,7 +403,12 @@ void GameCamera::set(const CamState& s, Mode mode) {
     mode_ = mode;
 }
 
-CameraPose GameCamera::pose(float alpha) const {
+float GameCamera::look_yaw_offset(float alpha, float pending_yaw) const {
+    if (free || mode_ != Mode::Follow) return 0.0f;
+    return (1.0f - std::clamp(alpha, 0.0f, 1.0f)) * mouse_yaw_ + pending_yaw;
+}
+
+CameraPose GameCamera::pose(float alpha, glm::vec2 look) const {
     if (free) {
         const float h = free_heading_ * kDeg, p = free_pitch_ * kDeg;
         const glm::vec3 f{std::cos(h) * std::cos(p), std::sin(h) * std::cos(p), std::sin(p)};
@@ -405,6 +418,17 @@ CameraPose GameCamera::pose(float alpha) const {
         return c;
     }
     alpha = std::clamp(alpha, 0.0f, 1.0f);
+    if (mode_ == Mode::Follow) {  // orbit the interpolated pivot; look input at frame rate (pose() comment)
+        CamState s;
+        s.pivot = glm::mix(prev_.pivot, cur_.pivot, alpha);
+        s.dist = prev_.dist + (cur_.dist - prev_.dist) * alpha;
+        s.yaw = prev_.yaw + std::remainder(cur_.yaw - prev_.yaw, 360.0f) * alpha + look_yaw_offset(alpha, look.x);
+        s.pitch = std::clamp(prev_.pitch + (cur_.pitch - prev_.pitch) * alpha + (1.0f - alpha) * mouse_pitch_ + look.y, kPitchMin, kPitchMax);
+        CameraPose c = cur_pose_;
+        const CameraPose p = to_pose(s);
+        c.eye = p.eye, c.target = p.target;
+        return c;
+    }
     CameraPose c = cur_pose_;
     c.eye = glm::mix(prev_pose_.eye, cur_pose_.eye, alpha);
     c.target = glm::mix(prev_pose_.target, cur_pose_.target, alpha);
