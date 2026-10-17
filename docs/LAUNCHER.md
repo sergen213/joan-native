@@ -52,6 +52,7 @@ The launcher looks for `joan-native`, `joa-updater` (and the updater swaps `joa-
 | `controller` | `sensitivity` | real 0.1–5.0 (camera stick and RTS cursor speed) | `1.0` |
 | `controller` | `rumble` | `true` \| `false` — pad rumble on the player's hits (engine reads it; no launcher widget yet) | `true` |
 | `update` | `channel` | `stable` \| `experimental` | `stable` |
+| `debug` | `overlay` | `true` \| `false` — developer overlay (debug menu) open at start; Ctrl+F12 toggles it in game (overlay builds; releases include it) | `false` |
 | `paths` | `game_dir` | absolute path; empty = `$XDG_DATA_HOME/joan-native/game/current` | empty |
 
 Example:

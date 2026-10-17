@@ -66,6 +66,7 @@ Settings Settings::parse(const std::string& text) {
         else if (key == "controller.deadzone") number(s.deadzone, v, 0.0, 0.9);
         else if (key == "controller.sensitivity") number(s.sensitivity, v, 0.1, 5.0);
         else if (key == "update.channel") pick(s.channel, v, {"stable", "experimental"});
+        else if (key == "debug.overlay") boolean(s.debug_overlay, v);
         else if (key == "paths.game_dir") s.game_dir = v;
     }
     if ((s.width == 0) != (s.height == 0)) s.width = s.height = 0; // half a resolution is no resolution
@@ -95,6 +96,7 @@ std::string Settings::serialize() const {
       << "[display]\nwidth=" << width << "\nheight=" << height << "\naspect=" << aspect << "\nmode=" << mode << "\n\n"
       << "[controller]\ndeadzone=" << deadzone << "\nsensitivity=" << sensitivity << "\n\n"
       << "[update]\nchannel=" << channel << "\n\n"
+      << "[debug]\noverlay=" << b(debug_overlay) << "\n\n"
       << "[paths]\ngame_dir=" << game_dir << "\n";
     return o.str();
 }

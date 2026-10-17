@@ -293,7 +293,9 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
         ui_->cursor();
     }
     if (platform_) {
-        platform_->set_mouse_look(flow_.state() == FlowState::Playing && (camera_.free ? !flow_.paused() : !pointer));
+        bool dev_open = false;  // the overlay needs a free pointer: no relative mouse look while it is shown
+        JOA_DEV(dev_open = dev_ && dev_->visible;)
+        platform_->set_mouse_look(!dev_open && flow_.state() == FlowState::Playing && (camera_.free ? !flow_.paused() : !pointer));
         platform_->set_text_input(menu_.screen == MenuScreen::Save && menu_.save_state == 2);  // description entry
     }
 
@@ -347,7 +349,7 @@ int Client::run() {
         SDL_HideCursor();  // CURSOR.RES pointer drawn by the UI
     }
     renderer_->set_graphics(o_.graphics.resolve());
-    JOA_DEV(if (platform_) dev_ = std::make_unique<DevOverlay>(*renderer_, o_.graphics.resolve());)
+    JOA_DEV(if (platform_) dev_ = std::make_unique<DevOverlay>(*renderer_, o_.graphics.resolve()), dev_->visible = o_.dev_overlay;)
     ui_ = std::make_unique<Ui>(vfs_, *renderer_);
     load_options(vfs_, options_ini_path(), menu_.options, menu_.bindings);
     if (o_.music_volume >= 0) menu_.options.music_volume = o_.music_volume;

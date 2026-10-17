@@ -150,7 +150,7 @@ private:
     QPushButton *play_ = nullptr, *verify_ = nullptr, *repair_ = nullptr, *apply_ = nullptr;
     QCheckBox* wine_ = nullptr;
     QComboBox *backend_ = nullptr, *preset_ = nullptr, *resolution_ = nullptr, *aspect_ = nullptr, *mode_ = nullptr, *channel_ = nullptr;
-    QCheckBox *rtReflections_ = nullptr, *rtShadows_ = nullptr, *rtGi_ = nullptr;
+    QCheckBox *rtReflections_ = nullptr, *rtShadows_ = nullptr, *rtGi_ = nullptr, *debugOverlay_ = nullptr;
     QComboBox *aa_ = nullptr, *msaa_ = nullptr, *anisotropy_ = nullptr, *renderScale_ = nullptr, *sharpness_ = nullptr;
     QGroupBox* custom_ = nullptr;
     std::vector<std::pair<QComboBox*, std::string>> customKeys_; // Custom preset combos -> [graphics] key
@@ -285,6 +285,10 @@ private:
         form->addRow("Resolution", resolution_);
         form->addRow("Aspect ratio", aspect_);
         form->addRow("Display mode", mode_);
+        debugOverlay_ = new QCheckBox("Open the debug menu at start");
+        debugOverlay_->setToolTip("Developer overlay: timings, renderer and graphics toggles, time of day. Ctrl+F12 shows or "
+                                  "hides it in game.");
+        form->addRow("Debug menu", debugOverlay_);
         return w;
     }
 
@@ -351,6 +355,7 @@ private:
         deadzone_->setValue(s.deadzone);
         sensitivity_->setValue(s.sensitivity);
         select(channel_, QString::fromStdString(s.channel));
+        debugOverlay_->setChecked(s.debug_overlay);
         syncGraphics();
     }
 
@@ -364,7 +369,7 @@ private:
     void connectSettings() {
         for (auto* c : {backend_, preset_, resolution_, aspect_, mode_, channel_, aa_, msaa_, anisotropy_, renderScale_, sharpness_})
             connect(c, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
-        for (auto* c : {rtReflections_, rtShadows_, rtGi_}) connect(c, &QCheckBox::toggled, this, [this] { saveSettings(); });
+        for (auto* c : {rtReflections_, rtShadows_, rtGi_, debugOverlay_}) connect(c, &QCheckBox::toggled, this, [this] { saveSettings(); });
         for (const auto* keys : {&customKeys_, &qualityKeys_})
             for (const auto& [c, key] : *keys) connect(c, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
         for (auto* d : {deadzone_, sensitivity_}) connect(d, &QDoubleSpinBox::valueChanged, this, [this] { saveSettings(); });
@@ -394,6 +399,7 @@ private:
         s.deadzone = deadzone_->value();
         s.sensitivity = sensitivity_->value();
         s.channel = channel_->currentData().toString().toStdString();
+        s.debug_overlay = debugOverlay_->isChecked();
         syncGraphics();
         try { s.save(paths_.settings()); } catch (const std::exception& e) { append(QString("Cannot save settings: ") + e.what()); }
     }

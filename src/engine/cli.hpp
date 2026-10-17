@@ -45,6 +45,7 @@ struct Options {
     bool no_movies = false;          // --no-movies: skip enlight.wmv / intro.wmv at startup
     bool rts_unlocked = false;       // --rts-unlocked: allow F2 before scenario 5 (test hook)
     bool camera_fix = false;         // --camera-fix / [controller] camera_fix: Camera Fix Patch turn rate (5x)
+    bool dev_overlay = false;        // [debug] overlay: developer overlay open at start (JOA_DEV_OVERLAY builds; Ctrl+F12 toggles)
     // settings.ini [audio] master/music/sound/environment volumes 0..100 (-1 = options.ini values).
     int master_volume = -1, music_volume = -1, sound_volume = -1, environment_volume = -1;
     std::string ui_screen;           // --ui-screen: original 2D interface screen (ui_screens.hpp names)

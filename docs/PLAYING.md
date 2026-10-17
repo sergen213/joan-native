@@ -187,7 +187,8 @@ volumes), `[paths] game_dir`. Explicit CLI flags win (`--preset original --graph
 - Dev overlay (release builds and `-DJOA_DEV_OVERLAY=ON`): Ctrl+F12 toggles it (plain F12 stays the Mission Brief).
   It shows timings, draw/unit counts, a day/night section (the mission clock; "override game clock" with a
   time-of-day slider, a speed in game minutes per real second and 06:00..night presets) and graphics preset/feature
-  toggles; it takes the mouse while the pointer is over it.
+  toggles. While it is shown the mouse is released (no mouse look) and the overlay draws its own pointer; the launcher's
+  Graphics tab "Debug menu" checkbox (`[debug] overlay`) opens it at start.
 - Tracy (builds configured with `-DJOA_TRACY=ON`): connect the Tracy profiler/`tracy-capture` v0.11.1 to the running
   client; zones `sim.tick`, `render.submit`, `render.present`, `audio.mix`.
 - Day/night: the world lighting follows the mission clock (24 game minutes per real minute), blending the world's

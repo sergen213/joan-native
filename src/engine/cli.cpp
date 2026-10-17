@@ -128,6 +128,8 @@ std::string apply_settings_ini(std::string_view ini, Options& o) {
             o.camera_fix = v == "true" || v == "1";
         } else if (key == "controller.rumble") {
             o.rumble = v == "true" || v == "1";
+        } else if (key == "debug.overlay") {
+            o.dev_overlay = v == "true" || v == "1";
         } else if (key.starts_with("audio.") && number(v, i)) {
             const std::string_view k = std::string_view(key).substr(6);
             i = std::clamp(i, 0, 100);

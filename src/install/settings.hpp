@@ -26,6 +26,7 @@ struct Settings {
     double deadzone = 0.15;               // [controller] 0.0..0.9
     double sensitivity = 1.0;             // [controller] 0.1..5.0
     std::string channel = "stable";       // [update] stable|experimental
+    bool debug_overlay = false;           // [debug] overlay: developer overlay (Ctrl+F12) open at start
     std::string game_dir;                 // [paths] empty = $XDG_DATA_HOME/joan-native/game/current
 
     // Missing file/keys and invalid values fall back to the defaults above; unknown keys are ignored.

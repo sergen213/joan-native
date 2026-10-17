@@ -35,6 +35,7 @@ DevOverlay::DevOverlay(IRenderer& renderer, const GraphicsSettings& graphics) : 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.BackendRendererName = "joan-native IRenderer";
+    io.MouseDrawCursor = true;  // the system cursor stays hidden (the game draws CURSOR.RES only in pointer modes)
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
     unsigned char* pixels = nullptr;
     int w = 0, h = 0;
