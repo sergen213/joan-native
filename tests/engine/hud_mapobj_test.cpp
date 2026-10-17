@@ -51,6 +51,12 @@ int main() {
         h.minimap_fog = false;
         CHECK(hud_vision_visible(h, {9000, 9000}));
     }
+    {  // set_minimap_rotation 1 (FUN_00716010 case 1): a point right of the view centre (world +x) lands above it
+        const glm::vec2 c{1024 - 0xd3 + 99.5f, 110.0f}, p = c + glm::vec2(30.0f, 10.0f);
+        CHECK(hud_minimap_turn(1, p) == c + glm::vec2(10.0f, -30.0f));
+        CHECK(hud_minimap_turn(0, p) == p && hud_minimap_turn(2, p) == c - glm::vec2(30.0f, 10.0f));
+        for (int r = 0; r < 4; ++r) CHECK(hud_minimap_turn(4 - r, hud_minimap_turn(r, p)) == p);
+    }
     {  // panel fade: show -> 2 s fade in -> 12 s after the show -> 3 s fade out -> hidden
         HudModel h;
         h.objective_list.resize(1);

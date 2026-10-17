@@ -154,12 +154,17 @@ F10 (Capture Screen) writes the presented frame, UI included, as `JOAN000.png`, 
 ### Test saves (`tools/make_test_saves.py`)
 
 `tools/make_test_saves.py` writes ready-made saves for every campaign mission into the native save dir: per mission
-`Test_<MAP>_00_start.jsav` ("TEST <MAP> - start", right after the opening) plus one per key place
-(`Test_<MAP>_<NN>_<place>.jsav`, "TEST <MAP> - <place>": camps, towns, castles, gates, objectives; the list is
-`MISSIONS` in the script). Each comes from a headless run (`--scenario`, then `--load` of the start save, autoplay
-`warp <place>` and `cmd Save 0 <file> <description>`) and is checked by loading it (`--load <file> --frames 60`:
-right mission, hero alive where she was saved). S9L1 starts from S5L1 forced won + CONTINUE (its world is S5L1's,
-so S5L1's places are untaken). Regenerate after save-format or mission changes:
+`Test_<MAP>_00_start.jsav` ("TEST <MAP> - start", once the opening cut scene / brief is over and the player has
+control) plus one per key place (`Test_<MAP>_<NN>_<place>.jsav`: camps, towns, castles, gates, objectives; the list
+is `MISSIONS` in the script). Each comes from a headless run (`--scenario`, then `--load` of the start save, autoplay
+`spawn <place>` and `cmd Save 0 <file> <description>`), saved only in a controllable window (a script brief that waits
+is closed with F12, a cut scene that never ends skipped with Escape). `spawn` moves the hero with her party (the other
+heroes with her and their troops) to the place point, or, when hostiles are within reach of it, to the nearest point on
+the way back toward the start out of their reach: those saves read "TEST <MAP> - near <place>" (places are trigger
+zones, often enemy camps; the mission has not progressed; a hero still attacked at once is spawned further out, up to
+twice). Each save is checked by loading it: right mission, controllable, hero within 200 of the spawn point and above
+half her HP after 600 idle frames. S9L1 starts from S5L1 forced won +
+CONTINUE (its world is S5L1's, so S5L1's places are untaken). Regenerate after save-format or mission changes:
 
 ```
 tools/make_test_saves.py                       # all missions, build/src/engine/joan-native, ~30 s
@@ -323,7 +328,8 @@ AI-driven in RTS). GL and Vulkan end with the same mission hash.
   the game; aw_r / aw_l or pad left/right on a row, RECRUIT|BUILD / Enter commits, CANCEL / Esc leaves; HELP = G_POPUP
   text box; build bar over the workshop while a weapon builds). Mission 7's workshop1 is English until the script's
   capture; its IRON / WOOD workshops need Alencon as the controlled unit (key 4 / `` ` ``). Test hooks
-  `<frame> warp <facility | place name>`, `<frame> gold <n>`, `<frame> clear <place name>` (kills the hostiles in
+  `<frame> warp <facility | place name>`, `<frame> spawn <facility | place name>[@margin]` (warp with the party,
+  beyond hostile engage range + margin: test saves), `<frame> gold <n>`, `<frame> clear <place name>` (kills the hostiles in
   it), `<frame> owner <nation> <place name>` (set_place_nation_by_code), `<frame> attr <type> <n>` (spend attribute
   points, 5 = leadership); demo `work/PlayableGame2/RecruitFix/play_recruit.txt` (mission 7): leadership raises the
   troop maximum to 15 and two recruits join; workshop1 cleared + made French, HELP box, two cannons built (bar over

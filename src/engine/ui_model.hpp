@@ -252,7 +252,7 @@ struct HudModel {
     std::vector<BriefObjective> brief_objectives;
     std::vector<BriefCommander> brief_commanders;
     std::array<bool, 6> brief_weapons{};   // ram, crossbow, bombard, cannon, fauconneau, trebuchet present in the unit array
-    int brief_rotation = 0;                // set_minimap_rotation (DAT_00a4f3ac, 0..3): 3D-map yaw = 90 - 90 r degrees
+    int brief_rotation = 0;                // set_minimap_rotation (DAT_00a4f3ac, 0..3): 3D-map yaw = 90 - 90 r degrees; HUD minimap turned r x 90 CCW
     // File-backed (brief_content).
     std::string brief_text;                // Background text (<ObjectiveFileName>.obj), raw cp1252, '\n' paragraphs
     std::string brief_map;                 // 3D-map scene (script/scenario/<ObjectiveMapFileName>.bm)

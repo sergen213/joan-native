@@ -207,6 +207,15 @@ vec4 water_waves(vec2 p) {
     return fade * vec4(vec2(x1 - x0, z1 - z0) / (2.0 * d), h, (x0 + x1 + z0 + z1 - 4.0 * h) / (d * d));
 }
 
+// Smooth value noise in [0, 1], one lattice cell per unit of x (repeats every 289 cells: keeps sin's argument small).
+float lattice_hash(vec2 c) { return fract(sin(dot(mod(c, 289.0), vec2(12.9898, 78.233))) * 43758.5453); }
+float value_noise(vec2 x) {
+    vec2 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(lattice_hash(i), lattice_hash(i + vec2(1.0, 0.0)), f.x),
+               mix(lattice_hash(i + vec2(0.0, 1.0)), lattice_hash(i + 1.0), f.x), f.y);
+}
+
 // na, nb: the water normal map at water_uv (rgb tangent normal, a height). Returns the linear HDR colour (drawn with alpha 1).
 vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     vec3 ta = na.xyz * 2.0 - 1.0, tb = nb.xyz * 2.0 - 1.0;
@@ -264,12 +273,14 @@ vec3 shade_water(vec3 p, vec4 na, vec4 nb, float t, vec2 pixel) {
     float spec = d_ggx(max(dot(n, h), 0.0), a) * v_smith(nv, nl, a) * nl * (0.02 + 0.98 * pow(1.0 - max(dot(v, h), 0.0), 5.0));
     c += spec * to_linear(min(R.sun_color.rgb, vec3(1.0))) * sun_shadow(p, vec3(0.0, 1.0, 0.0), pixel) * edge;
 
-    // Shoreline foam: a soft band over the shallow bed, broken up by both height layers and lapping with time.
+    // Shoreline foam: a band over the shallow bed, broken into drifting lace by fine noise (12 / 5 units). The normal-map
+    // heights (260 / 900 units) are far coarser than the band and a sin of the depth draws depth contours: both left a
+    // solid white line along every bank (thin on the steep ones), not foam.
     float band = 1.0 - smoothstep(0.0, 40.0, depth), pattern = 0.5 * (na.a + nb.a);
-    float lap = 0.5 + 0.5 * sin(depth * 0.25 - t * 1.5 + pattern * 6.0);
-    float foam = band * band * smoothstep(0.4, 0.75, 0.6 * pattern + 0.4 * lap);
+    float lace = 0.6 * value_noise(p.xz / 12.0 + t * vec2(0.25, -0.15)) + 0.4 * value_noise(p.xz / 5.0 - t * vec2(0.2, 0.3));
+    float foam = band * smoothstep(0.5, 0.75, lace);
     // Wave foam: splash craters (bob 1.8, weapon 4.9, splash 7 units deep) or the sharpest crests (curvature well above the
-    // wade's p99), broken up like the shore's.
+    // wade's p99), broken up by the height pattern.
     float churn = max(smoothstep(4.0, 7.0, abs(wave.z)), smoothstep(0.12, 0.25, -wave.w));
     foam = max(foam, churn * smoothstep(0.1, 0.7, pattern));
     return mix(c, light * 0.85, foam * 0.75 * smoothstep(0.0, 4.0, depth));

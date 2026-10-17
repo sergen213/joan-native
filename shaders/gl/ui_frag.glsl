@@ -1,6 +1,7 @@
 #version 330 core
 in vec2 v_uv;
 in vec4 v_color;
+flat in vec4 v_uv_rect;  // sampled sub-rectangle (UiVertex::uv_rect)
 
 uniform sampler2D u_texture;
 
@@ -14,6 +15,10 @@ vec3 encode_srgb(vec3 c) {
 }
 
 void main() {
-    vec4 c = texture(u_texture, v_uv) * v_color;
+    // Clamp to the rect's edge texel centres: magnified (UI scale > 1) atlas sprites and glyphs would otherwise
+    // filter in their neighbours' edge rows (pale lines along button art, specks around glyphs).
+    vec2 half_texel = 0.5 / vec2(textureSize(u_texture, 0));
+    vec2 uv = clamp(v_uv, v_uv_rect.xy + half_texel, max(v_uv_rect.zw - half_texel, v_uv_rect.xy + half_texel));
+    vec4 c = texture(u_texture, uv) * v_color;
     o_color = vec4(encode_srgb(c.rgb), c.a);
 }

@@ -26,8 +26,12 @@ bool hud_vision_visible(const HudModel& hud, glm::vec2 p);
 // 200x200 mask in view pixels (row-major, 1 = visible) for view pixel = ((x - origin.x) sx, (origin.y - y) sy).
 using VisionMask = std::array<std::uint8_t, 200 * 200>;
 void hud_vision_mask(const HudModel& hud, glm::vec2 origin, glm::vec2 scale, VisionMask& mask);
+// set_minimap_rotation (minimap +0x2b; FUN_007141a0 tiles, FUN_00716010 icons, FUN_0070fbe0 dots, FUN_00718540
+// waypoints, Minimap_screen_to_world 0x717700): the view turns rotation x 90 degrees counter-clockwise about its
+// centre (W-0xd3 + 99.5, 110), so rotation 1 shows world +x up. Inverse = hud_minimap_turn(4 - rotation, p).
+glm::vec2 hud_minimap_turn(int rotation, glm::vec2 p);
 // minimap(): the fog over the view at (W-0xd3, 10) (before FRAME), then the waypoints (after FRAME).
-// screen = (x, map_h - y) * ppw + off, as hud_game's minimap.
+// screen = turn((x, map_h - y) * ppw + off), as hud_game's minimap.
 void hud_minimap_fog(Ui& ui, const HudModel& m, glm::vec2 off, glm::vec2 ppw);
 void hud_minimap_waypoints(Ui& ui, const HudModel& m, glm::vec2 off, glm::vec2 ppw);
 

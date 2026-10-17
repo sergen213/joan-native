@@ -180,8 +180,18 @@ void hud_vision_mask(const HudModel& hud, glm::vec2 origin, glm::vec2 scale, Vis
     }
 }
 
+glm::vec2 hud_minimap_turn(int rotation, glm::vec2 p) {
+    const glm::vec2 c{kViewX + 99.5f, kViewY + 100.0f}, d = p - c;
+    switch (rotation & 3) {
+        case 1: return c + glm::vec2(d.y, -d.x);
+        case 2: return c - d;
+        case 3: return c + glm::vec2(-d.y, d.x);
+        default: return p;
+    }
+}
+
 // FUN_0070e500: the mask texture (0 -> 0x80000000 black, 1 -> transparent) drawn at (W-0xd3, 10) with colour
-// (0,0,0,0xff), after the unit dots and before FRAME. Drawn as one fill per run of identical fogged rows.
+// (0,0,0,0xff) and the minimap rotation, after the unit dots and before FRAME. One fill per run of identical fogged rows.
 void hud_minimap_fog(Ui& ui, const HudModel& m, glm::vec2 off, glm::vec2 ppw) {
     if (!m.minimap_fog) return;
     const glm::vec2 origin{(kViewX - off.x) / ppw.x, m.map_size.y + (off.y - kViewY) / ppw.y};
@@ -191,7 +201,12 @@ void hud_minimap_fog(Ui& ui, const HudModel& m, glm::vec2 off, glm::vec2 ppw) {
     std::vector<glm::ivec2> runs, prev;  // [x0, x1) fogged runs of a row
     int start = 0;
     auto flush = [&](int row) {
-        for (const glm::ivec2 r : prev) ui.fill({kViewX + float(r.x), kViewY + float(start), float(r.y - r.x), float(row - start)}, fog);
+        for (const glm::ivec2 r : prev) {
+            const glm::vec2 a = hud_minimap_turn(m.brief_rotation, {kViewX + float(r.x), kViewY + float(start)});
+            const glm::vec2 b = hud_minimap_turn(m.brief_rotation, {kViewX + float(r.y), kViewY + float(row)});
+            const glm::vec2 lo = glm::min(a, b), hi = glm::max(a, b);
+            ui.fill({lo.x, lo.y, hi.x - lo.x, hi.y - lo.y}, fog);
+        }
     };
     for (int row = 0; row <= 200; ++row) {
         runs.clear();
@@ -213,7 +228,8 @@ void hud_minimap_waypoints(Ui& ui, const HudModel& m, glm::vec2 off, glm::vec2 p
     for (const HudMapIcon& ic : m.minimap_waypoints) {
         const UiSprite* s = ui.sprite("MAPICON", ic.sprite);
         if (!s) continue;
-        const glm::vec2 p = glm::round(glm::vec2(ic.world.x, m.map_size.y - ic.world.y) * ppw + off), h = s->size / 2.0f;
+        const glm::vec2 p = glm::round(hud_minimap_turn(m.brief_rotation, glm::vec2(ic.world.x, m.map_size.y - ic.world.y) * ppw + off));
+        const glm::vec2 h = s->size / 2.0f;
         if (p.x - h.x >= kViewX && p.y - h.y >= kViewY && p.x + h.x <= kViewX + 199 && p.y + h.y <= kViewY + 200) ui.sprite(s, p - h);
     }
 }

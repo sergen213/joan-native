@@ -214,7 +214,7 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
     game::Mission* m = session_.mission();
     const float alpha = flow_.paused() ? 1.0f : clock_.alpha();
     if (mission_visible()) {
-        const glm::vec2 look = flow_.paused() ? glm::vec2(0.0f) : input_.pending_look();
+        const glm::vec2 look = flow_.paused() || m->world().input_locked() ? glm::vec2(0.0f) : input_.pending_look();
         pose_ = camera_.pose(alpha, look);
         view_->player_yaw_offset = camera_.look_yaw_offset(alpha, look.x);
         f.view.projection = perspective_hor_plus(std::atan(pose_.fov_k), aspect, kDefaultNear, kDefaultFar);
@@ -427,8 +427,9 @@ int Client::run() {
                         if (d < best) best = d, foe = &u;
                     }
                 if (p)
-                    std::fprintf(stderr, "  player %d (%s) at %.0f,%.0f yaw %.0f hp %d action %d mode %d; nearest hostile %s\n", p->id,
-                                 w.data().units[std::size_t(p->cls)].code.c_str(), p->pos.x, p->pos.y, p->yaw_deg, p->hp, p->action, w.game_mode,
+                    std::fprintf(stderr, "  player %d (%s) at %.0f,%.0f yaw %.0f hp %d action %d mode %d cut %d lock %d; nearest hostile %s\n", p->id,
+                                 w.data().units[std::size_t(p->cls)].code.c_str(), p->pos.x, p->pos.y, p->yaw_deg, p->hp, p->action, w.game_mode, int(w.cut_scene),
+                                 int(w.input_locked() || m->ui().cs.active || m->ui().game_cut_scene),
                                  foe ? (std::to_string(foe->id) + " at " + std::to_string(int(foe->pos.x)) + "," + std::to_string(int(foe->pos.y)) +
                                         " dist " + std::to_string(int(best)) + " bearing " +
                                         std::to_string(int(std::atan2(foe->pos.y - p->pos.y, foe->pos.x - p->pos.x) * 57.29578f)))
@@ -484,7 +485,7 @@ int Client::run() {
         pad_pointer_.apply(ui_raw_);
         if (mission_visible() && !flow_.paused()) {
             if (camera_.free) camera_.free_move(input_, float(dt), {raw_.mouse_dx, raw_.mouse_dy}, menu_.options);
-            else if (session_.in_rts()) {
+            else if (session_.in_rts() && !session_.mission()->world().input_locked()) {
                 glm::vec2 mouse = pointer;
                 if (pad_pointer_.active) mouse = pad_pointer_.pos;
                 camera_.rts_input(*session_.mission(), ui_raw_, mouse, viewport_, frame_view_.projection * frame_view_.view);

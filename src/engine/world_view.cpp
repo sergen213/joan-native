@@ -328,9 +328,11 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     // Interactive water: the wave window follows the look-at point; kicks of this frame (wade below) enter the next step.
     waves_.follow({pose.target.x, pose.target.z});
     waves_.step(dt);
-    // Day/night sky: the noon dome scaled per channel by how the horizon (scattering) colour changed since noon.
-    const glm::vec3 horizon = glm::convertSRGBToLinear(scene_->lighting().fog_color);
-    sky_->build(eye, time_s_, glm::clamp(horizon / glm::max(sky_noon_, glm::vec3(1e-3f)), 0.0f, 1.5f), draws);
+    // Day/night sky: the noon dome scaled per channel by how this view's horizon (scattering) colour differs from noon's,
+    // so the dome's horizon is the fog colour the scene fades to. The +X colour, capped at 1.5x, left a hard-edged teal
+    // sky over beige-fogged distance when looking towards a low sun (S5L1 Jargeau cut scene).
+    const glm::vec3 horizon = glm::convertSRGBToLinear(lighting_.fog_color);
+    sky_->build(eye, time_s_, glm::clamp(horizon / glm::max(sky_noon_, glm::vec3(1e-3f)), 0.0f, 4.0f), draws);
     scene_->build(view_proj, eye, draws);
     for (Node& n : nodes_) {
         n.water->build(time_s_, eye, draws);

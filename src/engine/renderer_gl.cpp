@@ -129,6 +129,8 @@ public:
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void*>(offsetof(UiVertex, uv)));
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void*>(offsetof(UiVertex, color)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(UiVertex), reinterpret_cast<void*>(offsetof(UiVertex, uv_rect)));
         glBindVertexArray(0);
 
         white_ = upload({1, 1, PixelFormat::Rgba8Unorm, {255, 255, 255, 255}, false, true, {}});
@@ -649,8 +651,10 @@ private:
         ui_vertices_.clear();
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
-            const UiVertex v[4] = {{p0, q.uv0, q.color}, {{p1.x, p0.y}, {q.uv1.x, q.uv0.y}, q.color},
-                                   {p1, q.uv1, q.color}, {{p0.x, p1.y}, {q.uv0.x, q.uv1.y}, q.color}};
+            const glm::vec4 r{glm::min(q.uv0, q.uv1), glm::max(q.uv0, q.uv1)};
+            const glm::vec2 uv[4] = {q.uv0, {q.uv1.x, q.uv0.y}, q.uv1, {q.uv0.x, q.uv1.y}};  // TL TR BR BL, turned by q.turns
+            const UiVertex v[4] = {{p0, uv[q.turns & 3], q.color, r}, {{p1.x, p0.y}, uv[(q.turns + 1) & 3], q.color, r},
+                                   {p1, uv[(q.turns + 2) & 3], q.color, r}, {{p0.x, p1.y}, uv[(q.turns + 3) & 3], q.color, r}};
             ui_vertices_.insert(ui_vertices_.end(), {v[0], v[1], v[2], v[0], v[2], v[3]});
         }
         const GLint tri_base = GLint(ui_vertices_.size());

@@ -338,8 +338,10 @@ void GameCamera::after_tick(game::Mission& m, const GameInput& input) {  // keys
     CamState s;
     if (play_track(m, s)) set(s, Mode::Track);
     else if (cs.active && cut_cam_ && !cut_back_) set(cut_state(cs), Mode::Cut);
-    else if (rts_) rts_tick(m), set(rts_cam_, Mode::Rts);
-    else if (aiming_) set(aim_state(w), Mode::Aim);
+    else if (rts_) {
+        if (!w.input_locked()) rts_tick(m);  // PlayerCtrl_rts 0x440b30 sits behind the 0x42e1a0 cut-scene guard
+        set(rts_cam_, Mode::Rts);
+    } else if (aiming_) set(aim_state(w), Mode::Aim);
     else set(follow_state(w), Mode::Follow);
     pc.camera_yaw_out = aiming_ ? aim_yaw_ : yaw_;
 }

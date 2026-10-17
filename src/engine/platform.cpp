@@ -14,7 +14,10 @@ Platform::Platform(const Options& o, bool hidden) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::string("SDL_Init: ") + SDL_GetError());
     const bool vulkan = o.renderer == RendererKind::Vulkan;
     if (!vulkan) gl_set_window_attributes();
-    SDL_WindowFlags flags = (vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    SDL_WindowFlags flags = (vulkan ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_RESIZABLE;
+    // Native pixels on scaled monitors for play; captures/tests at an explicit size want exactly width x height pixels
+    // whatever the monitor's scale (a 150 % monitor turned 640x360 into 960x540).
+    if (!hidden || o.desktop_size) flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (hidden && !std::getenv("JOA_SHOW_WINDOWS")) flags |= SDL_WINDOW_HIDDEN;  // tests on the real display
     window_ = SDL_CreateWindow("Wars and Warriors: Joan of Arc (native)", o.width, o.height, flags);
     if (!window_) {
@@ -22,14 +25,14 @@ Platform::Platform(const Options& o, bool hidden) {
         throw std::runtime_error(std::string("SDL_CreateWindow: ") + SDL_GetError());
     }
     if (o.mode == WindowMode::Fullscreen) {
-        // Launcher width/height 0 = desktop resolution (docs/LAUNCHER.md): the closest mode to the 1280x720 default was a
-        // 720p swapchain stretched over the display (blurry on a 4K panel).
+        // Launcher width/height 0 = desktop resolution (docs/LAUNCHER.md): desktop fullscreen (mode nullptr). The
+        // desktop "mode" is in logical units (3072x1728 at 125 % scaling on a 4K panel) and as an exclusive mode it
+        // got a 3072x1728 swapchain the compositor stretched 1.25x: blurry text and UI. Desktop fullscreen keeps the
+        // window's pixel density (3840x2160 pixels).
         SDL_DisplayMode mode;
-        const SDL_DisplayID display = SDL_GetDisplayForWindow(window_);
-        const SDL_DisplayMode* desktop = o.desktop_size ? SDL_GetDesktopDisplayMode(display) : nullptr;
-        const int w = desktop ? desktop->w : o.width, h = desktop ? desktop->h : o.height;
-        if (SDL_GetClosestFullscreenDisplayMode(display, w, h, desktop ? desktop->refresh_rate : 0.0f, true, &mode))
-            SDL_SetWindowFullscreenMode(window_, &mode);
+        const bool exclusive = !o.desktop_size &&
+                               SDL_GetClosestFullscreenDisplayMode(SDL_GetDisplayForWindow(window_), o.width, o.height, 0.0f, true, &mode);
+        SDL_SetWindowFullscreenMode(window_, exclusive ? &mode : nullptr);
         SDL_SetWindowFullscreen(window_, true);
     } else if (o.mode == WindowMode::Borderless) {
         SDL_SetWindowFullscreenMode(window_, nullptr);  // desktop-resolution fullscreen

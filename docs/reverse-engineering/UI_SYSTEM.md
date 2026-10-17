@@ -529,11 +529,20 @@ count in (cnt_t, H-0x23)-(cnt_t+16, H-0xc) when the unit leads troops.
 
 #### Minimap — FUN_0070e500 / FUN_00716010 / FUN_0071b6a0. HIGH
 - view 199x200 at (W-0xd3, 10), centred on the player at (W-0xd3+99.5, 110) (template match of the z1 map vs ref: player
-  centre (912.5,110) exactly). Tiles `<scenario>W` z<zoom>r<row>c<col> 200x200 px; tile world size = World+0x54/+0x58
-  (world w/h floats, disasm 0x71baa4..) / max col / max row; world y up (row 1 = top). S1L1 world = 16384 (STG grid
-  256x256 cells x 64). Outside the map: tile `z<zoom>b`. Tiles carry alpha 170 in the texture (no extra blend).
+  centre (912.5,110) exactly). Tiles `<world>` z<zoom>r<row>c<col> 200x200 px, table named after the World (World +6,
+  FUN_0071bf10; `S5L1W` for S9L1, which plays scenario 5's world); tile world size = World+0x54/+0x58 (world w/h floats,
+  disasm 0x71baa4..) / max col / max row; world y up (row 1 = top). World+0x54/+0x58 = `<world>.wor` CreateGrid X/Y x
+  2048 (FUN_0044e8c0, `(float)(n << 0xb)`): S1L1 8x8 = 16384, S5L1 16x40 = 32768x81920 - one z1 tile = 8192 units on
+  every map. Outside the map: tile `z<zoom>b`. Tiles carry alpha 170 in the texture (no extra blend).
+- Rotation (minimap +0x2b = DAT_00a4f3ac, set_minimap_rotation; 1 in S3L1, S4L1, S5L1, S9L1, S6L1, S7L1): tiles
+  (FUN_007141a0 blits with the rotation), icons (FUN_00716010), dots (FUN_0070fbe0), waypoints (FUN_00718540), fog and
+  clicks (Minimap_screen_to_world) turn r x 90 degrees counter-clockwise about the view centre: view pixel (u, v) ->
+  r1 (v, 200-u), r2 (200-u, 200-v), r3 (199.5-v, u); rotation 1 = world +x up. The player arrow angle loses r x 90.
+  Port: `hud_minimap_turn`, UiQuad::turns for the tiles.
+- Icons: every world level's `<node>.MAP` (FUN_0071bf10 loop over World +0x72 levels), position + level origin
+  (Level +0x44/+0x48).
 - icons centred, drawn only when fully inside the view; player = MAPICON "cursor" rotated by heading (type 2).
-  ponytail: rotation done with per-texel quads (UiQuad has no rotation).
+  ponytail: rotation done with per-texel quads (UiQuad::turns only does 90 degree steps).
 - FRAME (MAPICON frame 216x216): decomp (W-0xd7, 6) but that clips; measured (806, 6) = W-218.
 - sample: player (14971,12698) (cutscene camera of S1L1_tactic.sce: 14988,12783), camps from map/scenario1/S1L1.map
   (fcastle 8116,726; fcamp/ecamp 12000,14000 — lands within 2 px of the ref tent), enemy dots measured.
@@ -783,7 +792,7 @@ tests `engine.hud_mapobj`, `engine.gl_/vk_hud_mapobj`.
   `enable_fog_of_war [n]` (FUN_00456990, n defaults to 1): n == 0 -> area 10 = the world rect (DAT_00a45f3e+0x48,
   everything visible), else area 10 off; `toggle_fog_of_war` (FUN_00456a40) flips DAT_00a4f3ae (0 at start) the same
   way. Port: autoplay `cheat enable_fog_of_war <n>` (session_autoplay.cpp; toggle not ported).
-- Gaps: minimap rotation (+0x2b) not modelled for the mask (as for the tiles); FUN_007190b0 (RTS mode: hostile unit
+- Gaps: FUN_007190b0 (RTS mode: hostile unit
   models hidden outside the mask) is a 3D-world effect, not done.
 
 #### Objective panel — FUN_00704810, HUD object 0xa4d618. HIGH

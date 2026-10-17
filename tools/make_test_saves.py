@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Generate Load-menu test saves: one per campaign mission at its start plus one per key place.
 
-Phase 1, per mission: `joan-native --headless --scenario <MAP> --seed 1` with an autoplay script that saves right
-after the opening (`cmd Save 0 <file> <description>`) as Test_<MAP>_00_start.jsav. S9L1 only exists as the
-continuation of S5L1's world, so its start comes from S5L1 forced won (`win`) + ContinueCampaign.
-Phase 2, per place: `--load` that start save, let the opening scripts run, `warp <place>` (hero to the place centre /
-facility point), settle, save as Test_<MAP>_<NN>_<slug>.jsav, description "TEST <MAP> - <place>".
-Every save is checked with `--headless --load <file> --frames 60`: right mission, hero alive where she was saved.
+Phase 1, per mission: `joan-native --headless --scenario <MAP> --seed 1`, saved (`cmd Save 0 <file> <description>`)
+as Test_<MAP>_00_start.jsav once the opening cut scene / brief is over and the player has control. S9L1 only exists
+as the continuation of S5L1's world, so its start comes from S5L1 forced won (`win`) + ContinueCampaign.
+Phase 2, per place: `--load` that start save, `spawn <place>` (hero and party to the place centre / facility point,
+or the nearest point on the way back toward the start beyond every hostile's search range: then described "near"),
+settle until controllable, save as Test_<MAP>_<NN>_<slug>.jsav, description "TEST <MAP> - [near ]<place>".
+Every save is checked with `--headless --load <file>`: right mission, controllable, hero within RADIUS of the spawn
+point (start: of where she was saved) and still alive after IDLE idle frames.
 Saves are written under a private $XDG_DATA_HOME and moved to --out (existing Test_<MAP>_* there are replaced).
 
     tools/make_test_saves.py [--binary B] [--game-dir G] [--out DIR] [--missions S1L1,S3L1] [--jobs N]
@@ -55,17 +57,23 @@ MISSIONS = {
                  "S6L1_8_Approach_Reims_Place", "S6L1_8_Gate_Place"]),
 }
 
-# Default start: --scenario <MAP>, saved at frame 30 (headless: one tick per frame); place saves warp 120 frames
-# after loading it (the opening scripts have run, their dialogs auto-advance headless) and save 30 frames later.
-START = (None, "", 30, 120)
-# S9L1 (scenario 6) continues S5L1's world: S5L1 won at once (`win`, its objectives brief closed with F12),
-# ContinueCampaign, saved once S9L1 plays (loading screen done) and before its first script brief (~130 ticks later),
-# which the place saves must also beat: they warp 10 frames after loading.
-# ponytail: frame numbers, fine while headless runs are deterministic (fixed dt, --seed 1).
-CONTINUE = {"S9L1": ("S5L1", "30 win\n450 tap F12\n600 cmd ContinueCampaign\n", 1200, 10)}
-SETTLE = 30
-PLAYER = re.compile(r"player \d+ \(\S+\) at (-?\d+),(-?\d+) yaw -?\d+ hp (-?\d+)")
-MISSION = re.compile(r"^autoplay \d+: state (\S+).* mission (\d+) ", re.M)
+# Every save is taken in a controllable window (settle): playing, no "(paused)" / "(loading screen)", no brief, no
+# cut scene / input lock, hero alive for STABLE frames from the window start, at MISSIONS' mission. Headless runs are
+# deterministic (fixed dt, --seed 1), so blockers that never clear are answered and the run repeated: a script brief
+# (show_scenario_brief waits for it) is closed with F12, a cut scene skipped with Escape.
+# Default start: --scenario <MAP>, settled from frame 5; place saves `spawn` 10 frames after loading the start save.
+# S9L1 (scenario 6) continues S5L1's world: S5L1 won at once (`win`, its objectives brief closed with F12), then
+# ContinueCampaign; settled once S9L1 plays.
+START = (None, "", 5)
+CONTINUE = {"S9L1": ("S5L1", "30 win\n450 tap F12\n600 cmd ContinueCampaign\n", 650)}
+SPAWN_FRAME = 10
+STABLE, LEAD, HORIZON, STEP = 150, 30, 3000, 5   # controllable frames needed / saved this far into them / probe frames
+MARGINS = (500, 1000, 1500)  # spawn: beyond hostile engage range + margin, widened while the hero is attacked
+RADIUS = 200      # loaded hero within this of the spawn point
+IDLE = 600        # verify: hero still alive after this many idle frames from load
+LINE = re.compile(r"^autoplay (\d+): state (\S+)((?: \([a-z ]+\))*) mission (\d+) tick \d+ menu \d+ brief (\d+) .*\n"
+                  r"  player \d+ \(\S+\) at (-?\d+),(-?\d+) yaw -?\d+ hp (-?\d+) .*? lock (\d); nearest hostile (?:.*? dist (\d+))?", re.M)
+SPAWN = re.compile(r"^autoplay: spawn .* at (-?\d+),(-?\d+) \(target (-?\d+),(-?\d+), party (\d+)\)", re.M)
 
 
 def pretty(stem, place):  # "S6L1_3_Castle_Gate_Place" -> "3 Castle Gate"
@@ -84,50 +92,99 @@ def run(cmd, env, script):
         os.unlink(f.name)
 
 
-def last_player(log):
-    m = PLAYER.findall(log)
-    return tuple(map(int, m[-1])) if m else None
+def records(log):  # (frame, controllable, mission, (x, y), hp, nearest hostile dist, brief open)
+    return [(int(m[1]), m[2] == "playing" and not m[3] and m[5] == "0" and m[9] == "0", int(m[4]),
+             (int(m[6]), int(m[7])), int(m[8]), int(m[10]) if m[10] else None, m[5] != "0") for m in LINE.finditer(log)]
+
+
+def settle(cmd, env, script, start, mission):
+    """-> (script with blocker answers, save frame, log) or (None, reason, log)."""
+    for _ in range(12):
+        probe = script + "".join(f"{f} log probe\n" for f in range(start, start + HORIZON, STEP))
+        rc, log = run(cmd, env, probe)
+        rs = [r for r in records(log) if r[0] >= start]
+        if rc != 0 or not rs:
+            return None, f"exit {rc}, no probe log", log
+        good = [r[1] and r[2] == mission and r[4] > 0 for r in rs]
+        need = STABLE // STEP
+        for i in range(len(rs) - need):
+            if all(good[i:i + need + 1]):
+                return script, rs[i][0] + LEAD, log
+        if rs[-1][4] <= 0:
+            return None, f"hero died at {rs[-1][3]}", log
+        i = len(rs) - 1  # answer the blocker that lasts to the horizon, from where it began
+        while i > 0 and not good[i - 1] and rs[i - 1][6] == rs[i][6]:
+            i -= 1
+        script += f"{rs[i][0] + 1} tap {'F12' if rs[i][6] else 'Escape'}\n"
+    return None, "never controllable", log
 
 
 def names(stem, nn, place):
     label = "start" if place is None else pretty(stem, place)
     slug = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_")
-    return f"Test_{stem}_{nn:02d}_{slug}.jsav", f"TEST {stem} - {label}"[:63]  # save_description limit
+    return f"Test_{stem}_{nn:02d}_{slug}.jsav", label
 
 
-def make(a, stem, nn, place):
-    name, desc = names(stem, nn, place)
-    src, prelude, start_frame, warp_frame = CONTINUE.get(stem, START)
+def make_one(a, stem, nn, place, margin):
+    name, label = names(stem, nn, place)
+    desc = f"TEST {stem} - {label}"[:63]  # save_description limit
+    mission = MISSIONS[stem][0]
+    src, prelude, settle_from = CONTINUE.get(stem, START)
     base = [a.binary, "--headless", "--game-dir", a.game_dir]
-    if place is None:
-        cmd, script, save_at = base + ["--scenario", src or stem, "--seed", "1"], prelude, start_frame
-    else:
-        start = Path(a.out, names(stem, 0, None)[0])
-        if not start.exists():
-            return name, desc, "FAIL generate: no start save"
-        cmd, save_at = base + ["--load", str(start)], warp_frame + SETTLE
-        script = f"{warp_frame} warp {place}\n{warp_frame + 1} log warped\n"
-    script += f"{save_at - 1} log saving\n{save_at} cmd Save 0 {name} {desc}\n{save_at + 2} quit\n"
+    spawn = None
     with tempfile.TemporaryDirectory(prefix="joa-testsave-") as xdg:
-        rc, log = run(cmd, dict(os.environ, XDG_DATA_HOME=xdg), script)  # native_save_dir() = $XDG_DATA_HOME/joan-native/saves
+        env = dict(os.environ, XDG_DATA_HOME=xdg)  # native_save_dir() = $XDG_DATA_HOME/joan-native/saves
+        if place is None:
+            cmd, script = base + ["--scenario", src or stem, "--seed", "1"], prelude
+        else:
+            start = Path(a.out, names(stem, 0, None)[0])
+            if not start.exists():
+                return name, desc, "FAIL generate: no start save"
+            cmd, script, settle_from = base + ["--load", str(start)], f"{SPAWN_FRAME} spawn {place}@{margin}\n", SPAWN_FRAME + 1
+        script, save_at, log = settle(cmd, env, script, settle_from, mission)
+        if script is None:
+            return name, desc, f"FAIL settle: {save_at}"
+        if place is not None:
+            s = SPAWN.search(log)
+            if not s:
+                return name, desc, "FAIL generate: no spawn log"
+            spawn, target = (int(s[1]), int(s[2])), (int(s[3]), int(s[4]))
+            if math.dist(spawn, target) > RADIUS:  # moved out of hostile reach: say so
+                desc = f"TEST {stem} - near {label}"[:63]
+        script += f"{save_at - 1} log saving\n{save_at} cmd Save 0 {name} {desc}\n{save_at + 2} quit\n"
+        rc, log = run(cmd, env, script)
         made = Path(xdg, "joan-native", "saves", name)
         bad = [l for l in log.splitlines() if l.startswith("joan-native: autoplay:") or l.startswith("joan-native: save:")]
         if rc != 0 or bad or not made.exists():
             return name, desc, f"FAIL generate: {bad[0] if bad else f'exit {rc}, no save'}"
-        saved = last_player(log)
+        saved = [r for r in records(log) if r[0] == save_at - 1]
         for f in made.parent.glob(made.stem + ".*"):  # .jsav (+ .bmp thumbnail if any)
             if f.suffix in (".jsav", ".bmp"):
                 shutil.move(str(f), Path(a.out, f.name))
-    rc, log = run(base + ["--load", str(Path(a.out, name)), "--frames", "60"], dict(os.environ), "2 log verify\n")
-    m = MISSION.search(log)
-    p = last_player(log)
-    if rc != 0 or not m or int(m.group(2)) != MISSIONS[stem][0] or m.group(1) != "playing":
-        return name, desc, f"FAIL load: exit {rc}, {m.group(0).strip() if m else 'no mission log'}"
-    if not p or p[2] <= 0:
-        return name, desc, "FAIL load: no living hero"
-    if saved and math.dist(saved[:2], p[:2]) > 400:
-        return name, desc, f"FAIL load: hero at {p[:2]}, saved at {saved[:2]}"
-    return name, desc, f"ok, hero at {p[0]},{p[1]} hp {p[2]}"
+    # Verify: right mission, controllable at once, hero where saved (and at the spawn point), alive after IDLE frames.
+    rc, log = run(base + ["--load", str(Path(a.out, name)), "--frames", str(IDLE + 2)], dict(os.environ),
+                  f"2 log verify\n{IDLE} log idle\n")
+    rs = records(log)
+    if rc != 0 or len(rs) != 2 or rs[0][2] != mission:
+        return name, desc, f"FAIL load: exit {rc}, {rs[0] if rs else 'no log'}"
+    (_, ok, _, at, hp, foe, _), hp_idle = rs[0], rs[1][4]
+    want = spawn or (saved[0][3] if saved else None)
+    if not ok or hp <= 0:
+        return name, desc, f"FAIL load: not controllable / dead (hp {hp})"
+    if want is None or math.dist(at, want) > RADIUS:
+        return name, desc, f"FAIL load: hero at {at}, spawn point {want}"
+    if hp_idle * 2 < hp:  # attacked at once: not out of hostile reach
+        return name, desc, f"FAIL load: hero hp {hp}->{hp_idle} after {IDLE} idle frames at {at}"
+    where = f"{math.dist(at, target):.0f} from target {target[0]},{target[1]}, margin {margin}, party {s[5]}" if spawn else "start"
+    return name, desc, f"ok, hero at {at[0]},{at[1]} ({where}), hp {hp}->{hp_idle}, foe {foe}"
+
+
+def make(a, stem, nn, place):  # a spawn attacked at once is retried further out of reach
+    for margin in MARGINS:
+        r = make_one(a, stem, nn, place, margin)
+        if place is None or "idle frames" not in r[2]:
+            break
+    return r
 
 
 def main():

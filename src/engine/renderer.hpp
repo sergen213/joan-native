@@ -171,13 +171,17 @@ struct UiQuad {
     glm::vec2 uv1{1.0f};
     glm::vec4 color{1.0f};  // linear RGBA multiplier
     TextureHandle texture;   // empty = white
+    int turns = 0;           // texture turned turns x 90 degrees counter-clockwise inside the rect (rotated minimap)
 };
 
 // Screen-space triangle vertex, pixel coordinates with top-left origin; color is a linear RGBA multiplier like UiQuad's.
+// uv_rect (u0, v0, u1, v1): the sampled sub-rectangle; the UI shaders clamp to its edge texel centres so a magnified
+// sprite or glyph never filters in its atlas neighbours (UiQuads get their uv0..uv1).
 struct UiVertex {
     glm::vec2 position{0.0f};
     glm::vec2 uv{0.0f};
     glm::vec4 color{1.0f};
+    glm::vec4 uv_rect{0.0f, 0.0f, 1.0f, 1.0f};
 };
 
 // Textured triangle list ui_vertices[first, first + count) scissored to clip (pixels x0, y0, x1, y1), drawn after the

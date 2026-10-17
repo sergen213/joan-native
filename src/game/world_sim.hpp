@@ -322,6 +322,8 @@ public:
     bool stop_unit_process = false;        // DAT_00a596ab (script set_stop_unit_process_flag)
     bool critical_attack_enabled = true;   // DAT_00a4f858 (script set_critical_attack_enabled)
     bool cut_scene = false;                // Game+0x744 (Game_is_cutscene 0x4301c0): special scheduler mode
+    // PlayerCtrl_process 0x42e1a0 head guards: no player control (hero, RTS, look) while either flag is set.
+    bool input_locked() const { return stop_unit_process || cut_scene; }
 
     // items (items_inventory.cpp)
     bool use_recovery_item(Unit& u, bool energy);          // F3 0x43b490 / F4 0x43b990

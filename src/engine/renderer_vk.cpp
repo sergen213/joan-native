@@ -1110,12 +1110,13 @@ private:
             {5, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv2)},
             {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)}};  // 3/4 (bones/weights): CPU-skinned, unbound
         const VkVertexInputBindingDescription ui_binding{0, sizeof(UiVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-        const VkVertexInputAttributeDescription ui_attrs[3] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(UiVertex, position)},
+        const VkVertexInputAttributeDescription ui_attrs[4] = {{0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(UiVertex, position)},
                                                                {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(UiVertex, uv)},
-                                                               {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(UiVertex, color)}};
+                                                               {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(UiVertex, color)},
+                                                               {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(UiVertex, uv_rect)}};
         const VkPipelineVertexInputStateCreateInfo vertex{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr, 0,
                                                           fill ? 0u : 1u, mesh ? &mesh_binding : &ui_binding,
-                                                          fill ? 0u : mesh ? 5u : 3u, mesh ? mesh_attrs : ui_attrs};
+                                                          fill ? 0u : mesh ? 5u : 4u, mesh ? mesh_attrs : ui_attrs};
         const VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0,
                                                               VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
         const VkPipelineViewportStateCreateInfo viewport{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
@@ -1632,8 +1633,10 @@ private:
         auto* v = reinterpret_cast<UiVertex*>(s.ui.memory.mapped);
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
-            const UiVertex c[4] = {{p0, q.uv0, q.color}, {{p1.x, p0.y}, {q.uv1.x, q.uv0.y}, q.color},
-                                   {p1, q.uv1, q.color}, {{p0.x, p1.y}, {q.uv0.x, q.uv1.y}, q.color}};
+            const glm::vec4 r{glm::min(q.uv0, q.uv1), glm::max(q.uv0, q.uv1)};
+            const glm::vec2 uv[4] = {q.uv0, {q.uv1.x, q.uv0.y}, q.uv1, {q.uv0.x, q.uv1.y}};  // TL TR BR BL, turned by q.turns
+            const UiVertex c[4] = {{p0, uv[q.turns & 3], q.color, r}, {{p1.x, p0.y}, uv[(q.turns + 1) & 3], q.color, r},
+                                   {p1, uv[(q.turns + 2) & 3], q.color, r}, {{p0.x, p1.y}, uv[(q.turns + 3) & 3], q.color, r}};
             for (int k : {0, 1, 2, 0, 2, 3}) *v++ = c[k];
         }
         if (!f.ui_vertices.empty()) std::memcpy(v, f.ui_vertices.data(), f.ui_vertices.size_bytes());

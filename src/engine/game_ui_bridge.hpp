@@ -74,8 +74,9 @@ private:
     bool brief_shown_ = false;                 // HudModel::show_mission_brief was set for a script brief
     int typed_id_ = 0;                         // dialog box being typed and its reveal (chars, 40/s)
     float typed_ = 0.0f;
-    std::string map_icons_key_;                // map dir + scenario of map_icons_
-    std::vector<std::pair<std::string, HudMapIcon>> map_icons_;  // <stem>.map records: display-enable key, icon
+    std::string map_icons_key_;                // map dir + world of map_icons_ / map_size_
+    std::vector<std::pair<std::string, HudMapIcon>> map_icons_;  // every level's <node>.map: display-enable key, icon
+    glm::vec2 map_size_{16384.0f};             // World +0x54/+0x58 (<world>.wor CreateGrid)
     float win_time_ = -1.0f, over_time_ = -1.0f;  // seconds since the win message / game-over box opened, -1 = closed
     bool end_menu_ = false;                    // win message "Next Mission" clicked: game-end menu open
     int load_mission_ = -1, load_stage_ = 0;

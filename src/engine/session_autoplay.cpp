@@ -1,5 +1,6 @@
 #include "engine/session_autoplay.hpp"
 
+#include "game/ai_system.hpp"
 #include "game/mission.hpp"
 #include "game/terrain_query.hpp"
 
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -82,7 +84,7 @@ bool Autoplay::parse(std::string_view text, std::string* err) {
             rest.erase(rest.find_last_not_of(" \t\r") + 1);
             return rest;
         };
-        if (e.verb == "log" || e.verb == "shot" || e.verb == "type" || e.verb == "warp" || e.verb == "clear" || e.verb == "owner") {  // rest of the line (paths / names may contain spaces)
+        if (e.verb == "log" || e.verb == "shot" || e.verb == "type" || e.verb == "warp" || e.verb == "spawn" || e.verb == "clear" || e.verb == "owner") {  // rest of the line (paths / names may contain spaces)
             e.args.push_back(rest_of_line());
         } else if (e.verb == "cmd") {  // cmd <type> [value] [text] [text2 = rest of the line, e.g. a save description]
             for (std::string a; e.args.size() < 3 && ls >> a;) e.args.push_back(a);
@@ -103,7 +105,7 @@ bool Autoplay::parse(std::string_view text, std::string* err) {
         else if (e.verb == "cmd") ok = need(1) && ui_command_type(e.args[0]).has_value();
         else if (e.verb == "give" || e.verb == "drop") ok = need(1);  // EquipVisuals: test hooks (item.res code)
         else if (e.verb == "bag" || e.verb == "xp") ok = need(1);     // CharDetails: give without equipping / gain XP
-        else if (e.verb == "warp" || e.verb == "gold" || e.verb == "clear" || e.verb == "owner") ok = need(1);  // RecruitWorkshop / RecruitFix test hooks
+        else if (e.verb == "warp" || e.verb == "spawn" || e.verb == "gold" || e.verb == "clear" || e.verb == "owner") ok = need(1);  // RecruitWorkshop / RecruitFix / test-save hooks
         else if (e.verb == "attr") ok = need(2);   // RecruitFix: attr <World::allocate_point type> <points>
         else if (e.verb == "cheat") ok = need(1) && e.args[0] == "enable_fog_of_war";  // HudFix: console cheat
         else ok = e.verb == "win" || e.verb == "quit" || e.verb == "log" || e.verb == "type" || e.verb == "crit";
@@ -162,7 +164,7 @@ Autoplay::FrameOut Autoplay::apply(int frame, RawInput& raw) {
         else if (e.verb == "give" || e.verb == "drop" || e.verb == "bag") out.items.push_back({e.verb, a[0], a.size() > 1 ? num(a[1]) : 0.0f, a.size() > 2 ? num(a[2]) : 0.0f});
         else if (e.verb == "xp") out.items.push_back({e.verb, {}, num(a[0])});
         else if (e.verb == "crit") out.items.push_back({e.verb, {}});
-        else if (e.verb == "warp" || e.verb == "clear" || e.verb == "owner") out.items.push_back({e.verb, a[0]});   // RecruitWorkshop / RecruitFix
+        else if (e.verb == "warp" || e.verb == "spawn" || e.verb == "clear" || e.verb == "owner") out.items.push_back({e.verb, a[0]});   // RecruitWorkshop / RecruitFix
         else if (e.verb == "attr") out.items.push_back({e.verb, a[0], num(a[1])});
         else if (e.verb == "gold") out.items.push_back({e.verb, {}, num(a[0])});
         else if (e.verb == "cheat") out.items.push_back({e.verb, a[0], a.size() > 1 ? num(a[1]) : 1.0f});
@@ -231,6 +233,63 @@ bool Autoplay::apply_item_hook(game::Mission& m, const FrameOut::ItemHook& h) {
         if (!f && !pl) return false;
         const game::Vec3 at = f ? f->pos : pl->pos;
         p->pos = {at.x, at.y, w.terrain() ? w.terrain()->height(at.x, at.y) : at.z};
+        return true;
+    }
+    // TestSaves (tools/make_test_saves.py): `spawn <facility | place>[@margin]` = warp with the party (heroes with the
+    // player and the members of their troops, rings of 10 every 150 around her) to the first walkable point, stepping
+    // from the target back toward where she stands, beyond every live hostile's engage range (AiSystem::unit_range 1,
+    // >= 400) + margin (default 500). Logs the spawn point. ponytail: straight-line search; a path-aware one if a spawn
+    // lands behind a wall.
+    if (h.verb == "spawn") {
+        const std::size_t at_sign = h.code.rfind('@');
+        const std::string name = h.code.substr(0, at_sign);
+        const int margin = at_sign == std::string::npos ? 500 : std::atoi(h.code.c_str() + at_sign + 1);
+        const game::Facility* f = m.places().facility(m.places().facility_by_name(name));
+        const game::Place* pl = f ? nullptr : m.places().place(m.places().place_by_name(name));
+        if (!f && !pl) return false;
+        const game::Vec3 to = f ? f->pos : pl->pos, from = p->pos;
+        const game::ITerrainQuery* t = w.terrain();
+        const auto safe = [&](float x, float y) {
+            if (t && !t->walkable(x, y)) return false;
+            for (const game::Unit& u : w.units())
+                if (!u.deleted && !w.dead(u) && !u.no_react && w.hostile_to_player(u) &&
+                    std::hypot(u.pos.x - x, u.pos.y - y) < float(std::max(m.ai().unit_range(u, 1), 400) + margin))
+                    return false;
+            return true;
+        };
+        const float len = std::hypot(from.x - to.x, from.y - to.y);
+        float x = from.x, y = from.y;
+        for (float d = 0; d < len; d += 100.0f)
+            if (const float k = d / len; safe(to.x + (from.x - to.x) * k, to.y + (from.y - to.y) * k)) {
+                x = to.x + (from.x - to.x) * k, y = to.y + (from.y - to.y) * k;
+                break;
+            }
+        std::vector<game::Unit*> party;
+        for (game::Unit& u : w.units()) {
+            if (u.cls < 0) continue;
+            const std::string& c = w.data().units[std::size_t(u.cls)].code;
+            const bool hero = &u != p && !u.deleted && !w.dead(u) && !u.no_react && u.m.control == 0 &&
+                              std::hypot(u.pos.x - from.x, u.pos.y - from.y) < 1500.0f &&
+                              (c == "JOAN_OF_ARC" || c == "JEAN_DE_METZ" || c == "LAHIRE" || c == "ALENCON");
+            const auto add = [&](game::Unit* q) {
+                if (q && q != p && !q->deleted && !w.dead(*q) && std::find(party.begin(), party.end(), q) == party.end()) party.push_back(q);
+            };
+            if (&u == p || hero)
+                for (int id : u.members) add(w.unit(id));
+            if (hero) add(&u);
+        }
+        const auto put = [&](game::Unit& u, float ux, float uy) {
+            u.pos = {ux, uy, t ? t->height(ux, uy) : to.z};
+            u.vel = {};
+            w.stop(u);
+        };
+        put(*p, x, y);
+        for (std::size_t i = 0; i < party.size(); ++i) {
+            const float a = 6.2831853f * float(i % 10) / 10.0f, r = 150.0f * float(1 + i / 10);
+            const float ux = x + r * std::cos(a), uy = y + r * std::sin(a);
+            put(*party[i], t && !t->walkable(ux, uy) ? x : ux, t && !t->walkable(ux, uy) ? y : uy);
+        }
+        std::fprintf(stderr, "autoplay: spawn %s at %.0f,%.0f (target %.0f,%.0f, party %zu)\n", h.code.c_str(), x, y, to.x, to.y, party.size());
         return true;
     }
     // RecruitFix: `clear <place name>` kills every unit hostile to the player inside that place (stands in for the

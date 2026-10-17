@@ -95,8 +95,20 @@ int main() {
         CHECK(glm::distance(p.target, to_engine(c.pivot.x, c.pivot.y, c.pivot.z)) < 0.01f);
     }
 
-    // Let the mission's opening cut scene (ticks 2..244 on mission 1) run out so the controller takes input.
-    for (int i = 0; i < 300; ++i) r.tick();
+    // Let the mission's opening cut scene (ticks 2..244 on mission 1) run out so the controller takes input. While it
+    // runs, forward + mouse look + attack leave Joan alone (0x42e1a0 cut-scene guard).
+    for (int i = 0; i < 5; ++i) r.tick();
+    {
+        CHECK(w.cut_scene);
+        const game::Unit& joan = *w.unit(w.player_id());
+        const glm::vec2 p0{joan.pos.x, joan.pos.y};
+        const float y0 = joan.yaw_goal;
+        game::InputFrame f;
+        f.held.set(game::IN_FORWARD), f.pressed.set(game::IN_ATTACK_A), f.mouse_dx = 50;
+        for (int i = 0; i < 60; ++i) r.tick(f);
+        CHECK(w.cut_scene && glm::distance(p0, glm::vec2(joan.pos.x, joan.pos.y)) < 0.01f && joan.yaw_goal == y0 && joan.action == game::IDLE);
+    }
+    for (int i = 0; i < 235; ++i) r.tick();
     for (int i = 0; i < 3000 && (m.ui().cs.active || m.ui().game_cut_scene); ++i) r.tick();
     CHECK(!m.ui().cs.active);
     {  // the opening cut scene ends with the follow camera behind Joan (reference s04_04_mission1_hud)

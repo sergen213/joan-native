@@ -11,7 +11,7 @@
 #include "engine/menu_saveload.hpp"
 #include "engine/session.hpp"
 #include "formats/save_sav.hpp"
-#include "game/terrain_query.hpp"
+#include "formats/world_text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -94,14 +94,14 @@ HudUnit hud_unit(game::Mission& m, const game::Unit& u) {
     return h;
 }
 
-// Minimap icon file map/scenarioN/<stem>.map: i32 count, records of 0xa4 bytes: +0x02 name[64] (the
+// Minimap icons (FUN_0071bf10): every world level's map/scenarioN/<node>.map, positions + the level origin
+// (Level +0x44/+0x48). File: i32 count, records of 0xa4 bytes: +0x02 name[64] (the
 // set_minimap_icon_display_enable key), +0x44 MAPICON sprite, +0x92 i32 x, +0x96 i32 y. Layout measured from
 // S1L1.map (HIGH); records are shown unless a script disabled them (HYPOTHESIS: the s04_04 HUD shows both camps).
-std::vector<std::pair<std::string, HudMapIcon>> load_map_icons(const formats::Vfs& vfs, const std::string& map_dir,
-                                                               const std::string& stem) {
-    std::vector<std::pair<std::string, HudMapIcon>> out;
-    const auto b = vfs.read(map_dir + "/" + stem + ".map");
-    if (!b || b->size() < 4) return out;
+void load_map_icons(const formats::Vfs& vfs, const std::string& map_dir, const game::WorldNode& node,
+                    std::vector<std::pair<std::string, HudMapIcon>>& out) {
+    const auto b = vfs.read(map_dir + "/" + node.name + ".map");
+    if (!b || b->size() < 4) return;
     auto i32 = [&](std::size_t o) { return std::int32_t((*b)[o] | (*b)[o + 1] << 8 | (*b)[o + 2] << 16 | (*b)[o + 3] << 24); };
     auto str = [&](std::size_t o, std::size_t n) {
         std::string s(reinterpret_cast<const char*>(b->data() + o), n);
@@ -111,11 +111,20 @@ std::vector<std::pair<std::string, HudMapIcon>> load_map_icons(const formats::Vf
     for (int i = 0; i < n && 4 + std::size_t(i + 1) * 0xa4 <= b->size(); ++i) {
         const std::size_t r = 4 + std::size_t(i) * 0xa4;
         HudMapIcon icon;
-        icon.world = {float(i32(r + 0x92)), float(i32(r + 0x96))};
+        icon.world = {node.ox + float(i32(r + 0x92)), node.oy + float(i32(r + 0x96))};
         icon.sprite = str(r + 0x44, 12);
         out.emplace_back(str(r + 2, 64), std::move(icon));
     }
-    return out;
+}
+
+// World +0x54/+0x58 extent (FUN_0044e8c0): <world>.wor CreateGrid X / Y in 2048-unit blocks (S1L1 8 x 8 = 16384).
+glm::vec2 world_extent(const formats::Vfs& vfs, const std::string& map_dir, const std::string& world) {
+    const auto b = vfs.read(map_dir + "/" + world + ".wor");
+    const auto wor = b ? formats::parse_block_text(std::string_view(reinterpret_cast<const char*>(b->data()), b->size())) : std::nullopt;
+    if (wor)
+        for (const auto& g : wor->blocks)
+            if (g.type == "CreateGrid") return glm::vec2(float(g.number("X")), float(g.number("Y"))) * 2048.0f;
+    return glm::vec2(16384.0f);
 }
 
 // Armour-dependent heroes (FUN_004ab330 / FUN_004aa3c0): <stem>1..3 from <hero>_ARMOR_LVn of the hero unit.
@@ -331,15 +340,20 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
             if (billboard(to_engine(f.pos.x, f.pos.y, f.pos.z + 200.0f), h)) hud.name_bars.push_back(std::move(h));
         }
 
-    // ---- minimap ----
-    hud.scenario = m.info().stem();
-    if (const auto* g = dynamic_cast<const game::GriTerrain*>(w.terrain()))
-        hud.map_size = glm::vec2(float(g->grid().cells_x), float(g->grid().cells_y)) * formats::TerrainGrid::kCellSize;
+    // ---- minimap (FUN_0071bf10 / FUN_0071b6a0): everything follows the mission's world - INTERFAC.SET table
+    // <world> tiles (S9L1 plays scenario 5's S5L1w), extent World +0x54/+0x58, every level's icons ----
+    const std::string& wf = m.info().step.world_file;  // "scenario5\S5L1w"
+    const std::string world = wf.substr(wf.find_last_of("\\/") + 1);
+    hud.scenario = world.substr(0, world.size() - 1);  // table <scenario>W
     hud.brief_rotation = mui.minimap_rotation;
     hud.map_icons.clear();
     hud.minimap_waypoints.clear();
-    if (map_icons_key_ != m.map_dir() + hud.scenario)
-        map_icons_key_ = m.map_dir() + hud.scenario, map_icons_ = load_map_icons(vfs_, m.map_dir(), hud.scenario);
+    if (map_icons_key_ != m.map_dir() + world) {
+        map_icons_key_ = m.map_dir() + world, map_icons_.clear();
+        for (const game::WorldNode& n : game::world_nodes(vfs_, m.map_dir(), m.info().step)) load_map_icons(vfs_, m.map_dir(), n, map_icons_);
+        map_size_ = world_extent(vfs_, m.map_dir(), world);
+    }
+    hud.map_size = map_size_;
     for (const auto& [name, icon] : map_icons_) {
         auto it = mui.minimap_icons.find(name);
         if (it == mui.minimap_icons.end() || it->second) hud.map_icons.push_back(icon);

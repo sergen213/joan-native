@@ -353,7 +353,7 @@ glm::vec4 Ui::rect_pixels(glm::vec4 r) const {
 
 // ---------------------------------------------------------------- drawing
 
-void Ui::image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0, glm::vec2 uv1, glm::vec4 color) {
+void Ui::image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0, glm::vec2 uv1, glm::vec4 color, int turns) {
     if (!out_ || rect.z <= 0.0f || rect.w <= 0.0f) return;
     if (frame_ == Anchor::Center) {
         // Off-canvas design space is off-screen in the original (4:3 modes only): clip to 1024x768 so slide-ins
@@ -367,7 +367,7 @@ void Ui::image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0, glm::vec2 uv1, 
         rect = {c0.x, c0.y, c1.x - c0.x, c1.y - c0.y};
     }
     const glm::vec4 px = rect_pixels(rect);
-    out_->push_back({{px.x, px.y}, {px.z, px.w}, uv0, uv1, color, tex});
+    out_->push_back({{px.x, px.y}, {px.z, px.w}, uv0, uv1, color, tex, turns});
 }
 
 void Ui::fill(glm::vec4 rect, glm::vec4 color) { image({}, rect, {0, 0}, {1, 1}, color); }

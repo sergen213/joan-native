@@ -523,7 +523,9 @@ void World::tick_units(const InputFrame& in) {
     // Sys_process_frame_input: the controller runs before the clock advances (Part B §1.2). ViewCtrl_process_key
     // 0x42e1a0 switches on +0x10 (= game_mode): 0 keyboard, 1 joystick, 2 point&click, 3 keyboard+mouse; in RTS
     // (mode 4) it dispatches to PlayerCtrl_rts 0x440b30 (engine GameCamera) instead: the hero is AI. Pads keep mode 3.
-    if (unit(pc_.unit) && game_mode != 4) {
+    // Its first guards (0x42e1a0 head): DAT_00a596ab (stop_unit_process) and Game_is_cutscene 0x4301c0 swallow all
+    // player input, so the hero takes no orders during a cut scene (the events are still popped and dropped).
+    if (unit(pc_.unit) && game_mode != 4 && !input_locked()) {
         pc_.mode = game_mode;
         pc_.process(*this, in);
     }

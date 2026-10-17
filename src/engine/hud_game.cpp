@@ -211,7 +211,8 @@ void party(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     }
 }
 
-// ---- top-right minimap (FUN_0070e500): 199x199 view at (W-0xd3, 10) centred on the player ----
+// ---- top-right minimap (FUN_0070e500): 199x199 view at (W-0xd3, 10) centred on the player, turned by
+// set_minimap_rotation (hud_minimap_turn) ----
 void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     ui.frame(Anchor::TopRight);
     constexpr float kX = 1024 - 0xd3, kY = 10, kW = 199, kH = 200;
@@ -219,16 +220,21 @@ void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     const glm::ivec2 tiles = minimap_tiles(ui, m);
     if (tiles.x == 0) return;
     const glm::vec2 px_per_world = glm::vec2(tiles * 200) / m.map_size;  // tile world size = map size / grid
+    const int rot = m.brief_rotation & 3;
     char name[16];
     auto to_map = [&](glm::vec2 w) { return glm::vec2(w.x, m.map_size.y - w.y) * px_per_world; };  // FUN_0070fa70, y up
-    const glm::vec2 off = glm::vec2(kX + 99.5f, kY + 100.0f) - to_map(m.player_world);            // screen = map + off
-    // Clip a 200x200 tile (map px origin `o`) to the view. Outside the map: the "z<zoom>b" background tile.
+    const glm::vec2 off = glm::vec2(kX + 99.5f, kY + 100.0f) - to_map(m.player_world);            // unturned screen = map + off
+    auto to_screen = [&](glm::vec2 w) { return glm::round(hud_minimap_turn(rot, to_map(w) + off)); };
+    // Clip a 200x200 tile (map px origin `o`) to the view (the turn maps the view onto itself), then turn it.
+    // Outside the map: the "z<zoom>b" background tile.
     auto tile = [&](const UiSprite* s, glm::vec2 o) {
         if (!s) return;
         const glm::vec2 a = glm::max(o + off, glm::vec2(kX, kY)), b = glm::min(o + off + 200.0f, glm::vec2(kX + kW, kY + kH));
         if (a.x >= b.x || a.y >= b.y) return;
         const glm::vec2 t0 = (a - o - off) / 200.0f, t1 = (b - o - off) / 200.0f;
-        ui.image(s->texture, {a.x, a.y, b.x - a.x, b.y - a.y}, glm::mix(s->uv0, s->uv1, t0), glm::mix(s->uv0, s->uv1, t1));
+        const glm::vec2 ta = hud_minimap_turn(rot, a), tb = hud_minimap_turn(rot, b), lo = glm::min(ta, tb), hi = glm::max(ta, tb);
+        ui.image(s->texture, {lo.x, lo.y, hi.x - lo.x, hi.y - lo.y}, glm::mix(s->uv0, s->uv1, t0), glm::mix(s->uv0, s->uv1, t1),
+                 kUiWhite, rot);
     };
     std::snprintf(name, sizeof name, "z%db", m.minimap_zoom);
     const UiSprite* back = ui.sprite(table, name);
@@ -245,7 +251,7 @@ void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
     static const glm::vec4 kDot[5] = {{}, ui_rgba(255, 0, 0, 0xcc), ui_rgba(0, 255, 0, 0xcc), ui_rgba(0, 0, 255, 0xcc),
                                       ui_rgba(255, 255, 255, 0xcc)};
     for (const HudMapIcon& ic : m.map_icons) {
-        const glm::vec2 p = glm::round(to_map(ic.world) + off);
+        const glm::vec2 p = to_screen(ic.world);
         if (ic.dot != HudMapIcon::Dot::None) {
             if (p.x - 1 >= kX && p.y - 1 >= kY && p.x + 1 <= kX + kW && p.y + 1 <= kY + kH) ui.fill({p.x - 1, p.y - 1, 3, 3}, kDot[int(ic.dot)]);
             continue;
@@ -255,15 +261,16 @@ void minimap(Ui& ui, const HudModel& m, std::vector<UiCommand>& out) {
         const glm::vec2 h = s->size / 2.0f;
         if (p.x - h.x >= kX && p.y - h.y >= kY && p.x + h.x <= kX + kW && p.y + h.y <= kY + kH) ui.sprite(s, p - h);
     }
-    // Player arrow (icon type 2): MAPICON "cursor" points up; rotate to the heading (y up in the world).
-    sprite_rotated(ui, ui.sprite("MAPICON", "cursor"), glm::round(to_map(m.player_world) + off), 1.5707964f - m.player_heading);
+    // Player arrow (icon type 2): MAPICON "cursor" points up; rotate to the heading (y up in the world), minus the
+    // view turn (FUN_00716010: -rotation * 90 degrees).
+    sprite_rotated(ui, ui.sprite("MAPICON", "cursor"), to_screen(m.player_world), 1.5707964f * float(1 - rot) - m.player_heading);
     hud_minimap_fog(ui, m, off, px_per_world);       // HudGaps mapobj: vision mask (FUN_0070e500 after the dots)
     ui.sprite("MAPICON", "frame", {1024 - 218, 6});  // measured in s04_04_mission1_hud (decomp W-0xd7 is clipped)
     hud_minimap_waypoints(ui, m, off, px_per_world);  // HudGaps mapobj: FUN_00718540 after FRAME
     // RTS only (FUN_00717240 / Minimap_screen_to_world 0x717700): left click = camera jump, right click = move order.
     const glm::vec4 view{kX, kY, kW, kH};
     if (m.rts_mode && ui.hover(view) && (ui.clicked(view, false) || ui.input().right_pressed)) {  // not an en2d button: no click SE
-        const glm::vec2 p = (ui.mouse() - off) / px_per_world;
+        const glm::vec2 p = (hud_minimap_turn(4 - rot, ui.mouse()) - off) / px_per_world;
         out.push_back({UiCommand::Type::MinimapClick, ui.input().right_pressed ? 1 : 0, {}, {}, {p.x, m.map_size.y - p.y}});
     }
 }

@@ -117,7 +117,10 @@ public:
     glm::vec2 mouse() const { return to_design(input_.mouse); }
 
     // ---- drawing (design units) ----
-    void image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0 = {0, 0}, glm::vec2 uv1 = {1, 1}, glm::vec4 color = kUiWhite);
+    // turns: texture turned turns x 90 degrees counter-clockwise inside `rect` (UiQuad::turns; Center-frame clipping
+    // assumes 0).
+    void image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0 = {0, 0}, glm::vec2 uv1 = {1, 1}, glm::vec4 color = kUiWhite,
+               int turns = 0);
     void fill(glm::vec4 rect, glm::vec4 color);
     // Like fill(), but never clipped to the 1024x768 canvas: for full-window bars/black screens in pillar areas.
     void fill_window(glm::vec4 rect, glm::vec4 color);
