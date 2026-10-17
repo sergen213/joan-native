@@ -18,6 +18,9 @@ struct ShadowCaster {
     ShadowCaster() = default;
     ShadowCaster(std::span<const glm::vec3> bind_positions, std::span<const std::uint32_t> triangles);
     std::vector<std::uint32_t> triangles;  // welded, degenerate triangles dropped
+    // Directed edge 3t+k (triangle t, edge k = (k, k+1)): the triangles holding its reverse are
+    // twins[twin_first[3t+k] .. twin_first[3t+k+1]) -- the silhouette test without a per-frame edge sort.
+    std::vector<std::uint32_t> twin_first, twins;
 };
 
 // Appends the volume of `caster` posed at `positions` (same order as the bind positions, any space;

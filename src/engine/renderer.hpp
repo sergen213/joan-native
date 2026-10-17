@@ -172,6 +172,9 @@ struct UiQuad {
     glm::vec4 color{1.0f};  // linear RGBA multiplier
     TextureHandle texture;   // empty = white
     int turns = 0;           // texture turned turns x 90 degrees counter-clockwise inside the rect (rotated minimap)
+    // Extra UV inset of the clamp rect (uv0..uv1 shrunk by it on each side): HD pack UI images keep the original's
+    // half-texel clamp so an upscaled atlas never fades in its neighbours' edge (ui_core.cpp Ui::image).
+    glm::vec2 clamp_inset{0.0f};
 };
 
 // Screen-space triangle vertex, pixel coordinates with top-left origin; color is a linear RGBA multiplier like UiQuad's.
@@ -238,6 +241,8 @@ public:
     virtual void set_graphics(const GraphicsSettings&) {}
     // Associates PBR inputs with an albedo texture (any material using it picks them up).
     virtual void set_material_maps(TextureHandle /*albedo*/, const MaterialMaps&) {}
+    // False when BlendMode::ShadowVolume draws are dropped (Vulkan ray-traced shadows): the caller skips building them.
+    virtual bool draws_shadow_volumes() const { return true; }
 
     // One frame: begin_frame(size) -> submit(frame) once -> end_frame() presents. An off-screen frame (save
     // thumbnail, session_client capture_world) is begin_frame -> submit -> read_back with no end_frame: nothing is

@@ -48,9 +48,42 @@ TextureHandle upload(IRenderer& r, int w, int h, std::vector<std::uint8_t> rgba)
 
 glm::vec4 ui_rgba(int r, int g, int b, int a) { return {srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), float(a) / 255.0f}; }
 
-Ui::Ui(const formats::Vfs& vfs, IRenderer& renderer) : vfs_(vfs), renderer_(renderer) {}
+Ui::Ui(const formats::Vfs& vfs, IRenderer& renderer, std::vector<std::filesystem::path> hd_packs)
+    : vfs_(vfs), renderer_(renderer), hd_(std::move(hd_packs)) {}
+
+TextureData Ui::ui_image(std::string_view rel, int w, int h, std::vector<std::uint8_t> rgba) {
+    TextureData t;
+    t.width = w;
+    t.height = h;
+    t.pixels = std::move(rgba);
+    t.mipmaps = false;
+    t.repeat = false;
+    if (const std::filesystem::path f = hd_.find(rel).albedo; !f.empty()) {
+        formats::DdsTexture d;
+        std::string err;
+        if (load_image_file(f, d, err, 1) && !d.images.empty()) {
+            t.width = int(d.images[0].width);
+            t.height = int(d.images[0].height);
+            t.pixels = std::move(d.images[0].rgba);
+            t.mipmaps = true;  // minified below a 4x pack's native scale (UI scale < 4); the UI shaders bias -0.5
+            ++hd_used_;
+        } else {
+            std::fprintf(stderr, "ui: hd %s: %s, original used\n", f.c_str(), err.c_str());
+        }
+    }
+    return t;
+}
+
+TextureHandle Ui::create(const TextureData& t, glm::ivec2 orig) {
+    const TextureHandle h = renderer_.create_texture(t);
+    // HD image: clamp like the original (half an original texel, the shader adds half an HD texel).
+    if (h && orig.x > 0 && orig.y > 0 && (t.width != orig.x || t.height != orig.y))
+        hd_inset_[h.id] = 0.5f / glm::vec2(orig) - 0.5f / glm::vec2(t.width, t.height);
+    return h;
+}
 
 Ui::~Ui() {
+    if (hd_used_) std::fprintf(stderr, "ui: hd: %d images overridden\n", hd_used_);
     for (auto& [name, t] : textures_)
         if (t.first) renderer_.destroy_texture(t.first);
     for (auto& [name, f] : fonts_)
@@ -71,8 +104,8 @@ TextureHandle Ui::texture(std::string_view name) {
     if (auto it = textures_.find(key); it != textures_.end()) return it->second.first;
     std::pair<TextureHandle, glm::ivec2> entry{};
     if (auto img = load_dds(vfs_, name)) {
-        entry.second = {int(img->width), int(img->height)};
-        entry.first = upload(renderer_, int(img->width), int(img->height), std::move(img->rgba));
+        entry.second = {int(img->width), int(img->height)};  // layout/UV basis stays the original size
+        entry.first = create(ui_image("int8x6/" + std::string(name) + ".dds", int(img->width), int(img->height), std::move(img->rgba)), entry.second);
     } else {
         std::fprintf(stderr, "ui: missing texture int8x6/%s.dds\n", key.c_str());
     }
@@ -175,15 +208,24 @@ const UiSprite* Ui::sprite(std::string_view set, std::string_view name) {
             // ROTATION = 1: stored rotated; bake a WIDTH x HEIGHT texture turned 90 degrees counter-clockwise
             // (texel left edge -> bottom; verified on COMMELE2 frame vs s04_07_ingame_menu by MenuSaveLoad).
             // ponytail: one baked texture per rotated record (OPTMENU remap_fr, COMMELE2 frame, GPOPUP frame_l/r).
-            const int sw = s.src.z - s.src.x + 1, sh = s.src.w - s.src.y + 1;
-            std::vector<std::uint8_t> px(std::size_t(sw) * sh * 4);
+            // An HD pack image is baked from the same rect scaled to its size.
+            const TextureData src = ui_image("int8x6/" + r.texture + ".dds", int(img->width), int(img->height), std::move(img->rgba));
+            const float kx = float(src.width) / float(img->width), ky = float(src.height) / float(img->height);
+            const int x0 = int(float(s.src.x) * kx), y0 = int(float(s.src.y) * ky);
+            const int sw = int(float(s.src.z + 1) * kx) - x0, sh = int(float(s.src.w + 1) * ky) - y0;
+            TextureData baked;
+            baked.width = sh;
+            baked.height = sw;
+            baked.pixels.resize(std::size_t(sw) * sh * 4);
+            baked.mipmaps = src.mipmaps;
+            baked.repeat = false;
             for (int y = 0; y < sh; ++y)
                 for (int x = 0; x < sw; ++x) {
                     const int dx = y, dy = sw - 1 - x;  // counter-clockwise
-                    const int sx = std::min(s.src.x + x, int(img->width) - 1), sy = std::min(s.src.y + y, int(img->height) - 1);
-                    std::copy_n(&img->rgba[(std::size_t(sy) * img->width + sx) * 4], 4, &px[(std::size_t(dy) * sh + dx) * 4]);
+                    const int sx = std::min(x0 + x, src.width - 1), sy = std::min(y0 + y, src.height - 1);
+                    std::copy_n(&src.pixels[(std::size_t(sy) * src.width + sx) * 4], 4, &baked.pixels[(std::size_t(dy) * sh + dx) * 4]);
                 }
-            s.texture = upload(renderer_, sh, sw, std::move(px));
+            s.texture = create(baked, {s.src.w - s.src.y + 1, s.src.z - s.src.x + 1});
             out = s;
         }
     }
@@ -209,10 +251,12 @@ const UiFont* Ui::font(std::string_view name) {
         if (m) {
             f = std::make_unique<UiFont>();
             f->metrics = std::move(*m);
-            std::vector<std::uint8_t> white = img->rgba;
-            for (std::size_t i = 0; i + 3 < white.size(); i += 4) white[i] = white[i + 1] = white[i + 2] = 255;
-            f->mask = upload(renderer_, w, h, std::move(white));
-            f->texture = upload(renderer_, w, h, std::move(img->rgba));
+            // Metrics come from the original atlas above; the textures may be an HD pack atlas (same layout, any size).
+            TextureData tex = ui_image("int8x6/" + std::string(name) + ".dds", w, h, std::move(img->rgba));
+            TextureData white = tex;
+            for (std::size_t i = 0; i + 3 < white.pixels.size(); i += 4) white.pixels[i] = white.pixels[i + 1] = white.pixels[i + 2] = 255;
+            f->mask = create(white, {w, h});
+            f->texture = create(tex, {w, h});
         }
     }
     if (!f) std::fprintf(stderr, "ui: cannot load font %s\n", key.c_str());
@@ -368,6 +412,7 @@ void Ui::image(TextureHandle tex, glm::vec4 rect, glm::vec2 uv0, glm::vec2 uv1, 
     }
     const glm::vec4 px = rect_pixels(rect);
     out_->push_back({{px.x, px.y}, {px.z, px.w}, uv0, uv1, color, tex, turns});
+    if (const auto it = hd_inset_.find(tex.id); it != hd_inset_.end()) out_->back().clamp_inset = it->second;
 }
 
 void Ui::fill(glm::vec4 rect, glm::vec4 color) { image({}, rect, {0, 0}, {1, 1}, color); }
@@ -471,7 +516,8 @@ void Ui::cursor(int index) {
                         px[i * 4 + 2] = pal->rgb[c][2];
                         px[i * 4 + 3] = c == 0xFF ? 0 : 255;  // 0xFF = transparent (HYPOTHESIS, matches the shapes)
                     }
-                    cursors_.push_back({upload(renderer_, b.width, b.height, std::move(px)), hot});
+                    // HD pack: Resource/I_CURSOR/<byte offset>.png (hd-upscale writes one image per record).
+                    cursors_.push_back({renderer_.create_texture(ui_image("Resource/I_CURSOR/" + std::to_string(off) + ".png", b.width, b.height, std::move(px))), hot});
                     break;
                 }
             }

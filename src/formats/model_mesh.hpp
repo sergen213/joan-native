@@ -60,5 +60,7 @@ std::vector<uint32_t> strip_to_triangles(std::span<const uint16_t> strip);
 // Poses an AM1 submesh: out[i].pos/normal = sum(weight * boneMatrix[bone] * influence); uv copied.
 // Bones missing from boneMatrices count as identity.
 std::vector<MeshVertex> skin_vertices(const Submesh& sub, std::span<const Mat3x4> boneMatrices);
+// Same, into `out` (its capacity reused: per-frame skinning without allocations).
+void skin_vertices(const Submesh& sub, std::span<const Mat3x4> boneMatrices, std::vector<MeshVertex>& out);
 
 }  // namespace joa::formats

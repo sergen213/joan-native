@@ -85,7 +85,9 @@ void main() {
         if (x.metal != kNoTexture) s.metal = tex(x.metal, uv).r;
 #ifdef RAY_TRACED
         if (u_push.pass == 2u) {  // G-buffer prepass: what the ray-traced passes need per pixel
-            o_color = vec4(oct_encode(s.n), s.roughness, distance(v_world, R.camera_pos.xyz));
+            // Units (bit 3) store their roughness negated: rt_shadow.comp keeps unit occluders off them (abs elsewhere).
+            o_color = vec4(oct_encode(s.n), (d.unlit & 8u) != 0u ? -max(s.roughness, 1e-3) : s.roughness,
+                           distance(v_world, R.camera_pos.xyz));
             o_ambient = vec4(0.0);
             return;
         }

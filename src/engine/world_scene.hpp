@@ -7,6 +7,7 @@
 #include "formats/map_grid.hpp"
 #include "formats/world_text.hpp"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +25,11 @@ struct ScenarioPaths {
     std::string name;  // map base name, e.g. "S1L1"
 };
 std::optional<ScenarioPaths> find_scenario(const formats::Vfs& vfs, std::string_view scenario);
+
+// Gribb-Hartmann frustum planes of `view_proj` (xyz normal, w distance), normals pointing inside, and the
+// sphere-against-planes test of WorldScene::build.
+std::array<glm::vec4, 6> frustum_planes(const glm::mat4& view_proj);
+bool sphere_visible(const std::array<glm::vec4, 6>& planes, glm::vec3 centre, float radius);
 
 struct WorldStats {
     int objects = 0;          // CreateObject blocks

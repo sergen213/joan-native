@@ -10,7 +10,7 @@
 
 namespace joa::engine {
 
-Platform::Platform(const Options& o, bool hidden) {
+Platform::Platform(const Options& o, bool hidden) : scripted_(!o.autoplay.empty()) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::string("SDL_Init: ") + SDL_GetError());
     const bool vulkan = o.renderer == RendererKind::Vulkan;
     if (!vulkan) gl_set_window_attributes();
@@ -58,6 +58,9 @@ bool Platform::pump(RawInput& raw) {
     SDL_Event e;
     auto axis = [](Sint16 v) { return std::clamp(float(v) / 32767.0f, -1.0f, 1.0f); };
     while (SDL_PollEvent(&e)) {
+        // Autoplay runs (tests on the real display) must not pick up whatever the desktop's mouse/keyboard does to a
+        // visible window: a mouse move over the 21:9 test window turned Joan and failed session_hud.
+        if (scripted_ && e.type != SDL_EVENT_QUIT) continue;
         switch (e.type) {
         case SDL_EVENT_QUIT: running = false; break;
         case SDL_EVENT_KEY_DOWN:
@@ -109,7 +112,7 @@ bool Platform::pump(RawInput& raw) {
 void Platform::set_mouse_look(bool on) {
     if (on == mouse_look_) return;
     mouse_look_ = on;
-    SDL_SetWindowRelativeMouseMode(window_, on);
+    if (!scripted_) SDL_SetWindowRelativeMouseMode(window_, on);
 }
 
 void Platform::set_text_input(bool on) {

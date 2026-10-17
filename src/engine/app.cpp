@@ -74,7 +74,7 @@ int run_demo(const Options& o) {
     std::unique_ptr<UiRunner> ui;
     UiInputTracker ui_input;
     if (!o.ui_screen.empty()) {
-        ui = std::make_unique<UiRunner>(ui_vfs, *renderer, o.ui_screen);
+        ui = std::make_unique<UiRunner>(ui_vfs, *renderer, o.ui_screen, resolve_hd_packs(o.graphics.hd_packs));
         if (!capture) {  // UI sound effects (Sfx bus = options Sound Volume)
             AudioSettings a;
             a.sfx = float(ui->menu.options.sound_volume) / 100.0f;

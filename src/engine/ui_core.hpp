@@ -9,6 +9,7 @@
 //                               screen edge (HUD corners on 16:9/21:9).
 // Scale = safe height / 768 (high-DPI and any resolution).
 #include "engine/camera.hpp"
+#include "engine/hd_pack.hpp"
 #include "engine/renderer.hpp"
 #include "engine/ui_font.hpp"
 #include "engine/ui_model.hpp"
@@ -77,7 +78,10 @@ struct UiInput {
 
 class Ui {
 public:
-    Ui(const formats::Vfs& vfs, IRenderer& renderer);
+    // hd_packs: resolved HD pack directories (resolve_hd_packs), first wins. int8x6 images (art, fonts) and the
+    // CURSOR.RES pointers are replaced by pack files of any size, sampled in normalized coordinates so every
+    // layout/UV stays on the original texel grid (docs/HD_ASSETS.md "UI").
+    Ui(const formats::Vfs& vfs, IRenderer& renderer, std::vector<std::filesystem::path> hd_packs = {});
     ~Ui();
     Ui(const Ui&) = delete;
     Ui& operator=(const Ui&) = delete;
@@ -176,9 +180,17 @@ public:
 private:
     void load_sprites();
     void load_text();
+    // TextureData for UI image `rel` (game-relative path) decoded as w x h `rgba`: the HD pack file if one exists
+    // (mipmapped), else these pixels as-is.
+    TextureData ui_image(std::string_view rel, int w, int h, std::vector<std::uint8_t> rgba);
+    // create_texture; an image larger than `orig` (HD pack) gets a clamp inset (hd_inset_) used by image().
+    TextureHandle create(const TextureData& t, glm::ivec2 orig);
 
     const formats::Vfs& vfs_;
     IRenderer& renderer_;
+    HdPacks hd_;
+    int hd_used_ = 0;
+    std::unordered_map<std::uint32_t, glm::vec2> hd_inset_;  // texture id -> UiQuad::clamp_inset
     struct SpriteRecord {
         std::string texture;
         glm::ivec4 src{0};

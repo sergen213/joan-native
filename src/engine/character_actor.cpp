@@ -17,13 +17,20 @@ glm::mat4 to_mat4(const formats::Mat3x4& m) {
     return r;
 }
 
-// Caster positions in engine axes transformed by `m`, all submeshes concatenated; `bones` empty = static mesh.
+// Caster positions in engine axes transformed by `m`, all submeshes concatenated, appended to `out`; `bones` empty =
+// static mesh. `scratch`: skinning buffer, reused.
+void caster_positions(const formats::Mesh& mesh, std::span<const formats::Mat3x4> bones, const glm::mat4& m, std::vector<glm::vec3>& out,
+                      std::vector<formats::MeshVertex>& scratch) {
+    for (const auto& sub : mesh.submeshes) {
+        if (bones.empty()) scratch.assign(sub.vertices.begin(), sub.vertices.end());
+        else formats::skin_vertices(sub, bones, scratch);
+        for (const formats::MeshVertex& v : scratch) out.push_back(glm::vec3(m * glm::vec4(to_engine(v.pos), 1.0f)));
+    }
+}
 std::vector<glm::vec3> caster_positions(const formats::Mesh& mesh, std::span<const formats::Mat3x4> bones, const glm::mat4& m) {
     std::vector<glm::vec3> out;
-    for (const auto& sub : mesh.submeshes) {
-        const auto verts = bones.empty() ? sub.vertices : formats::skin_vertices(sub, bones);
-        for (const formats::MeshVertex& v : verts) out.push_back(glm::vec3(m * glm::vec4(to_engine(v.pos), 1.0f)));
-    }
+    std::vector<formats::MeshVertex> scratch;
+    caster_positions(mesh, bones, m, out, scratch);
     return out;
 }
 
@@ -56,6 +63,7 @@ Character::Character(AssetCache& assets, std::string_view am1, std::string_view 
         part_first_.push_back(part_first_.empty() ? 0 : part_first_.back() + part_count_.back());
         part_count_.push_back(std::uint32_t(formats::strip_to_triangles(sub.strip).size()));
     }
+    posed_ = build_mesh_data(*mesh_);  // indices + uvs; pose() rewrites positions and normals
     pose(0.0f);
     // Welded in the first pose, as the original welds the posed buffer once per shadow model.
     shadow_caster_ = make_caster(*shadow_mesh_, caster_positions(*shadow_mesh_, bones_, glm::mat4(1.0f)));
@@ -82,19 +90,22 @@ void Character::pose(float clip_ms, float root_x, float root_y) {
     // Root-motion clips: the body carries the Bip01 x/y travel, the drawn pose stays in place.
     if (root_x != 0.0f || root_y != 0.0f)
         for (formats::Mat3x4& b : bones_) b[3] -= root_x, b[7] -= root_y;
-    std::vector<std::vector<formats::MeshVertex>> posed;
-    posed.reserve(mesh_->submeshes.size());
     float top = 0;
+    std::size_t o = 0;
     for (const auto& sub : mesh_->submeshes) {
-        posed.push_back(formats::skin_vertices(sub, bones_));
-        for (const auto& v : posed.back()) top = std::max(top, v.pos[2]);
+        formats::skin_vertices(sub, bones_, skinned_);
+        for (const formats::MeshVertex& v : skinned_) {
+            top = std::max(top, v.pos[2]);
+            Vertex& d = posed_.vertices[o++];
+            d.position = to_engine(v.pos);
+            if (!mesh_->constantNormals) d.normal = to_engine(v.normal);  // build_mesh_data's rule
+        }
     }
     height_ = top;
-    const MeshData data = build_mesh_data(*mesh_, posed);
     IRenderer& r = assets_.renderer();
-    if (gpu_ && r.update_mesh(gpu_, data)) return;
+    if (gpu_ && r.update_mesh(gpu_, posed_)) return;
     r.destroy_mesh(gpu_);
-    gpu_ = r.create_mesh(data);
+    gpu_ = r.create_mesh(posed_);
 }
 
 bool Character::attach(const Model* model, std::string_view bone, const formats::Mesh* shadow) {
@@ -143,12 +154,17 @@ void Character::build_shadow(const glm::mat4& transform, glm::vec3 sun, ShadowKi
     }
     // HYPOTHESIS: the original extrudes by shadow-model size (+0x3c + +0x40) + 300; the pose height stands in.
     const float length = height_ + 300.0f;
-    MeshData data;
-    append_shadow_volume(shadow_caster_, caster_positions(*shadow_mesh_, bones_, transform), sun, length, data);
+    MeshData& data = shadow_data_;  // reused: every visible unit, every frame
+    data.vertices.clear(), data.indices.clear();
+    caster_pos_.clear();
+    caster_positions(*shadow_mesh_, bones_, transform, caster_pos_, skinned_);
+    append_shadow_volume(shadow_caster_, caster_pos_, sun, length, data);
     for (const Attached& a : attached_)
-        if (a.shadow && a.bone < bones_.size())
-            append_shadow_volume(a.caster, caster_positions(*a.shadow, {}, transform * kToEngine * to_mat4(bones_[a.bone]) * glm::transpose(kToEngine)),
-                                 sun, length, data);
+        if (a.shadow && a.bone < bones_.size()) {
+            caster_pos_.clear();
+            caster_positions(*a.shadow, {}, transform * kToEngine * to_mat4(bones_[a.bone]) * glm::transpose(kToEngine), caster_pos_, skinned_);
+            append_shadow_volume(a.caster, caster_pos_, sun, length, data);
+        }
     if (data.indices.empty()) return;
     IRenderer& r = assets_.renderer();
     if (!shadow_gpu_ || !r.update_mesh(shadow_gpu_, data)) {

@@ -61,13 +61,19 @@ def main():
         write(os.path.join(game, "texture/unit/joan.dds"), dds(4, 4, bytes((0, 0, 255, 128)) * 16))  # red, alpha 128
         write(os.path.join(game, "texture/terrain/S1L1_scene_sector00.dds"), dds(4, 4, RED_DXT1, b"DXT1"))
         write(os.path.join(game, "map/other.dds"), dds(4, 4, RED_DXT1, b"DXT1"))
+        write(os.path.join(game, "INT8X6/Font 12.dds"), dds(4, 4, RED_DXT1, b"DXT1"))  # UI art / font atlas
+        # UI pointers: pal_std.res (entry 1 = green) + I_CURSOR.RES records at offsets 0 (1x1) and 9 (2x2, one keyed texel).
+        write(os.path.join(game, "Resource/pal_std.res"), struct.pack("<II", 776, 0) + bytes((0, 0, 0, 0, 255, 0)) + bytes(762))
+        write(os.path.join(game, "Resource/I_CURSOR.RES"), struct.pack("<IHH", 5, 1, 1) + b"\x01" + struct.pack("<IHH", 8, 2, 2) + bytes((1, 0xFF, 1, 1)))
         base = [sys.executable, SCRIPT, "--game-dir", game, "--out", out]
 
         r = subprocess.run(base + ["--dry-run", "--scale", "2"], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
         lines = r.stdout.splitlines()
-        assert len(lines) == 2, r.stdout
+        assert len(lines) == 5, r.stdout
         assert "TEXTURE/Item/Sword.DDS 8x8 -> 16x16 " + os.path.join(out, "TEXTURE/Item/Sword.png") in lines, r.stdout
+        assert "INT8X6/Font 12.dds 4x4 -> 8x8 " + os.path.join(out, "INT8X6/Font 12.png") in lines, r.stdout
+        assert "Resource/I_CURSOR/9.png 2x2 -> 4x4 " + os.path.join(out, "Resource/I_CURSOR/9.png") in lines, r.stdout
         assert not os.path.exists(out)
 
         r = subprocess.run(base + ["--tool", os.path.join(tmp, "missing")], capture_output=True, text=True)
@@ -91,6 +97,9 @@ def main():
         assert (w, h) == (32, 32) and px[:4] == bytes((255, 0, 0, 255))
         w, h, px = hu.read_png(os.path.join(out, "texture/unit/joan.png"))
         assert (w, h) == (16, 16) and all(px[i:i + 4] == bytes((255, 0, 0, 128)) for i in range(0, len(px), 4))
+        w, h, px = hu.read_png(os.path.join(out, "Resource/I_CURSOR/9.png"))
+        assert (w, h) == (8, 8) and px[:4] == bytes((0, 255, 0, 255)) and px[4 * 4:4 * 4 + 4] == bytes((0, 0, 0, 0)), px[:24]
+        assert os.path.exists(os.path.join(out, "INT8X6/Font 12.png"))
         assert not os.path.exists(os.path.join(out, "texture/terrain")) and not os.path.exists(os.path.join(out, "map"))
     print("hd_upscale: ok")
 

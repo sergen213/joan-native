@@ -37,6 +37,7 @@ private:
     std::vector<SDL_Gamepad*> pads_;
     bool mouse_look_ = false;
     bool text_input_ = false;
+    bool scripted_ = false;  // --autoplay-script: the script is the only input (no desktop mouse/keys/pads, no grab)
 };
 
 }  // namespace joa::engine

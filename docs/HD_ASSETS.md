@@ -18,11 +18,13 @@ either slash** — exactly the community "Joan of Arc: HD Update v0.95" layout:
 <pack>/texture/item/Church.dds        overrides texture/item/church.dds
 <pack>/texture/unit/talbot.png        overrides texture/unit/talbot.dds
 <pack>/texture/terrain/grass01_n.png  normal map for texture/terrain/grass01.dds
-<pack>/int8x6/…, <pack>/save/…        indexed too (see gaps: UI does not use them)
+<pack>/int8x6/menu1024.png           UI art / font atlas (int8x6/menu1024.dds), see "UI" below
+<pack>/resource/i_cursor/0.png        UI pointer: Resource/I_CURSOR.RES record at byte offset 0
+<pack>/save/…                         indexed too
 ```
 
-- Only `texture/`, `int8x6/` and `save/` below the pack root are indexed (one walk at startup), so a
-  pack may be a whole mod extraction; executables, `CONFIG.DAT`, models etc. are ignored.
+- Only `texture/`, `int8x6/`, `save/` and `resource/` below the pack root are indexed (one walk at startup),
+  so a pack may be a whole mod extraction; executables, `CONFIG.DAT`, models etc. are ignored.
 - Accepted files: same stem with `.dds` (DXT1–5 and bit-mask formats via `formats::parse_dds`, file mip
   chain kept while each level halves exactly, else GPU mips) or `.png` (non-interlaced 1–16 bit grey,
   RGB, palette+tRNS, grey-alpha, RGBA; GPU mips). `.dds` wins over `.png` of the same stem in one pack.
@@ -50,6 +52,24 @@ Entries are pack **names** under `${XDG_DATA_HOME:-~/.local/share}/joan-native/h
 **absolute directories**. Missing entries are skipped with a log line. HD packs are independent of the
 graphics preset (they also work with `Original`). Log at startup: `joan-native: hd pack <dir>: N textures`;
 at shutdown: `joan-native: hd: N textures overridden (M pack files)`.
+
+## UI (menus, HUD, briefing, fonts, cursor)
+
+`Ui` (`ui_core.cpp`) uses the same `hd_packs` (no separate setting): every `int8x6/<name>.dds` it loads —
+menu/HUD/brief/minimap atlases, inventory icons (`int8x6/item/`), and the bitmap font atlases — and the
+`CURSOR.RES` pointers (`resource/i_cursor/<I_CURSOR.RES byte offset>.png`, 32x32 originals) are replaced
+by a pack file of any size. Layout never changes: sprite UVs (`INTERFAC.SET` texel rects), glyph rects and
+widths (`.fin` / grid metrics, measured on the **original** atlas) are normalized by the original size, so
+an HD atlas is sampled at the same relative positions; rotated `INTERFAC.SET` records are baked from the
+scaled rect. HD UI images are uploaded with mipmaps (a 4x pack is minified below UI scale 4, e.g. 1440p and
+1080p) and the UI shaders sample with a −0.5 LOD bias so a 4K screen (UI scale 2.81) stays on the sharp
+level. The atlas-bleed clamp stays half an **original** texel (`UiQuad::clamp_inset`): the upscaler softens
+alpha across sprite-rect borders by ~2 pack texels, which a half-pack-texel clamp would show as a faint seam
+(minimap tile edges). Without a pack nothing changes (no mips, no inset, same texels as before;
+`*_ui_frontend` 1024x768 1:1). Log at shutdown: `ui: hd: N images overridden`.
+
+Text: the fonts are the original bitmap atlases upscaled like the art (no TTF ships with the game and none
+is bundled; Goudy/Verdana/Celtic glyph shapes and metrics stay the original ones).
 
 ## Companion material maps
 
@@ -136,7 +156,8 @@ alpha **separately** (alpha as a grey image, re-merged), rounds each edge to the
 ```
 tools/hd-upscale/hd-upscale --dry-run                             # list planned operations, write nothing
 tools/hd-upscale/hd-upscale --scale 4 --model realesrgan-x4plus   # -> ~/.local/share/joan-native/hd/upscaled
-joan-native --hd-packs upscaled
+tools/hd-upscale/hd-upscale --include 'int8x6/*' --include 'resource/i_cursor/*'   # UI only (~15 min)
+joan-native --hd-packs upscaled                                    # or settings.ini [graphics] hd_packs=upscaled
 ```
 
 | Option | Default | Meaning |
@@ -146,7 +167,7 @@ joan-native --hd-packs upscaled
 | `--scale 2\|4` | 4 | target factor (before power-of-two rounding) |
 | `--model` | `realesrgan-x4plus` | `-n` model; `realesrgan-x4plus(-anime)` run at x4 then resize, others with `-s <scale>` |
 | `--format png\|dds` | png | `dds` = DXT1 (opaque) / DXT5 (alpha) through `compressonatorcli`, `nvcompress` or `crunch` if on PATH, else PNG with a message (encoder command lines UNTESTED here: none installed) |
-| `--include GLOB` / `--exclude GLOB` | `texture/*` / `*_scene_sector*` | fnmatch on the lowercase relative path, repeatable |
+| `--include GLOB` / `--exclude GLOB` | `texture/*`, `int8x6/*` (UI art, fonts), `resource/i_cursor/*` (UI pointers) / `*_scene_sector*` | fnmatch on the lowercase relative path (cursors: `resource/i_cursor/<offset>.png`), repeatable |
 | `--tool PATH` | `realesrgan-ncnn-vulkan` from PATH | upscaler executable |
 | `--force` | off | redo textures whose output exists (default: skip, so runs resume) |
 | `--dry-run` | off | print `<rel> WxH -> TxT <out>` lines, write nothing, exit 0; automatic when the upscaler is missing |
@@ -160,13 +181,15 @@ are distributed by the Real-ESRGAN project under its own terms — check them be
 outputs. Outputs are derivatives of Enlight's textures: keep them local, never redistribute
 (`docs/ASSET_RIGHTS.md`).
 
-Status on the development machine: `realesrgan-ncnn-vulkan` not installed, so no real upscale was run;
-the full pipeline is exercised by `tools.hd_upscale` with a fake nearest-neighbour upscaler.
+Status on the development machine (2026-10-17): the UI set (`int8x6/*` + cursors) was generated with
+the release zip's `realesrgan-x4plus` (RX 7900 XTX); world textures still only through `tools.hd_upscale`
+with a fake nearest-neighbour upscaler. `x4plus` was kept for the UI too: `x4plus-anime` gave equally
+clean glyphs but repainted the HUD portraits (`work/uiupscale/models_*.png`).
 
 ## Gaps
 
-- **UI textures** (`int8x6/` menus, HUD, briefing) are loaded by `ui_core.cpp` and `hud_brief.cpp`
-  straight from the VFS, not through `AssetCache`: packs do not affect the UI.
+- The briefing's 3D map (`hud_brief.cpp` `map_render`) is CPU-rasterised from the original
+  `texture/*.dds` files (nearest texel), not through `AssetCache`: packs do not affect it.
 - Water bump frames and `texture/misc/waterpool.tga` (`water.cpp`) and the video player bypass the
   cache too. Sky dome clouds, particles, terrain, models, grass and lightmaps go through it.
 - No compressed GPU upload: overrides are uploaded as RGBA8 (a 4096² texture with mips is ~89 MB of

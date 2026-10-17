@@ -56,7 +56,9 @@ int main() {
     CHECK(s.objects == 762);                 // CreateObject blocks in S1L1.stg
     CHECK(s.placed + s.missing_models == s.objects);
     CHECK(s.placed >= 750);
-    CHECK(s.terrain_triangles > 100000 && s.terrain_triangles <= 256 * 256 * 2);
+    // Every one of the 256x256 cells (the last vertex row/column has byte 0 = 0 yet closes the edge cells; skipping
+    // them left a 64-unit hole along every node seam of multi-node maps).
+    CHECK(s.terrain_triangles == 256 * 256 * 2);
     CHECK(s.lightmaps == 256);               // texture/terrain/S1l1_scene_sector_1..256.dds
 
     // Every placed object stands near the terrain (WorldFormats: 82% within 40 units).
@@ -168,5 +170,13 @@ int main() {
         outward = outward && glm::dot(glm::cross(b - a, c - a), out) > 0.0f;
     }
     CHECK(outward);
+    // A closed cube lit from above: only the top face is the cap and its 4 rim edges the silhouette (shared lit/lit and
+    // unlit edges add nothing).
+    const glm::vec3 cube[8] = {{0, 0, 0}, {1, 0, 0}, {1, 0, -1}, {0, 0, -1}, {0, 1, 0}, {1, 1, 0}, {1, 1, -1}, {0, 1, -1}};
+    const std::uint32_t cube_tris[36] = {4, 5, 6, 4, 6, 7,  0, 2, 1, 0, 3, 2,  0, 1, 5, 0, 5, 4,
+                                         1, 2, 6, 1, 6, 5,  2, 3, 7, 2, 7, 6,  3, 0, 4, 3, 4, 7};
+    MeshData box;
+    append_shadow_volume(ShadowCaster(cube, cube_tris), cube, glm::vec3(0, -1, 0), 10.0f, box);
+    CHECK(box.vertices.size() == 8 && box.indices.size() == 30);
     return test_result();
 }

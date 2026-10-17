@@ -17,8 +17,8 @@ namespace joa::engine {
 
 class UiRunner {
 public:
-    // `screen`: a ui_screen_names() entry; throws std::runtime_error for an unknown name.
-    UiRunner(const formats::Vfs& vfs, IRenderer& renderer, std::string_view screen);
+    // `screen`: a ui_screen_names() entry; throws std::runtime_error for an unknown name. hd_packs: as Ui.
+    UiRunner(const formats::Vfs& vfs, IRenderer& renderer, std::string_view screen, std::vector<std::filesystem::path> hd_packs = {});
 
     // Draws the HUD (if shown) then the active menu, then the cursor. Returns false once Quit was chosen.
     bool frame(glm::ivec4 viewport, const UiInput& input, float dt, std::vector<UiQuad>& out);

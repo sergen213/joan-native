@@ -223,7 +223,8 @@ volumes), `[paths] game_dir`. Explicit CLI flags win (`--preset original --graph
 ### Autoplay scripts (`src/engine/session_autoplay.hpp`)
 
 One event per line `<frame> <verb> [args]`, `#` comments. With `--autoplay-script` the window is hidden and every
-frame advances exactly one 33 ms tick, so scripts are deterministic with `--seed`.
+frame advances exactly one 33 ms tick, so scripts are deterministic with `--seed`. The script is the only input: the
+desktop's mouse, keyboard and pads are ignored and the pointer is never grabbed, also in a `JOA_SHOW_WINDOWS=1` window.
 
 ```
 0    log start

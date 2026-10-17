@@ -19,6 +19,8 @@ void main() {
     // filter in their neighbours' edge rows (pale lines along button art, specks around glyphs).
     vec2 half_texel = 0.5 / vec2(textureSize(u_texture, 0));
     vec2 uv = clamp(v_uv, v_uv_rect.xy + half_texel, max(v_uv_rect.zw - half_texel, v_uv_rect.xy + half_texel));
-    vec4 c = texture(u_texture, uv) * v_color;
+    // -0.5 LOD bias: mipmapped HD pack images (ui_core.cpp ui_image) stay on the sharp level while only mildly
+    // minified (a 4x pack at 4K); no effect on the original, unmipmapped UI textures.
+    vec4 c = texture(u_texture, uv, -0.5) * v_color;
     o_color = vec4(encode_srgb(c.rgb), c.a);
 }

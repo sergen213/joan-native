@@ -6,6 +6,7 @@
 #include "engine/post_frame.hpp"
 #include "engine/shadow_volume.hpp"
 
+#include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -76,7 +78,17 @@ public:
             SDL_GL_DestroyContext(context_);
             throw std::runtime_error(std::string("missing GL entry point ") + missing);
         }
-        if (!SDL_GL_SetSwapInterval(-1)) SDL_GL_SetSwapInterval(1);  // adaptive vsync (VRR friendly)
+        // Wayland never tears, and SDL's emulated vsync there (wait for the frame callback, then swap) stalls against
+        // mutter's VRR frame clock: one frame in ~8 waited the panel's minimum refresh (20.9 ms on a 48-240 Hz monitor).
+        // There: no swap interval, end_frame paces to the display refresh itself.
+        if (const char* d = SDL_GetCurrentVideoDriver(); d && std::strcmp(d, "wayland") == 0) {
+            SDL_GL_SetSwapInterval(0);
+            // ponytail: the refresh of the display at startup; re-read it if windows moving between monitors matters.
+            if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window)); m && m->refresh_rate > 0.0f)
+                frame_ns_ = Uint64(1e9 / double(m->refresh_rate));
+        } else if (!SDL_GL_SetSwapInterval(-1)) {
+            SDL_GL_SetSwapInterval(1);  // adaptive vsync (VRR friendly)
+        }
         std::fprintf(stderr, "joan-native: OpenGL %s / %s\n", reinterpret_cast<const char*>(glGetString(GL_VERSION)),
                      reinterpret_cast<const char*>(glGetString(GL_RENDERER)));
 
@@ -306,6 +318,11 @@ public:
         glBlitFramebuffer(0, 0, target_size_.x, target_size_.y, 0, 0, std::min(w, target_size_.x), std::min(h, target_size_.y),
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
         SDL_GL_SwapWindow(window_);
+        if (frame_ns_) {  // Wayland frame limiter: SDL_DelayPrecise sleeps coarse, then spins the last stretch
+            const Uint64 now = SDL_GetTicksNS();
+            if (now < next_frame_ns_) SDL_DelayPrecise(next_frame_ns_ - now);
+            next_frame_ns_ = std::max(next_frame_ns_ + frame_ns_, now);  // a late frame restarts the cadence
+        }
     }
 
     Image read_back() override {
@@ -651,7 +668,7 @@ private:
         ui_vertices_.clear();
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
-            const glm::vec4 r{glm::min(q.uv0, q.uv1), glm::max(q.uv0, q.uv1)};
+            const glm::vec4 r{glm::min(q.uv0, q.uv1) + q.clamp_inset, glm::max(q.uv0, q.uv1) - q.clamp_inset};
             const glm::vec2 uv[4] = {q.uv0, {q.uv1.x, q.uv0.y}, q.uv1, {q.uv0.x, q.uv1.y}};  // TL TR BR BL, turned by q.turns
             const UiVertex v[4] = {{p0, uv[q.turns & 3], q.color, r}, {{p1.x, p0.y}, uv[(q.turns + 1) & 3], q.color, r},
                                    {p1, uv[(q.turns + 2) & 3], q.color, r}, {{p0.x, p1.y}, uv[(q.turns + 3) & 3], q.color, r}};
@@ -1322,6 +1339,7 @@ private:
 
     SDL_Window* window_;
     SDL_GLContext context_ = nullptr;
+    Uint64 frame_ns_ = 0, next_frame_ns_ = 0;  // Wayland frame limiter (0 = swap interval paces)
     MeshProgram mesh_{};
     UiProgram ui_{};
     std::unordered_map<std::uint32_t, Mesh> meshes_;

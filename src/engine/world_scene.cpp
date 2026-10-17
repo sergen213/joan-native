@@ -66,7 +66,8 @@ std::vector<LgtLight> parse_lgt(std::string_view text) {
     return out;
 }
 
-// Gribb-Hartmann frustum planes (xyz normal, w distance), normals point inside.
+}  // namespace
+
 std::array<glm::vec4, 6> frustum_planes(const glm::mat4& m) {
     const glm::mat4 t = glm::transpose(m);
     std::array<glm::vec4, 6> p{t[3] + t[0], t[3] - t[0], t[3] + t[1], t[3] - t[1], t[3] + t[2], t[3] - t[2]};
@@ -79,8 +80,6 @@ bool sphere_visible(const std::array<glm::vec4, 6>& planes, glm::vec3 c, float r
         if (glm::dot(glm::vec3(p), c) + p.w < -r) return false;
     return true;
 }
-
-}  // namespace
 
 std::optional<ScenarioPaths> find_scenario(const formats::Vfs& vfs, std::string_view s) {
     std::string arg(s);
@@ -446,7 +445,11 @@ void WorldScene::load_terrain(Node& n, const formats::BlockText& stg) {
     std::map<std::pair<std::string, std::string>, std::vector<int>> groups;  // -> cell ids
     for (int x = 0; x < g.cells_x; ++x)
         for (int y = 0; y < g.cells_y; ++y) {
-            if (!g.valid(x, y) || !g.valid(x + 1, y) || !g.valid(x, y + 1) || !g.valid(x + 1, y + 1)) continue;
+            // A cell is drawn when its own node is present (Level_load_terrain 0x4f6eb0 allocates a TerrainPatch per
+            // `*node != 0`, reading the x+1 / y+1 heights unconditionally). The last vertex row / column of every node
+            // has byte 0 = 0 but carries the neighbour node's first-row heights and colours: requiring all four corners
+            // dropped the 64-unit cell strip along every node seam (holes showing the fog colour on multi-node maps).
+            if (!g.valid(x, y)) continue;
             groups[{tex_name(g.tex1(x, y)), tex_name(g.tex2(x, y))}].push_back(x * g.cells_y + y);
         }
     const float repeat = float(std::max(g.header_c, 1));

@@ -39,14 +39,6 @@ glm::vec3 pick3(std::minstd_rand& r, const std::array<PsScalar, 3>& v) {
 
 glm::mat3 yaw(float radians) { return glm::mat3(glm::rotate(glm::mat4(1.0f), radians, glm::vec3(0, 1, 0))); }
 
-// Gribb-Hartmann frustum planes, normals inside (same test as WorldScene::build).
-std::array<glm::vec4, 6> frustum_planes(const glm::mat4& m) {
-    const glm::mat4 t = glm::transpose(m);
-    std::array<glm::vec4, 6> p{t[3] + t[0], t[3] - t[0], t[3] + t[1], t[3] - t[1], t[3] + t[2], t[3] - t[2]};
-    for (auto& v : p) v /= glm::length(glm::vec3(v));
-    return p;
-}
-
 }  // namespace
 
 // One pscript compiled for simulation. Sequence field offsets in joan.exe (FUN_00678320 order):

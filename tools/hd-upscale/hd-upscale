@@ -235,8 +235,51 @@ def dds_size(path):
     return width, height
 
 
+def find_ci(root, *parts):
+    """Case-insensitive path below root (None if missing)."""
+    p = root
+    for part in parts:
+        names = {n.lower(): n for n in os.listdir(p)} if os.path.isdir(p) else {}
+        if part.lower() not in names:
+            return None
+        p = os.path.join(p, names[part.lower()])
+    return p
+
+
+def cursor_images(game_dir):
+    """UI pointers: {byte offset: (w, h, rgba)} from Resource/I_CURSOR.RES ({u32 size; u16 w; u16 h; u8 px[w*h]}
+    records indexing Resource/pal_std.res, 0xFF transparent), as src/formats/res_archive.cpp + ui_core.cpp."""
+    res, pal = find_ci(game_dir, "Resource", "I_CURSOR.RES"), find_ci(game_dir, "Resource", "pal_std.res")
+    if not res or not pal:
+        return {}
+    data, rgb = open(res, "rb").read(), open(pal, "rb").read()[8:8 + 768]
+    out, o = {}, 0
+    while o + 8 <= len(data):
+        size, w, h = struct.unpack_from("<IHH", data, o)
+        if size != 4 + w * h or o + 4 + size > len(data):
+            break
+        px = bytearray(w * h * 4)
+        for i, c in enumerate(data[o + 8:o + 8 + w * h]):
+            px[i * 4:i * 4 + 4] = bytes((0, 0, 0, 0)) if c == 0xFF else rgb[c * 3:c * 3 + 3] + b"\xff"  # black under keyed texels
+        out[o] = (w, h, px)
+        o += 4 + size
+    return out
+
+
 def plan(args):
+    """[(rel, (w, h), (tw, th), out, load)], load() -> source rgba."""
     jobs = []
+
+    def add(rel, w, h, load):
+        tw, th = min(pow2(w * args.scale), args.max_size), min(pow2(h * args.scale), args.max_size)
+        if tw <= w and th <= h:
+            return  # already at --max-size
+        jobs.append((rel, (w, h), (tw, th), os.path.join(args.out, os.path.splitext(rel)[0] + "." + args.format), load))
+
+    def wanted(key):
+        return any(fnmatch.fnmatchcase(key, g.lower()) for g in args.include) and \
+            not any(fnmatch.fnmatchcase(key, g.lower()) for g in args.exclude)
+
     for dirpath, dirnames, files in os.walk(args.game_dir):
         rel_dir = os.path.relpath(dirpath, args.game_dir)
         if rel_dir == ".":
@@ -245,19 +288,15 @@ def plan(args):
         for name in sorted(files):
             rel = os.path.normpath(os.path.join(rel_dir, name))
             key = rel.replace(os.sep, "/").lower()
-            if not key.endswith(".dds") or not any(fnmatch.fnmatchcase(key, g.lower()) for g in args.include):
+            if not key.endswith(".dds") or not wanted(key):
                 continue
-            if any(fnmatch.fnmatchcase(key, g.lower()) for g in args.exclude):
-                continue
-            size = dds_size(os.path.join(dirpath, name))
-            if not size:
-                continue
-            w, h = size
-            tw, th = min(pow2(w * args.scale), args.max_size), min(pow2(h * args.scale), args.max_size)
-            if tw <= w and th <= h:
-                continue  # already at --max-size
-            out = os.path.join(args.out, os.path.splitext(rel)[0] + "." + args.format)
-            jobs.append((rel, (w, h), (tw, th), out))
+            path = os.path.join(dirpath, name)
+            size = dds_size(path)
+            if size:
+                add(rel, size[0], size[1], lambda path=path: decode_dds(open(path, "rb").read())[2])
+    if wanted("resource/i_cursor/0.png"):
+        for off, (w, h, px) in sorted(cursor_images(args.game_dir).items()):
+            add(os.path.join("Resource", "I_CURSOR", "%d.png" % off), w, h, lambda px=px: px)
     return jobs
 
 
@@ -287,9 +326,8 @@ def upscale(tool, model, scale, src_png, dst_png):
 
 
 def run_job(args, tool, encoder, job, tmp):
-    rel, (w, h), (tw, th), out = job
-    with open(os.path.join(args.game_dir, rel), "rb") as f:
-        _, _, rgba = decode_dds(f.read())
+    rel, (w, h), (tw, th), out, load = job
+    rgba = load()
     has_alpha = any(rgba[i] != 255 for i in range(3, len(rgba), 4))
     rgb = bytearray(w * h * 3)
     for i in range(w * h):
@@ -328,14 +366,16 @@ def main(argv=None):
     p.add_argument("--scale", type=int, choices=(2, 4), default=4)
     p.add_argument("--model", default="realesrgan-x4plus", help="realesrgan-ncnn-vulkan model name (-n)")
     p.add_argument("--format", choices=("png", "dds"), default="png")
-    p.add_argument("--include", action="append", help="glob on the lowercase relative path (repeatable; default texture/*)")
+    p.add_argument("--include", action="append",
+                   help="glob on the lowercase relative path (repeatable; default texture/*, int8x6/* (UI art, fonts), "
+                        "resource/i_cursor/* (UI pointers))")
     p.add_argument("--exclude", action="append", help="glob to skip (default: *_scene_sector* lightmaps)")
     p.add_argument("--max-size", type=int, default=4096, help="largest output edge")
     p.add_argument("--tool", default=None, help="realesrgan-ncnn-vulkan executable (default: from PATH)")
     p.add_argument("--force", action="store_true", help="redo textures whose output already exists")
     p.add_argument("--dry-run", action="store_true", help="list planned operations, write nothing")
     args = p.parse_args(argv)
-    args.include = args.include or ["texture/*"]
+    args.include = args.include or ["texture/*", "int8x6/*", "resource/i_cursor/*"]
     args.exclude = args.exclude or ["*_scene_sector*"]
     if not os.path.isdir(args.game_dir):
         print("hd-upscale: no game directory %s (use --game-dir)" % args.game_dir, file=sys.stderr)
@@ -350,7 +390,7 @@ def main(argv=None):
     encoder = find_encoder() if args.format == "dds" else None
     if args.format == "dds" and not encoder:
         print("hd-upscale: no DDS encoder (compressonatorcli/nvcompress/crunch) on PATH; writing PNG instead", file=sys.stderr)
-    for rel, (w, h), (tw, th), out in jobs:
+    for rel, (w, h), (tw, th), out, _ in jobs:
         print("%s %dx%d -> %dx%d %s" % (rel, w, h, tw, th, out))
     print("hd-upscale: %d textures, %s" % (len(jobs), "dry run, nothing written" if dry else "upscaling into " + args.out),
           file=sys.stderr)

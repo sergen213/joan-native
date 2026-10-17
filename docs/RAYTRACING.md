@@ -72,7 +72,10 @@ retired one timeline value later.
 Directional sun visibility per pixel: `rays_per_pixel` rays in a cone of 1° half angle (uniform disk; the real
 sun is 0.27°, widened for visible contact hardening), offset along the normal by 0.3 + 0.0015 × distance.
 Characters, buildings and vegetation cast; **contact shadows** come for free (per-pixel rays, no texel size or
-bias gap), e.g. self-shadowing of arms and armour plates and grass on the ground. The raster shadow map is kept
+bias gap), e.g. grass on the ground. Units (`Material::volume_caster`, flagged in the prepass by a negative G-buffer
+roughness) receive world shadows only, as in the raster path (units cast no shadow map; their stencil volumes skip
+units): unit-on-unit and self shadow rays toggled whole siege-weapon wheels between lit and shadowed frame to frame
+(alpha.16 flicker). The raster shadow map is kept
 for translucent draws, lit smoke and volumetric fog; with RT shadows the stencil volumes are never drawn.
 Temporal filter + à-trous (below). Point-light shadows: not done (optional in the brief).
 

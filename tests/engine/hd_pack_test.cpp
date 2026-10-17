@@ -4,6 +4,7 @@
 #include "engine/assets_cache.hpp"
 #include "engine/hd_pack.hpp"
 #include "engine/png.hpp"
+#include "engine/ui_core.hpp"
 
 #include <zlib.h>
 
@@ -260,6 +261,32 @@ int main() {
         AssetCache assets(vfs, r, packs);
         const TextureInfo* knight = assets.texture("knight");
         CHECK(knight && r.textures.at(knight->handle.id).width == 4 && assets.hd_overrides() == 0);
+    }
+    // UI (ui_core.cpp): int8x6 art from a pack at its own size, mipmapped; layout keeps the original size.
+    // resource/ is indexed for the CURSOR.RES pointers (resource/i_cursor/<offset>.png).
+    {
+        const fs::path pack_c = root / "packC";
+        write_dds(game / "INT8X6/Menu.dds", 4, false, {0, 0, 255, 255});
+        write_rgba_png(pack_c / "Int8x6/menu.png", 16, {1, 2, 3, 255});
+        write_rgba_png(pack_c / "Resource/I_CURSOR/1032.png", 8, {4, 5, 6, 255});
+        CHECK(HdPacks({pack_c}).find("Resource/I_CURSOR/1032.png").albedo == pack_c / "Resource/I_CURSOR/1032.png");
+        const joa::formats::Vfs ui_vfs(game);
+        StubRenderer r;
+        {
+            Ui plain(ui_vfs, r);
+            const TextureHandle t = plain.texture("menu");
+            CHECK(t && r.textures.at(t.id).width == 4 && !r.textures.at(t.id).mipmaps);
+        }
+        Ui ui(ui_vfs, r, {pack_c});
+        const TextureHandle t = ui.texture("MENU");
+        CHECK(t && r.textures.at(t.id).width == 16 && r.textures.at(t.id).mipmaps && !r.textures.at(t.id).repeat);
+        CHECK(t && r.textures.at(t.id).pixels[0] == 1);
+        CHECK(ui.texture_size("menu") == glm::ivec2(4));
+        // Draws keep the original's half-texel clamp: inset = 0.5/4 - 0.5/16 (the shader adds 0.5/16).
+        std::vector<UiQuad> quads;
+        ui.begin({0, 0, 1024, 768}, quads, {}, 0.0f);
+        ui.image(t, {0, 0, 4, 4});
+        CHECK(quads.size() == 1 && std::abs(quads[0].clamp_inset.x - (0.125f - 0.03125f)) < 1e-6f);
     }
     fs::remove_all(root);
 

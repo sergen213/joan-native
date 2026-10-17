@@ -247,9 +247,9 @@ void Client::render_frame(double dt, int frame, const Autoplay::FrameOut& script
         f.lighting = Lighting{};  // menus / loading: black behind the 4:3 canvas
     }
 
-    // UI input: the window pointer, or the autoplay pointer (design units of the 4:3 canvas), or the pad's RTS
-    // cursor (ui_raw_ carries its buttons); the pad's menu navigation (GamepadPlay).
-    UiInput ui_in = ui_tracker_.update(platform_ ? platform_->window() : nullptr, ui_raw_);
+    // UI input: the window pointer (none under autoplay), or the autoplay pointer (design units of the 4:3 canvas), or
+    // the pad's RTS cursor (ui_raw_ carries its buttons); the pad's menu navigation (GamepadPlay).
+    UiInput ui_in = ui_tracker_.update(platform_ && script_.empty() ? platform_->window() : nullptr, ui_raw_);
     if (script.pointer) {
         const UiLayout l = ui_layout(viewport_);
         ui_in.mouse = l.safe_origin + *script.pointer * l.scale;
@@ -352,7 +352,7 @@ int Client::run() {
     }
     renderer_->set_graphics(o_.graphics.resolve());
     JOA_DEV(if (platform_) dev_ = std::make_unique<DevOverlay>(*renderer_, o_.graphics.resolve()), dev_->visible = o_.dev_overlay;)
-    ui_ = std::make_unique<Ui>(vfs_, *renderer_);
+    ui_ = std::make_unique<Ui>(vfs_, *renderer_, resolve_hd_packs(o_.graphics.hd_packs));
     load_options(vfs_, options_ini_path(), menu_.options, menu_.bindings);
     if (o_.music_volume >= 0) menu_.options.music_volume = o_.music_volume;
     if (o_.sound_volume >= 0) menu_.options.sound_volume = o_.sound_volume;
@@ -454,7 +454,7 @@ int Client::run() {
         if (script.pointer) {
             const UiLayout l = ui_layout(viewport_);
             pointer = l.safe_origin + *script.pointer * l.scale;
-        } else if (platform_) {
+        } else if (platform_ && script_.empty()) {
             SDL_GetMouseState(&pointer.x, &pointer.y);
             pointer *= SDL_GetWindowPixelDensity(platform_->window());
         }

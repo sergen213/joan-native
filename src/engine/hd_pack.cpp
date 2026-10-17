@@ -51,10 +51,11 @@ HdPacks::HdPacks(std::vector<std::filesystem::path> packs) {
         auto& idx = index_.emplace_back();
         std::error_code ec;
         // Only the trees the engine reads textures from; never the whole directory (a pack may be a
-        // full mod extraction with executables, models, nested archives).
+        // full mod extraction with executables, models, nested archives). resource/ = UI cursors
+        // (resource/i_cursor/<offset>.png).
         for (const auto& top : fs::directory_iterator(pack, ec)) {
             const std::string t = lower(top.path().filename().string());
-            if (!top.is_directory(ec) || (t != "texture" && t != "int8x6" && t != "save")) continue;
+            if (!top.is_directory(ec) || (t != "texture" && t != "int8x6" && t != "save" && t != "resource")) continue;
             for (auto it = fs::recursive_directory_iterator(top.path(), fs::directory_options::skip_permission_denied, ec);
                  it != fs::recursive_directory_iterator(); it.increment(ec)) {
                 if (ec) break;

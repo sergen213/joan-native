@@ -14,6 +14,7 @@
 #include "formats/world_text.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <ctime>
 #include <filesystem>
@@ -212,6 +213,7 @@ std::string message_portrait(game::Mission& m, int unit, std::string_view name) 
 
 void GameUiBridge::reset(game::Mission& m, HudModel& hud) {
     m.ui().auto_advance = auto_advance;
+    unit_dots_valid_ = false;
     live_messages_.clear();
     party_.clear();
     brief_shown_ = false;
@@ -365,21 +367,36 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
         hud.minimap_waypoints.push_back({p, "wp_" + std::to_string(std::clamp(int(wp.type), 1, 7))});  // MAPICON wp_1..wp_7
     }
     hud_mapobj_fill(m, hud);  // HudGaps mapobj: vision mask sources, objective lines
-    for (const game::Unit& u : w.units()) {  // FUN_0070fbe0
-        if (u.deleted || w.dead(u) || u.id == w.player_id()) continue;
-        const glm::vec2 p{u.pos.x, u.pos.y};
-        if (!hud_vision_visible(hud, p)) continue;  // HudGaps mapobj: dot only on a set mask pixel
-        if (w.hostile_to_player(u)) {
-            hud.map_icons.push_back({p, "", HudMapIcon::Dot::Red});
-            continue;
-        }
-        const game::UnitClass* c = cls(m, u);
-        const char* hero = nullptr;
-        for (const auto& [code, icon] : kHeroIcons)
-            if (c && formats::iequals(c->code, code)) hero = icon;
-        if (hero) hud.map_icons.push_back({p, hero});
-        else hud.map_icons.push_back({p, "", HudMapIcon::Dot::Green});
+    // Unit dots: units x vision areas (0.5+ ms with armies). Units move only with the simulation tick; the vision areas
+    // can also change between ticks (script areas, minimap toggle), so the key covers them too.
+    std::uint64_t key = 1469598103934665603ull;
+    const auto mix = [&](std::uint64_t v) { key = (key ^ v) * 1099511628211ull; };
+    const auto bits = [](float f) { std::uint32_t u; std::memcpy(&u, &f, sizeof u); return std::uint64_t(u); };
+    mix(std::uint64_t(std::uint32_t(snap.time_ms))), mix(hud.minimap_fog);
+    for (const HudModel::VisionArea& a : hud.minimap_vision) {
+        mix(std::uint64_t(a.shape)), mix(bits(a.r));
+        for (const glm::vec2& q : a.p) mix(bits(q.x) << 32 | bits(q.y));
     }
+    if (!unit_dots_valid_ || key != unit_dots_key_) {
+        unit_dots_valid_ = true, unit_dots_key_ = key;
+        unit_dots_.clear();
+        for (const game::Unit& u : w.units()) {  // FUN_0070fbe0
+            if (u.deleted || w.dead(u) || u.id == w.player_id()) continue;
+            const glm::vec2 p{u.pos.x, u.pos.y};
+            if (!hud_vision_visible(hud, p)) continue;  // HudGaps mapobj: dot only on a set mask pixel
+            if (w.hostile_to_player(u)) {
+                unit_dots_.push_back({p, "", HudMapIcon::Dot::Red});
+                continue;
+            }
+            const game::UnitClass* c = cls(m, u);
+            const char* hero = nullptr;
+            for (const auto& [code, icon] : kHeroIcons)
+                if (c && formats::iequals(c->code, code)) hero = icon;
+            if (hero) unit_dots_.push_back({p, hero});
+            else unit_dots_.push_back({p, "", HudMapIcon::Dot::Green});
+        }
+    }
+    hud.map_icons.insert(hud.map_icons.end(), unit_dots_.begin(), unit_dots_.end());
 
     // ---- objectives (brief: end conditions with a description, Win records first; HUD panel: hud_mapobj) ----
     hud.brief_objectives.clear();

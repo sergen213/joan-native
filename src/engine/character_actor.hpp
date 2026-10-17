@@ -1,5 +1,5 @@
 #pragma once
-// Skinned, animated character (AM1 mesh + AM2 clips), CPU-skinned once per rendered frame.
+// Skinned, animated character (AM1 mesh + AM2 clips), CPU-skinned once per rendered frame while in view.
 // AM1 influences carry bone-space positions and AM2 keys are model-space matrices, so skinning is
 // world = sum(weight * key[bone] * pos) (docs/formats/MODELS_AND_ANIMATION.md); there is no bind pose.
 // Equipment meshes (item.res AttachBoneName) ride on a bone: their vertices are in that bone's space.
@@ -65,6 +65,10 @@ private:
     std::vector<Material> materials_;
     std::vector<std::uint32_t> part_first_, part_count_;
     std::vector<formats::Mat3x4> bones_;  // last pose
+    MeshData posed_;                         // last pose, engine axes (pose() reuses it: no per-frame allocations)
+    std::vector<formats::MeshVertex> skinned_;  // one submesh's skinning scratch
+    std::vector<glm::vec3> caster_pos_;         // build_shadow scratch
+    MeshData shadow_data_;
     struct Attached {
         const Model* model;
         std::size_t bone;

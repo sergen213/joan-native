@@ -31,6 +31,7 @@ void main() {
     if (any(greaterThanEqual(px, ivec2(R.screen.xy)))) return;
     float d = texelFetch(u_depth, px, 0).r;
     vec4 g = texelFetch(u_gbuffer, px, 0);
+    g.z = abs(g.z);  // roughness; negative on units (mesh_pbr.glsl)
     if (d >= 1.0 || g.z > RT.params.y) {
         imageStore(u_img[5], px, vec4(0.0, 0.0, 0.0, -1.0));
         return;

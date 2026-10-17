@@ -242,6 +242,7 @@ struct Slot {
     // Interactive water wave field (FrameData::waves, set 2 binding 24): R16F staging + image, rewritten when the slot is idle.
     Buffer rm_waves;
     Image2D waves;
+    Buffer env_staging;  // in-place environment map rewrites (ensure_env)
     Buffer rt_ubo, rt_instances;  // RtFrame, RtInstance table (set 3)
     VkDescriptorSet rt_set = VK_NULL_HANDLE;
 };
@@ -318,10 +319,12 @@ public:
                 destroy(s.draws);
                 destroy(s.lights);
                 destroy(s.ui);
+                destroy(s.env_staging);
                 if (s.queries) vk_.vkDestroyQueryPool(device_, s.queries, nullptr);
             }
             vk_.vkDestroySemaphore(device_, timeline_, nullptr);
             vk_.vkDestroyCommandPool(device_, upload_pool_, nullptr);
+            vk_.vkDestroyCommandPool(device_, async_pool_, nullptr);
             for (VkPipeline p : {opaque_, blend_, blend_zwrite_, additive_, volume_, fill_, ui_}) vk_.vkDestroyPipeline(device_, p, nullptr);
             vk_.vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
             vk_.vkDestroyPipelineLayout(device_, layout_, nullptr);
@@ -413,7 +416,7 @@ public:
         Buffer staging = create_buffer(vbytes + ibytes + 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kHost, 0);
         if (vbytes) std::memcpy(staging.memory.mapped, data.vertices.data(), vbytes);
         if (ibytes) std::memcpy(staging.memory.mapped + vbytes, data.indices.data(), ibytes);
-        immediate([&](VkCommandBuffer cmd) {
+        submit_upload(staging, [&](VkCommandBuffer cmd) {
             if (vbytes) {
                 const VkBufferCopy c{0, 0, vbytes};
                 vk_.vkCmdCopyBuffer(cmd, staging.buffer, m.vertices.buffer, 1, &c);
@@ -422,12 +425,11 @@ public:
                 const VkBufferCopy c{vbytes, 0, ibytes};
                 vk_.vkCmdCopyBuffer(cmd, staging.buffer, m.indices.buffer, 1, &c);
             }
+            // Every later reader: vertex input, BLAS builds, ray-query shaders through device addresses.
             const VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
-                                     VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT};
+                                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT};
             memory_barrier(cmd, b);
         });
-        destroy(staging);
         m.index_count = std::uint32_t(data.indices.size());
         rt_mesh_info(m, data);
         return m;
@@ -464,7 +466,7 @@ public:
             const VkDeviceSize n = VkDeviceSize(copies[i].imageExtent.width) * copies[i].imageExtent.height * 4;
             std::memcpy(static_cast<std::uint8_t*>(staging.memory.mapped) + copies[i].bufferOffset, src.data(), std::min<VkDeviceSize>(n, src.size()));
         }
-        immediate([&](VkCommandBuffer cmd) {
+        submit_upload(staging, [&](VkCommandBuffer cmd) {
             const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
             image_barrier(cmd, tex.image, range(color), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -473,7 +475,7 @@ public:
                                        copies.data());
             if (own_mips) {
                 image_barrier(cmd, tex.image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                              VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                              VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 return;
             }
@@ -489,15 +491,14 @@ public:
                                    1, &blit, VK_FILTER_LINEAR);
                 image_barrier(cmd, tex.image, range(color, i - 1, 1), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0,
-                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 w = nw;
                 h = nh;
             }
             image_barrier(cmd, tex.image, range(color, mips - 1, 1), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         });
-        destroy(staging);
 
         if (!free_slots_.empty()) {
             tex.slot = free_slots_.back();
@@ -593,6 +594,7 @@ public:
     }
 
     bool rt_active() const { return remaster_ && gfx_.rt.any() && rt_caps_.usable(); }
+    bool draws_shadow_volumes() const override { return !(rt_active() && gfx_.rt.shadows); }  // render_remaster's draw table
 
     void set_material_maps(TextureHandle albedo, const MaterialMaps& maps) override {
         if (albedo) material_maps_[albedo.id] = maps;
@@ -992,6 +994,7 @@ private:
         VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, upload_pool_,
                                           VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
         check(vk_.vkAllocateCommandBuffers(device_, &alloc, &upload_cmd_), "vkAllocateCommandBuffers");
+        check(vk_.vkCreateCommandPool(device_, &pool, nullptr, &async_pool_), "vkCreateCommandPool");
     }
 
     // [repeat][anisotropic]: mipmapped textures use `[graphics] anisotropy` (default 8x, as GL); aniso = false: plain linear.
@@ -1616,7 +1619,8 @@ private:
             DrawGpu g{d.model, glm::mat4(glm::transpose(glm::inverse(glm::mat3(d.model)))), m.tint,
                       glm::vec4(m.diffuse, m.vertex_diffuse ? 1.0f : 0.0f),
                       alpha_test_cutoff(m),
-                      (m.unlit ? 1u : 0u) | (m.fog ? 0u : 2u) | (a2c && m.blend == BlendMode::AlphaTest ? 4u : 0u), texture_slot(m.albedo),
+                      (m.unlit ? 1u : 0u) | (m.fog ? 0u : 2u) | (a2c && m.blend == BlendMode::AlphaTest ? 4u : 0u) | (m.volume_caster ? 8u : 0u),
+                      texture_slot(m.albedo),
                       layer2, lightmap, 0, m.bump && m.bump_scale != 0.0f ? texture_slot(m.bump) : kNoTexture, m.bump_scale, {}};
             for (int k = 0; k < std::min<int>(d.light_count, kMaxDrawLights); ++k)
                 if (d.lights[k] < l.point_lights.size())
@@ -1633,7 +1637,7 @@ private:
         auto* v = reinterpret_cast<UiVertex*>(s.ui.memory.mapped);
         for (const UiQuad& q : quads) {
             const glm::vec2 p0 = q.position, p1 = q.position + q.size;
-            const glm::vec4 r{glm::min(q.uv0, q.uv1), glm::max(q.uv0, q.uv1)};
+            const glm::vec4 r{glm::min(q.uv0, q.uv1) + q.clamp_inset, glm::max(q.uv0, q.uv1) - q.clamp_inset};
             const glm::vec2 uv[4] = {q.uv0, {q.uv1.x, q.uv0.y}, q.uv1, {q.uv0.x, q.uv1.y}};  // TL TR BR BL, turned by q.turns
             const UiVertex c[4] = {{p0, uv[q.turns & 3], q.color, r}, {{p1.x, p0.y}, uv[(q.turns + 1) & 3], q.color, r},
                                    {p1, uv[(q.turns + 2) & 3], q.color, r}, {{p0.x, p1.y}, uv[(q.turns + 3) & 3], q.color, r}};
@@ -2059,17 +2063,48 @@ private:
             if (s) vk_.vkDestroySampler(device_, s, nullptr);
     }
 
-    void ensure_env(const Lighting& l) {
+    void ensure_env(Slot& s, const Lighting& l) {
         const std::uint64_t key = env_key(l);
         if (env_radiance_ && key == env_key_) return;
-        destroy_texture(env_radiance_);  // retired once in-flight frames finish
-        destroy_texture(env_irradiance_);
         const EnvMaps m = build_env_maps(l);
-        env_radiance_ = create_texture(m.radiance);
-        env_irradiance_ = create_texture(m.irradiance);
         env_levels_ = m.radiance_levels;
         env_sky_up_ = m.sky_up;
         env_key_ = key;
+        if (!env_radiance_) {
+            env_radiance_ = create_texture(m.radiance);
+            env_irradiance_ = create_texture(m.irradiance);
+            return;
+        }
+        // Later changes (the fog colour follows the view direction: nearly every frame while turning) rewrite both
+        // images in place from this idle slot's staging, recorded before the scene passes: no new images and no
+        // immediate() queue wait. The barrier orders the copy after every earlier submission's reads.
+        std::vector<VkBufferImageCopy> copies[2];
+        VkDeviceSize bytes = 0;
+        const TextureData* data[2] = {&m.radiance, &m.irradiance};
+        for (int t = 0; t < 2; ++t)
+            for (std::uint32_t i = 0; i <= data[t]->mip_pixels.size(); ++i) {
+                const std::uint32_t w = std::max(data[t]->width >> i, 1), h = std::max(data[t]->height >> i, 1);
+                copies[t].push_back({bytes, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1}, {0, 0, 0}, {w, h, 1}});
+                bytes += VkDeviceSize(w) * h * 4;
+            }
+        ensure(s, s.env_staging, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        for (int t = 0; t < 2; ++t)
+            for (std::size_t i = 0; i < copies[t].size(); ++i) {
+                const auto& px = i ? data[t]->mip_pixels[i - 1] : data[t]->pixels;
+                std::memcpy(s.env_staging.memory.mapped + copies[t][i].bufferOffset, px.data(), px.size());
+            }
+        const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
+        const TextureHandle handles[2] = {env_radiance_, env_irradiance_};
+        for (int t = 0; t < 2; ++t) {
+            const VkImage image = textures_.at(handles[t].id).image;
+            image_barrier(cmd_, image, range(color), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            vk_.vkCmdCopyBufferToImage(cmd_, s.env_staging.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       std::uint32_t(copies[t].size()), copies[t].data());
+            image_barrier(cmd_, image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        }
     }
 
     // Set-2 inputs chosen per frame; null = a valid dummy (the Original path has no remaster targets).
@@ -2189,7 +2224,7 @@ private:
         const bool ms = samples > 1;
         ensure_rm_targets(scene, output, samples, fsr3_);
         ensure_rm_shadow();
-        ensure_env(f.lighting);
+        ensure_env(s, f.lighting);
         const Lighting& l = f.lighting;
         const RemasterFrame rf = build_remaster_frame(gfx_, f, scene, output, env_levels_, history_);
         previous_models(f.draws, motion_, prev_models_);
@@ -3117,7 +3152,31 @@ private:
         });
     }
 
-    // ponytail: one-shot uploads/readbacks wait for the whole queue; batch them if loading gets slow.
+    // Mesh/texture uploads without a CPU wait (an immediate() per grass patch / runtime mesh stalled the frame for the
+    // whole in-flight GPU work, 10-19 ms): submitted at once on the frame queue, so the barrier `record` ends with orders
+    // the copy before every later submission's reads; `staging` and the command buffer retire once it ran.
+    void submit_upload(Buffer staging, const std::function<void(VkCommandBuffer)>& record) {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        const VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, async_pool_,
+                                                VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+        check(vk_.vkAllocateCommandBuffers(device_, &alloc, &cmd), "vkAllocateCommandBuffers");
+        const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+                                             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        check(vk_.vkBeginCommandBuffer(cmd, &begin), "vkBeginCommandBuffer");
+        record(cmd);
+        check(vk_.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+        const VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, timeline_, ++timeline_value_,
+                                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0};
+        const VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, cmd, 0};
+        const VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2, nullptr, 0, 0, nullptr, 1, &cb, 1, &signal};
+        check(vk_.vkQueueSubmit2(queue_, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit2");
+        retire([this, staging, cmd]() mutable {
+            destroy(staging);
+            vk_.vkFreeCommandBuffers(device_, async_pool_, 1, &cmd);
+        });
+    }
+
+    // ponytail: one-shot readbacks / target layout setup wait for the whole queue (rare: resizes, screenshots).
     void immediate(const std::function<void(VkCommandBuffer)>& record) {
         check(vk_.vkResetCommandPool(device_, upload_pool_, 0), "vkResetCommandPool");
         const VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
@@ -3223,6 +3282,7 @@ private:
     std::uint64_t timeline_value_ = 0, completed_value_ = 0;
     VkCommandPool upload_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer upload_cmd_ = VK_NULL_HANDLE;
+    VkCommandPool async_pool_ = VK_NULL_HANDLE;  // submit_upload command buffers (freed as they retire)
 
     VkSampler samplers_[2][2]{};  // [repeat][anisotropic]
     VkDescriptorSetLayout textures_layout_ = VK_NULL_HANDLE, frame_layout_ = VK_NULL_HANDLE;

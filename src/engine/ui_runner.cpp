@@ -11,7 +11,8 @@
 
 namespace joa::engine {
 
-UiRunner::UiRunner(const formats::Vfs& vfs, IRenderer& renderer, std::string_view screen) : ui(vfs, renderer) {
+UiRunner::UiRunner(const formats::Vfs& vfs, IRenderer& renderer, std::string_view screen, std::vector<std::filesystem::path> hd_packs)
+    : ui(vfs, renderer, std::move(hd_packs)) {
     if (!ui_sample_state(screen, menu, hud, show_hud)) throw std::runtime_error("unknown --ui-screen " + std::string(screen));
     load_options(vfs, options_ini_path(), menu.options, menu.bindings);
 }

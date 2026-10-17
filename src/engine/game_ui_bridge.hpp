@@ -77,6 +77,9 @@ private:
     std::string map_icons_key_;                // map dir + world of map_icons_ / map_size_
     std::vector<std::pair<std::string, HudMapIcon>> map_icons_;  // every level's <node>.map: display-enable key, icon
     glm::vec2 map_size_{16384.0f};             // World +0x54/+0x58 (<world>.wor CreateGrid)
+    std::vector<HudMapIcon> unit_dots_;        // minimap unit dots for unit_dots_key_ (snapshot time + vision areas)
+    std::uint64_t unit_dots_key_ = 0;
+    bool unit_dots_valid_ = false;
     float win_time_ = -1.0f, over_time_ = -1.0f;  // seconds since the win message / game-over box opened, -1 = closed
     bool end_menu_ = false;                    // win message "Next Mission" clicked: game-end menu open
     int load_mission_ = -1, load_stage_ = 0;

@@ -346,6 +346,12 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     const glm::vec3 sun = lighting_.sun_direction;
     shadow_stats_ = {};
     frames_.clear();
+    // Units outside the view are neither skinned nor drawn (as WorldScene::build culls objects): their bounds are the
+    // body (radius = pose height, weapons included) swept along the sun by its shadow's reach, so a visible shadow
+    // keeps its caster. The stencil volume extrudes height + 300; a ray-traced one lands height / sin(elevation) away.
+    const auto planes = frustum_planes(view_proj);
+    const bool volumes = assets_->renderer().draws_shadow_volumes();
+    const glm::vec3 to_ground = glm::length(sun) > 0.0f ? glm::normalize(sun) : glm::vec3(0.0f, -1.0f, 0.0f);
     // Range mode (0x42a6c0 enter / 0x42b6e0 exit): the hero's actor is hidden (FUN_0042cf20(0/1): actor +0x10a)
     // behind the first-person aim camera. HIGH (the call's ECX = unit +0x2f5 actor is inferred from the guard).
     const bool aiming = world_ && world_->controller().range_mode;
@@ -359,6 +365,12 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         if (glm::distance(eye, at) > kWorldFar + 200.0f) continue;  // beyond the far plane: no skinning
         if (aiming && id == player_) continue;
         Character& c = *a.character;
+        const float h = std::max(c.height(), 50.0f);
+        const float reach = std::max(h + 300.0f, h / std::max(-to_ground.y, 0.25f));
+        if (!sphere_visible(planes, at + glm::vec3(0.0f, h * 0.5f, 0.0f) + to_ground * (reach * 0.5f), h + reach * 0.5f)) {
+            if (waves_.covers({at.x, at.z})) wade(id, a, t, dt);  // its wake still reaches the visible water
+            continue;
+        }
         float ms = a.t0 + (a.t1 - a.t0) * alpha;
         if (a.wrap) ms = std::fmod(ms, c.clip_length());
         float rx = 0, ry = 0;
@@ -372,7 +384,7 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(at, 1, draws[i]), draws[i].object = std::uint32_t(id) + 1;
         // Scene::draw_shadow actor loop 0x5f1cc0: a volume within 1000 units of the eye (mode 3: every
         // unit, mode 2: the player's hero), else the ShadowModel within 2000 (CONFIRMED thresholds).
-        if (shadow_mode <= 0) continue;
+        if (shadow_mode <= 0 || !volumes) continue;
         const float d = glm::distance(eye, at + glm::vec3(0.0f, c.height() * 0.5f, 0.0f));
         if (d <= 1000.0f && (shadow_mode >= 3 || (shadow_mode == 2 && id == player_)))
             c.build_shadow(t, sun, Character::ShadowKind::Volume, draws), ++shadow_stats_.volumes;

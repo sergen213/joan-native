@@ -158,9 +158,9 @@ std::vector<uint32_t> strip_to_triangles(std::span<const uint16_t> s) {
   return out;
 }
 
-std::vector<MeshVertex> skin_vertices(const Submesh& sub, std::span<const Mat3x4> bones) {
-  std::vector<MeshVertex> out(sub.vertices);
-  if (sub.skinOffsets.size() != sub.vertices.size() + 1) return out;
+void skin_vertices(const Submesh& sub, std::span<const Mat3x4> bones, std::vector<MeshVertex>& out) {
+  out.assign(sub.vertices.begin(), sub.vertices.end());
+  if (sub.skinOffsets.size() != sub.vertices.size() + 1) return;
   for (size_t i = 0; i < out.size(); ++i) {
     MeshVertex& v = out[i];
     for (int k = 0; k < 3; ++k) v.pos[k] = v.normal[k] = 0;
@@ -175,6 +175,11 @@ std::vector<MeshVertex> skin_vertices(const Submesh& sub, std::span<const Mat3x4
       }
     }
   }
+}
+
+std::vector<MeshVertex> skin_vertices(const Submesh& sub, std::span<const Mat3x4> bones) {
+  std::vector<MeshVertex> out;
+  skin_vertices(sub, bones, out);
   return out;
 }
 

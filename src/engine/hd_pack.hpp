@@ -1,6 +1,6 @@
 #pragma once
 // HD texture packs: read-only directories mirroring the original relative texture paths
-// (texture/**, int8x6/**, save/**), matched case-insensitively. docs/HD_ASSETS.md.
+// (texture/**, int8x6/**, save/**, resource/** for UI cursors), matched case-insensitively. docs/HD_ASSETS.md.
 #include "engine/renderer.hpp"
 #include "formats/dds.hpp"
 

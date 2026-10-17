@@ -20,7 +20,7 @@ struct Draw {
     vec4 tint;
     vec4 diffuse;        // rgb material diffuse (gamma); w != 0: vertex colour rgb is the diffuse material
     float alpha_cutoff;  // < 0 disables alpha test
-    uint unlit;  // bit 0 unlit, bit 1 no fog, bit 2 alpha-to-coverage (MSAA)
+    uint unlit;  // bit 0 unlit, bit 1 no fog, bit 2 alpha-to-coverage (MSAA), bit 3 unit (Material::volume_caster)
     uint texture;        // bindless slots; kNoTexture = unused
     uint layer2;
     uint lightmap;
