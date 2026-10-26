@@ -152,7 +152,7 @@ python3 packaging/release/build_release.py --version 0.2.0 --channel stable --re
    host-provided sonames and the AppImage runtime. `packaging/NOTICE.txt` → `share/doc/joan-native/`.
    A package without any license text fails the build.
 4. Outputs: `make_release.py` tarballs + manifest; the AppImage = pinned official type2 runtime
-   (`packaging/appimage/runtime.lock.json`, immutable asset 596078161, SHA-256 checked) + zstd
+   (`packaging/appimage/runtime.lock.json`, dated release 20251108, SHA-256 checked) + zstd
    squashfs of `AppDir/{AppRun, joan-native.desktop, joan-native.svg, .DirIcon, usr/=stage}` (modes
    normalised, root-owned, times = `SOURCE_DATE_EPOCH`); `*-third-party-source.tar` (FFmpeg archive +
    signature + key + recipe + lock; type2-runtime commit, libfuse 3.15.0, squashfuse, musl, zstd, zlib,

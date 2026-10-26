@@ -2,17 +2,17 @@
   "format": 1,
   "runtime": {
     "name": "runtime-x86_64",
-    "url": "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64",
-    "asset_url": "https://api.github.com/repos/AppImage/type2-runtime/releases/assets/596078161",
-    "sha256": "156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074",
+    "url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+    "asset_url": "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64",
+    "sha256": "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d",
     "size": 944632,
-    "commit": "8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa",
+    "commit": "dd6cebedcbddde9c82f89b011e8e1d40b6e43868",
     "license": "MIT",
     "static_dependencies": {"libfuse": "LGPL-2.1-only", "squashfuse": "BSD-2-Clause", "musl": "MIT", "zstd": "BSD-3-Clause", "zlib": "Zlib", "mimalloc": "MIT"},
-    "trust": "Digest of the immutable official GitHub release asset 596078161 (same pin as the CitroenC4Robot packaging). The 'continuous' download URL moves: download via asset_url with Accept: application/octet-stream and the sha256 check fails closed."
+    "trust": "Digest of the official dated GitHub release 20251108 (tag commit dd6cebed). The 'continuous' release moves and deletes its old assets (asset 596078161, the previous pin, is gone): pin dated releases only; the sha256 check fails closed."
   },
   "sources": [
-    {"name": "type2-runtime-8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa.tar.gz", "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa", "sha256": "c449eb42c2190820872631f5e22f8e15b1e985a36dc4a9e2de3585bb7536c785"},
+    {"name": "type2-runtime-dd6cebedcbddde9c82f89b011e8e1d40b6e43868.tar.gz", "url": "https://codeload.github.com/AppImage/type2-runtime/tar.gz/dd6cebedcbddde9c82f89b011e8e1d40b6e43868", "sha256": "f5fec23be76e50e2445ed2d018bac49b367490fc483c62c4637e99ec705d27ba"},
     {"name": "fuse-3.15.0.tar.xz", "url": "https://api.github.com/repos/libfuse/libfuse/releases/assets/111992533", "sha256": "70589cfd5e1cff7ccd6ac91c86c01be340b227285c5e200baa284e401eea2ca0"},
     {"name": "squashfuse-0.5.2.tar.gz", "url": "https://codeload.github.com/vasi/squashfuse/tar.gz/refs/tags/0.5.2", "sha256": "db0238c5981dabbd80ee09ae15387f390091668ca060a7bc38047912491443d3"},
     {"name": "musl-1.2.5.tar.gz", "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz", "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"},
