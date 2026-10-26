@@ -61,8 +61,8 @@ struct Manifest { std::string version, channel, minGlibc; std::vector<Artifact> 
 Manifest verify_manifest(std::string_view json, std::string_view signatureBase64, std::string_view publicKeyBase64);
 // Throws unless the running glibc is at least minimum ("MAJOR.MINOR").
 void require_glibc(std::string_view minimum);
-// Extracts a bin/lib/share tar.gz into stage, refusing absolute/../escaping paths and
-// links, hard links, devices, setuid/setgid/sticky bits and paths already extracted
+// Extracts a bin/lib/share tar.gz into stage, refusing absolute/../escaping paths,
+// symlinks whose target is absolute or has a ".." (or ".") component, hard links, devices, setuid/setgid/sticky bits and paths already extracted
 // by another artifact (recorded in files: path -> {size, sha256}).
 using FileIndex = std::map<std::string, std::pair<std::uint64_t, std::string>>;
 void extract_artifact(const fs::path& archive, const fs::path& stage, FileIndex& files);

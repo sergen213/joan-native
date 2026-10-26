@@ -180,6 +180,24 @@ int main() {
                   l.find("t=1 m.sce:4 FUNC get_scenario_count_time() = 0") != std::string::npos,
               "%s", l.c_str());
     }
+    {  // Runtime errors are logged once per message, not per tick (errors_ is saved and hashed); the
+       // dedupe set is rebuilt from the saved list on load.
+        RecordingHost host;
+        auto none = [](std::string_view) { return std::optional<std::string>(); };
+        const char* src = "\"m.sce\"\n{\nINT x\nWAIT { x = 1 }\nFUNC(\"set_fog_distance\", ( 1 - \"a\" ))\n}\n";
+        Vm vm(none, host);
+        CHECK(vm.load_main_text("m.sce", src), "compile");
+        for (int i = 0; i < 5; ++i) vm.tick();
+        std::string all;
+        for (auto& e : vm.errors()) all += e + "\n";
+        CHECK(vm.errors().size() == 2, "%s", all.c_str());
+        std::vector<std::uint8_t> save;
+        vm.save(save);
+        Vm vm2(none, host);
+        CHECK(vm2.load_main_text("m.sce", src) && vm2.load(save) && vm2.hash() == vm.hash(), "reload");
+        for (int i = 0; i < 5; ++i) vm.tick(), vm2.tick();
+        CHECK(vm.errors().size() == 2 && vm2.errors().size() == 2 && vm2.hash() == vm.hash(), "after reload");
+    }
     // Compile errors of the original: unknown function, undeclared variable, non-call statement,
     // DIALOG/ACTION inside a math expression (FUN_00647c90 accepts only FUNC).
     for (auto* bad : {"FUNC(\"no_such_function\")\n", "x = 1\n", "5\n", "if ( DIALOG(\"get_choice\", 1) == 1 ) { }\n"}) {

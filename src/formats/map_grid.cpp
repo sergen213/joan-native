@@ -49,7 +49,10 @@ std::optional<TerrainGrid> parse_gri(std::span<const std::uint8_t> bytes, std::s
         g.textures.push_back(std::move(t));
     }
 
+    // Each RLE plane takes at least 3 bytes per 255 values plus the FF 00 end: reject a header the
+    // remaining bytes cannot satisfy before allocating up to 4097^2 nodes for it.
     const std::size_t n = std::size_t(g.verts_x()) * g.verts_y();
+    if (16 * ((n + 254) / 255 * 3 + 2) > r.remaining()) return fail("bad GRI node plane");
     g.nodes.resize(n);
     std::vector<std::uint8_t> plane;
     for (int b = 0; b < 16; ++b) {

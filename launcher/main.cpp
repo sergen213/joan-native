@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -14,6 +15,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFuture>
 #include <QFutureWatcher>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -116,6 +118,10 @@ public:
             if (e == QProcess::FailedToStart) { append("joa-updater failed to start: " + updater_.errorString()); setBusy(false); }
         });
     }
+    // The running job's progress callback posts to `this` from a pool thread (until ~QApplication),
+    // so the window must outlive it: closing waits for the job (closeEvent), and any other exit path
+    // (QCoreApplication::quit) blocks here. Events still queued for us die with the QObject.
+    ~Launcher() override { job_.waitForFinished(); }
     QTabWidget* tabs() const { return tabs_; }
     // Play button / `--play [-- ENGINE_ARGS]`: start joan-native detached; its pid, or 0 if it did not start.
     qint64 play(const QStringList& extra = {}) {
@@ -158,6 +164,8 @@ private:
     QDoubleSpinBox *deadzone_ = nullptr, *sensitivity_ = nullptr;
     QTextBrowser* notes_ = nullptr;
     QProcess updater_;
+    QFuture<QString> job_;      // runJob's worker; default = finished
+    bool closeAfterJob_ = false;
     QString updaterCommand_;
     QByteArray updaterStderr_;
 
@@ -455,10 +463,23 @@ private:
             append(watcher->result());
             watcher->deleteLater();
             setBusy(false);
+            if (closeAfterJob_) close();
         });
-        watcher->setFuture(QtConcurrent::run([job] {
+        job_ = QtConcurrent::run([job] {
             try { return job(); } catch (const std::exception& e) { return QString("Failed: ") + e.what(); }
-        }));
+        });
+        watcher->setFuture(job_);
+    }
+
+    // ji jobs have no cancel hook: keep the window until the job ends, then close.
+    void closeEvent(QCloseEvent* e) override {
+        if (!job_.isFinished()) {
+            if (!closeAfterJob_) append("Closing when the current job finishes…");
+            closeAfterJob_ = true;
+            e->ignore();
+            return;
+        }
+        QMainWindow::closeEvent(e);
     }
 
     static QString describe(const ji::VerifyReport& r) {
