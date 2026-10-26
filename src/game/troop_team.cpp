@@ -87,19 +87,30 @@ int AiSystem::max_troop_size(Unit& l) {  // 0x448080
 void AiSystem::auto_join(Unit& L) {  // 0x4655a0
     if (!is_leader(L) || w_.dead(L) || L.retreat != 0) return;
     const int cap = max_troop_size(L);  // constant over the loop: max(base, members) only grows to base by the joins
-    for (auto& o : w_.units()) {
-        if (int(L.members.size()) >= cap) return;
+    auto visit = [&](Unit& o) {   // false = troop full
+        if (int(L.members.size()) >= cap) return false;
         // Cheap compares first (most units are teamed): the map lookups of is_leader dominated S9L1's tick (~200 leaders).
-        if (o.team != 9999 || o.deleted || o.id == L.id || o.retreat != 0 || o.leader || o.nation != L.nation) continue;
-        if (w_.dead(o) || is_leader(o) || st(o).orphan) continue;
+        if (o.team != 9999 || o.deleted || o.id == L.id || o.retreat != 0 || o.leader || o.nation != L.nation) return true;
+        if (w_.dead(o) || is_leader(o) || st(o).orphan) return true;
         const auto& t = w_.data().units[std::size_t(o.cls)];
-        if (t.special > 1 || t.unit_class == 0 || t.unit_class == 8 || t.unit_class == 9) continue;
-        if (d2_3(o.pos, L.pos) > float(kAbsorbRadius) * kAbsorbRadius) continue;
+        if (t.special > 1 || t.unit_class == 0 || t.unit_class == 8 || t.unit_class == 9) return true;
+        if (d2_3(o.pos, L.pos) > float(kAbsorbRadius) * kAbsorbRadius) return true;
         join_team(o, L.id);
         stop_all_order(o);
         w_.stop(o);
         clear_task(o);
+        return true;
+    };
+    // Units near L from the grid, in recno order: the skipped ones fail the radius test, and their st() (which the
+    // full scan runs before it) is a no-op once every unit has its state. The joins move no unit.
+    const float r = float(kAbsorbRadius), x = L.pos.x, y = L.pos.y;
+    if (st_settled() && w_.units_in(x - r, y - r, x + r, y + r, join_scan_)) {
+        for (int i : join_scan_)
+            if (!visit(w_.units()[std::size_t(i)])) return;
+        return;
     }
+    for (auto& o : w_.units())
+        if (!visit(o)) return;
 }
 
 bool AiSystem::set_unit_team(Unit& u, int team_id) {  // 0x657fd0

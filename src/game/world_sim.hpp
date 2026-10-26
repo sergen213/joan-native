@@ -178,6 +178,18 @@ public:
     const Unit* unit(int id) const;
     std::vector<Unit>& units() { return units_; }        // index = recno-1; check .deleted
     const std::vector<Unit>& units() const { return units_; }
+    // Unit grid (uniform xy cells over the unit positions) for the per-unit proximity scans: auto_join,
+    // search_for_unit, the projectile sweep. units_in: the indices (recno - 1), ascending, of every unit whose xy
+    // position may lie in [x0, x1] x [y0, y1] (a superset: callers apply their exact test to each, in that order, as
+    // the full scan would). False when no grid is valid: the caller scans all units. Valid only inside a window in
+    // which no unit moves: the unit phases 2-3 (orders, AI think; recnos spawned there are always returned,
+    // delete_unit, which can dismount a rider, rebuilds) and the projectile sweep (rebuilt after each hit).
+    bool units_in(float x0, float y0, float x1, float y1, std::vector<int>& out);
+    // Opens (a fresh grid, built on the first query) / closes such a window. The tick does this itself; public
+    // for tests.
+    void grid_open(bool on);
+    // Bumped by deserialize (deleted units may come back): caches over unit state check it.
+    std::uint32_t load_generation() const { return load_gen_; }
     WorldItem* item(int id);
     std::vector<WorldItem>& items() { return items_; }
     const std::vector<WorldItem>& items() const { return items_; }
@@ -407,6 +419,23 @@ private:
     IUnitBrain* brain_ = nullptr;
     IUnitPhysics* physics_ = nullptr;
     std::vector<GameEvent> events_;
+    std::uint32_t load_gen_ = 0;
+    struct UnitGrid {
+        bool open = false, built = false;
+        std::size_t fixed = 0;              // units_.size() when the window opened: later recnos are never binned
+        double x0 = 0, y0 = 0, cell = 1;
+        int nx = 0, ny = 0;
+        std::vector<int> start, items;      // per cell (row-major) [start[c], start[c + 1]) of items, ascending
+        std::vector<int> loose;             // non-finite positions: always returned
+        std::vector<Vec3> at;               // binned positions (debug builds check that nobody moved)
+    } grid_;
+    void grid_build();
+    std::vector<int> hit_scan_;             // integrate_projectiles' candidates
+    // find_move index per move table (GameData::move_tables index): row numbers sorted by (position, movement,
+    // item_using, row); rebuilt when the table's row storage differs (first use).
+    struct MoveKey { int position, movement, item_using, row; };
+    struct MoveIndex { const MoveRecord* rows = nullptr; std::size_t n = 0; std::vector<MoveKey> keys; };
+    mutable std::vector<MoveIndex> move_index_;
 };
 
 }  // namespace joa::game

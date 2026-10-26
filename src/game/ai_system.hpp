@@ -246,11 +246,17 @@ private:
     void ensure_init(Unit& u);
     int reach(const Unit& u) const;                    // REACH_DT rule
     int ai_class_for(const Unit& u) const;             // UnitAI_class_from_name 0x546520
+    // True when st() changes nothing for any live unit: every recno is deleted or has an initialised entry (both
+    // permanent until World::deserialize), so a scan may skip units it would have st()-ed. Advanced lazily.
+    bool st_settled();
 
     World& w_;
     const NavWorld* nav_;
     std::map<int, AiUnit> units_;
     std::map<int, AiTeam> teams_;
+    std::size_t settled_ = 0;                          // st_settled: recnos 1..settled_ checked
+    std::uint32_t settled_gen_ = 0;                    // World::load_generation() of that check
+    std::vector<int> join_scan_, search_scan_;         // unit grid candidates (auto_join, search_for_unit)
 };
 
 }  // namespace joa::game

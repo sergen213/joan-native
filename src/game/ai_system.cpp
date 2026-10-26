@@ -114,6 +114,18 @@ AiUnit& AiSystem::st(const Unit& u) {
     return s;
 }
 
+bool AiSystem::st_settled() {
+    if (settled_gen_ != w_.load_generation()) settled_gen_ = w_.load_generation(), settled_ = 0;
+    const std::vector<Unit>& us = w_.units();
+    for (; settled_ < us.size(); ++settled_) {
+        const Unit& o = us[settled_];
+        if (o.deleted) continue;
+        const auto it = units_.find(o.id);
+        if (it == units_.end() || !it->second.initialised) return false;
+    }
+    return true;
+}
+
 const AiUnit* AiSystem::find(int recno) const {
     auto it = units_.find(recno);
     return it == units_.end() ? nullptr : &it->second;
@@ -351,6 +363,7 @@ void AiSystem::serialize(std::vector<std::uint8_t>& out) const {
 
 bool AiSystem::deserialize(std::span<const std::uint8_t> in) {
     Reader rd{in};
+    settled_ = 0;
     visit_map(rd, units_);
     visit_map(rd, teams_);
     rd(chapter);

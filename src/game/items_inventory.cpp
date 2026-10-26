@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <map>
+#include <iterator>
 #include <utility>
 
 #include "game/world_sim.hpp"
@@ -41,10 +41,31 @@ int Inventory::bonus(const GameData& gd, int effect, const World* w, const Unit*
         }
         if (!add(melee[1]) || !add(ranged)) return 0;
     }
-    std::map<int, int> best;   // enhancers: only the highest level of duplicate ids
-    for (const auto& it : bag)
-        if (it.item && gd.items[size_t(it.item)].item_class == "ENHANCER") best[it.item] = std::max(best[it.item], it.level);
-    for (auto [id, lvl] : best) {   // value first, then 0x4a42f0 (tested only for items that have the effect)
+    // Enhancers: only the highest level of duplicate ids (a new id starts from level 0, as a map's default), applied
+    // in ascending id order. Sorted inline buffer; a bag with more distinct enhancers spills to the heap.
+    std::pair<int, int> fixed[16];
+    std::vector<std::pair<int, int>> spill;
+    std::pair<int, int>* best = fixed;
+    std::size_t n = 0, cap = std::size(fixed);
+    for (const auto& it : bag) {
+        if (!it.item || !gd.items[size_t(it.item)].enhancer) continue;
+        std::size_t k = 0;
+        while (k < n && best[k].first < it.item) ++k;
+        if (k < n && best[k].first == it.item) {
+            best[k].second = std::max(best[k].second, it.level);
+            continue;
+        }
+        if (n == cap) {
+            if (best == fixed) spill.assign(fixed, fixed + n);
+            spill.resize(cap *= 2);
+            best = spill.data();
+        }
+        std::move_backward(best + k, best + n, best + n + 1);
+        best[k] = {it.item, std::max(0, it.level)};
+        ++n;
+    }
+    for (std::size_t e = 0; e < n; ++e) {   // value first, then 0x4a42f0 (tested only for items that have the effect)
+        const auto [id, lvl] = best[e];
         const ItemDef& d = gd.items[size_t(id)];
         const auto v = d.effect_value(effect, lvl);
         if (!v || (w && req && !w->item_applies(d, lvl, *req))) continue;

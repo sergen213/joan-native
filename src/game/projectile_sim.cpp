@@ -449,6 +449,10 @@ void World::projectile_hit_object(Projectile& p, int item) {
 // than the structure hit; either hit returns before the new state is stored (the body stays at the frame start, and
 // ThrowItem_on_hit_actor 0x514c40 tests that position against the head height).
 void World::integrate_projectiles(float dt_ms) {
+    float max_cyl = 0;   // widest unit cylinder, for the grid query below
+    if (!projectiles_.empty())
+        for (const UnitClass& uc : gd_.units) max_cyl = std::max(max_cyl, std::fabs(uc.cyl_radius));
+    grid_open(true);   // no unit moves during the sweep but in a hit (which reopens the grid)
     for (Projectile& p : projectiles_) {
         if (p.destroyed || p.collided || (p.type != 0 && p.ground)) continue;
         const int max_steps = p.type == 0 ? 2 : 5;
@@ -483,16 +487,27 @@ void World::integrate_projectiles(float dt_ms) {
             const Vec3 c{s0.x + sp[0], s0.y + sp[1], s0.z + sp[2]};   // ponytail: centre offset unrotated (arrows: 0)
             const Unit* shooter = unit(p.shooter);
             Unit* hit = nullptr;
-            float tu = 1;
-            for (Unit& v : units_) {
-                if (v.deleted || v.id == p.shooter || v.m.climb) continue;   // climbers have no body (0x4ac910)
-                if (shooter && !hostile(shooter->nation, v.nation)) continue;
-                if (is_knocked(v.action) || v.action == STANDUP || v.action == DNATKED || v.action == H_DROP) continue;
+            float tu = 1;   // a missed cylinder's t is never read (every hit path writes it)
+            auto test = [&](Unit& v) {
+                if (v.deleted || v.id == p.shooter || v.m.climb) return false;   // climbers have no body (0x4ac910)
+                if (shooter && !hostile(shooter->nation, v.nation)) return false;
+                if (is_knocked(v.action) || v.action == STANDUP || v.action == DNATKED || v.action == H_DROP) return false;
                 const UnitClass& vc = gd_.units[v.cls];
-                if (sweep_sphere_cylinder(c, sp[3], mv, {v.pos.x, v.pos.y, v.pos.z + vc.cyl_center_z}, vc.cyl_radius, vc.cyl_height, tu)) {
-                    hit = &v;
-                    break;
-                }
+                if (!sweep_sphere_cylinder(c, sp[3], mv, {v.pos.x, v.pos.y, v.pos.z + vc.cyl_center_z}, vc.cyl_radius, vc.cyl_height, tu))
+                    return false;
+                hit = &v;
+                return true;
+            };
+            // 0x699a20 hits only where the xy circles (|r| + |R|) meet along the move: units outside the move's xy box
+            // grown by that reach are never hit, and the grid returns the rest in unit order.
+            const float reach = std::fabs(sp[3]) + max_cyl;
+            if (units_in(std::min(c.x, c.x + mv.x) - reach, std::min(c.y, c.y + mv.y) - reach, std::max(c.x, c.x + mv.x) + reach,
+                         std::max(c.y, c.y + mv.y) + reach, hit_scan_)) {
+                for (int i : hit_scan_)
+                    if (test(units_[std::size_t(i)])) break;
+            } else {
+                for (Unit& v : units_)
+                    if (test(v)) break;
             }
             const int body_item = !hit && item_sweep ? item_sweep(c, sp[3], mv, tu) : 0;
             float tw = 1;
@@ -500,17 +515,22 @@ void World::integrate_projectiles(float dt_ms) {
             if (hit || body_item || item) p.pos_m = f0, p.vel_m = fv0, p.force_left_ms = ff0;
             if ((hit || body_item) && (!item || tu < tw)) {
                 // ThrowItem_on_hit_actor 0x514c40: a map item's body (actor +8 == 1) posts the events of 0x4fbc90.
+                grid_open(false);   // hits move units: scans inside them see all units, the next sweep a new grid
                 if (hit) projectile_hit_unit(p, *hit);
                 else projectile_hit_object(p, body_item);
+                grid_open(true);
                 continue;
             }
             if (item) {
+                grid_open(false);
                 projectile_hit_object(p, item);
+                grid_open(true);
                 continue;
             }
         }
         if (terrain_ && terrain_->height(s1.x, s1.y) > s1.z) p.ground = true;
     }
+    grid_open(false);
 }
 
 }  // namespace joa::game
