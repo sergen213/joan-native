@@ -161,17 +161,24 @@ std::vector<std::string> wrap_text(const UiFontMetrics& font, std::string_view t
     while (start <= text.size()) {
         const std::size_t nl = std::min(text.find('\n', start), text.size());
         const std::string_view para = text.substr(start, nl - start);
+        // measure() of a line without '\n' is additive (no kerning): sum of advances (each + spacing) minus one spacing,
+        // so the candidate "line word" measures line_adv + space_adv + word_adv - spacing (adv = measure + spacing).
+        const auto adv = [&](std::string_view s) { return s.empty() ? 0 : font.measure(s) + font.spacing; };
+        const int space_adv = adv(" ");
         std::string line;
+        int line_adv = 0;
         std::size_t p = 0;
         while (p <= para.size()) {
             const std::size_t sp = std::min(para.find(' ', p), para.size());
             const std::string_view word = para.substr(p, sp - p);
-            std::string candidate = line.empty() ? std::string(word) : line + " " + std::string(word);
-            if (!line.empty() && font.measure(candidate) > max_width) {
+            const int word_adv = adv(word);
+            if (line.empty()) {
+                line = word, line_adv = word_adv;
+            } else if (line_adv + space_adv + word_adv - font.spacing > max_width) {
                 lines.push_back(std::move(line));
-                line = std::string(word);
+                line = word, line_adv = word_adv;
             } else {
-                line = std::move(candidate);
+                line += ' ', line += word, line_adv += space_adv + word_adv;
             }
             p = sp + 1;
         }

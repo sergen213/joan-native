@@ -7,8 +7,12 @@
 #include "formats/dds.hpp"
 #include "formats/vfs_fs.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 using namespace joa::engine;
 
@@ -50,6 +54,41 @@ int main() {
     // Word wrap keeps words whole.
     const auto lines = wrap_text(f, "00 00 00", 13);  // "00 00" measures 13
     CHECK(lines.size() == 2 && lines[0] == "00 00" && lines[1] == "00");
+    // Incremental wrap == re-measuring every candidate line (the reference below), any spacing / text / width.
+    const auto reference = [](const UiFontMetrics& font, std::string_view text, int max_width) {
+        std::vector<std::string> out;
+        for (std::size_t start = 0; start <= text.size();) {
+            const std::size_t nl = std::min(text.find('\n', start), text.size());
+            const std::string_view para = text.substr(start, nl - start);
+            std::string line;
+            for (std::size_t p = 0; p <= para.size();) {
+                const std::size_t sp = std::min(para.find(' ', p), para.size());
+                const std::string word(para.substr(p, sp - p));
+                std::string cand = line.empty() ? word : line + " " + word;
+                if (!line.empty() && font.measure(cand) > max_width) out.push_back(line), line = word;
+                else line = cand;
+                p = sp + 1;
+            }
+            out.push_back(line);
+            start = nl + 1;
+        }
+        return out;
+    };
+    std::uint32_t seed = 1;
+    const auto rnd = [&](std::uint32_t n) {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) % n;
+    };
+    for (int spacing : {0, 1, 3}) {
+        UiFontMetrics fs = f;
+        fs.spacing = spacing;
+        for (int i = 0; i < 2000; ++i) {
+            std::string s;
+            for (std::uint32_t n = rnd(40), k = 0; k < n; ++k) s += "0011x  \t\n"[rnd(9)];
+            const int width = int(rnd(30));
+            CHECK(wrap_text(fs, s, width) == reference(fs, s, width));
+        }
+    }
 
     // Real data.
     const char* game = std::getenv("JOA_GAME_DIR");

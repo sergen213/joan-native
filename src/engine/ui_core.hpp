@@ -197,11 +197,34 @@ private:
         glm::vec2 size{0.0f};
         bool rotated = false;
     };
-    std::unordered_map<std::string, SpriteRecord> sprite_records_;          // "set/name" lowercase
-    std::unordered_map<std::string, std::optional<UiSprite>> sprites_;      // resolved; nullopt = missing
-    std::unordered_map<std::string, std::pair<TextureHandle, glm::ivec2>> textures_;  // lowercase name
-    std::unordered_map<std::string, std::unique_ptr<UiFont>> fonts_;                 // lowercase name, null = failed
-    std::unordered_map<std::string, std::string> text_;                             // "SECTION|n"
+    // Allocation-free lookups (hundreds per HUD frame): keys stay the strings below, found by a key view a + sep + b
+    // (sep 0 = a alone) through a transparent hash / equality; Fold = case-insensitive like lower() (stored keys are
+    // lowercase, so it matches lower(query) == key exactly).
+    struct Key {
+        std::string_view a;
+        char sep = 0;
+        std::string_view b;
+    };
+    template <bool Fold>
+    struct KeyHash {
+        using is_transparent = void;
+        std::size_t operator()(const Key& k) const;
+        std::size_t operator()(std::string_view s) const { return (*this)(Key{s, 0, {}}); }
+    };
+    template <bool Fold>
+    struct KeyEq {
+        using is_transparent = void;
+        bool operator()(std::string_view a, std::string_view b) const { return (*this)(Key{a, 0, {}}, b); }
+        bool operator()(std::string_view a, const Key& b) const { return (*this)(b, a); }
+        bool operator()(const Key& k, std::string_view s) const;
+    };
+    template <class T, bool Fold = true>
+    using KeyMap = std::unordered_map<std::string, T, KeyHash<Fold>, KeyEq<Fold>>;
+    KeyMap<SpriteRecord> sprite_records_;                       // "set/name" lowercase
+    KeyMap<std::optional<UiSprite>> sprites_;                   // resolved; nullopt = missing
+    KeyMap<std::pair<TextureHandle, glm::ivec2>> textures_;     // lowercase name
+    KeyMap<std::unique_ptr<UiFont>> fonts_;                     // lowercase name, null = failed
+    KeyMap<std::string, false> text_;                           // "SECTION|n"
     std::vector<std::pair<TextureHandle, glm::vec2>> cursors_;                       // texture, hotspot
     bool sprites_loaded_ = false, text_loaded_ = false, cursors_loaded_ = false;
 

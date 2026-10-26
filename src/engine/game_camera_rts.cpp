@@ -121,8 +121,13 @@ float ray_sphere(glm::vec3 o, glm::vec3 dir, glm::vec3 c, float r) {
 // units) standing on the item position. ponytail: sphere only (no box / cylinder kinds), pitch / roll ignored.
 // `rts` = Rts_pick_target's filter (classes 1 gate, 4 wall, 10 box, 0x27, or a pickable floor marker; not the
 // player's nation; gate / wall with negative hp skipped).
-int pick_item(game::Mission& m, AssetCache* assets, glm::vec3 o, glm::vec3 dir, bool rts, int player_nation, float& best) {
+// `models` = GameCamera::item_models(): the model lookup ("item\\" + dir + model path, item_anim, AssetCache::model,
+// all allocating) once per item instead of every frame (rts_pick runs per frame); same Model* as resolving it here.
+template <class ItemModels>
+int pick_item(game::Mission& m, AssetCache* assets, ItemModels& models, glm::vec3 o, glm::vec3 dir, bool rts, int player_nation,
+              float& best) {
     game::MapObjects& objs = m.objects();
+    if (int(models.size()) < objs.size()) models.resize(std::size_t(objs.size()));
     int found = 0;
     for (int r = 1; r <= objs.size(); ++r) {
         const game::MapItem* it = objs.item(r);
@@ -136,8 +141,16 @@ int pick_item(game::Mission& m, AssetCache* assets, glm::vec3 o, glm::vec3 dir, 
         }
         float rad = std::max(30.0f, res ? float(std::max(res->width, res->height)) * 0.5f : 0.0f);
         glm::vec3 c{it->pos.x, it->pos.y, it->pos.z + rad * 0.5f};
-        const std::string path = res && assets && !res->model.empty() ? "item\\" + res->dir + res->model : std::string();
-        if (const Model* md = path.empty() ? nullptr : assets->model(path, item_anim(path)); md && md->radius > 0.0f) {
+        const Model* md = nullptr;
+        if (res && assets && !res->model.empty()) {
+            auto& im = models[std::size_t(r - 1)];
+            if (!im.resolved || im.dir != res->dir || im.model != res->model) {
+                const std::string path = "item\\" + res->dir + res->model;
+                im.resolved = true, im.dir = res->dir, im.model = res->model, im.md = assets->model(path, item_anim(path));
+            }
+            md = im.md;
+        }
+        if (md && md->radius > 0.0f) {
             const glm::vec3 lc{md->center.x, -md->center.z, md->center.y};  // engine -> original axes
             const float cs = std::cos(it->dir), sn = std::sin(it->dir), k = it->scale > 0.0f ? it->scale : 1.0f;
             c = glm::vec3(it->pos.x, it->pos.y, it->pos.z) + k * glm::vec3(cs * lc.x - sn * lc.y, sn * lc.x + cs * lc.y, lc.z);
@@ -490,6 +503,11 @@ void GameCamera::rts_minimap(game::Mission& m, int button, glm::vec2 world) {
     }
 }
 
+std::vector<GameCamera::ItemModel>& GameCamera::item_models() const {
+    if (item_models_assets_ != assets) item_models_.clear(), item_models_assets_ = assets;
+    return item_models_;
+}
+
 // Rts_pick_target 0x44ac60: nearest unit / map item under the cursor, else the terrain; the type decides the cursor
 // and the right-click command. -1 = nothing picked (no terrain under the cursor).
 void GameCamera::rts_pick(game::Mission& m, glm::vec2 mouse, glm::ivec4 vp, const glm::mat4& vp_m) {
@@ -507,7 +525,7 @@ void GameCamera::rts_pick(game::Mission& m, glm::vec2 mouse, glm::ivec4 vp, cons
     float best = 1e30f;
     const int uid = pick_unit(w, vp_m, vp, mouse, &best);
     const game::Unit* u = uid ? w.unit(uid) : nullptr;
-    const int iid = pick_item(m, assets, o, dir, true, p->nation, best);
+    const int iid = pick_item(m, assets, item_models(), o, dir, true, p->nation, best);
     int drop = 0;  // unit drops (World::items) = pickable floor items
     for (const game::WorldItem& it : w.items())
         if (!it.deleted) {
@@ -582,7 +600,7 @@ void GameCamera::click_pick(game::Mission& m, game::InputFrame& f, glm::vec2 mou
     float len, best = 1e30f;
     pick_ray(vp_m, vp, mouse, o, dir, len);
     const int uid = pick_unit(w, vp_m, vp, mouse, &best, w.controller().unit);
-    const int iid = pick_item(m, assets, o, dir, false, 0, best);
+    const int iid = pick_item(m, assets, item_models(), o, dir, false, 0, best);
     int drop = 0;
     for (const game::WorldItem& it : w.items())
         if (!it.deleted) {
@@ -785,7 +803,7 @@ void GameCamera::rts_double_click(game::Mission& m, glm::vec2 mouse, glm::ivec4 
     glm::vec3 o, dir;
     float len, best = 1e30f;
     pick_ray(vp_m, vp, mouse, o, dir, len);
-    const game::MapItem* it = m.objects().item(pick_item(m, assets, o, dir, false, 0, best));
+    const game::MapItem* it = m.objects().item(pick_item(m, assets, item_models(), o, dir, false, 0, best));
     if (!it) return;
     const game::ObjRes* res = m.objects().res(it->res);
     if (it->cls == 1 && (it->nation == 0 || it->nation == p->nation) && it->need_key == 0)

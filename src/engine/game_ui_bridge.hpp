@@ -10,6 +10,7 @@
 
 #include <glm/glm.hpp>
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <string>
@@ -67,11 +68,14 @@ private:
     void game_over(Ui&, game::Mission&, std::vector<UiCommand>&);
     bool sms_event(const game::MissionEvent&);  // Ui "sms_*" / "food_blocked": queued, true = consumed
     void sms_line(Ui&, game::Mission&);         // formats the queued events, slides / draws the front line
+    void fill_brief(game::Mission&, HudModel&); // brief commanders / siege weapons (only while the brief is shown)
 
     const formats::Vfs& vfs_;
     std::vector<int> party_;                   // recnos behind HudModel::party (HoldResume index)
     std::map<int, HudMessage> live_messages_;  // attention recno -> message (logged when it leaves)
     bool brief_shown_ = false;                 // HudModel::show_mission_brief was set for a script brief
+    const game::GameData* weapon_slot_data_ = nullptr;  // GameData of weapon_slot_ (rebuilt when it changes)
+    std::vector<std::int8_t> weapon_slot_;     // unit class index -> brief siege weapon slot, -1 none
     int typed_id_ = 0;                         // dialog box being typed and its reveal (chars, 40/s)
     float typed_ = 0.0f;
     std::string map_icons_key_;                // map dir + world of map_icons_ / map_size_
