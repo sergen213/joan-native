@@ -121,9 +121,10 @@ void WorldView::sync_items(const game::World& world, const game::Snapshot& prev,
 void WorldView::build_items(float alpha, std::vector<DrawItem>& draws) {
     item_stats_.shots = item_stats_.drops = 0;
     const auto push = [&](const Model& m, const glm::mat4& t) {
+        const int sector = scene_->sector_at(glm::vec3(t[3]));
         for (const ModelPart& p : m.parts) {
             draws.push_back({m.mesh, p.material, t, p.first_index, p.index_count});
-            scene_->sector_lights(glm::vec3(t[3]), 1, draws.back());
+            scene_->sector_lights(sector, 1, draws.back());
         }
     };
     for (const auto& [id, s] : shots_) {
@@ -137,7 +138,8 @@ void WorldView::build_items(float alpha, std::vector<DrawItem>& draws) {
             d.anim->pose(std::fmod(time_s_ * 1000.0f, d.anim->clip_length()));
             const std::size_t first = draws.size();
             d.anim->build(t, draws);
-            for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(glm::vec3(t[3]), 1, draws[i]);
+            const int sector = scene_->sector_at(glm::vec3(t[3]));
+            for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(sector, 1, draws[i]);
         } else if (d.model) {
             push(*d.model, t);
         } else {

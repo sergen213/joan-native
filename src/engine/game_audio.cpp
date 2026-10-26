@@ -11,12 +11,6 @@ namespace {
 using game::Ev;
 using K = game::MissionEvent::Kind;
 
-const game::Vec3* unit_pos(const game::Snapshot& s, int id) {
-    for (const game::UnitView& u : s.units)
-        if (u.id == id) return &u.pos;
-    return nullptr;
-}
-
 // Voice pack entry name: "[0014N]" text tag -> "0014" (docs/AUDIO_AND_VIDEO.md §1).
 std::string voice_id(int n) {
     char b[16];
@@ -80,13 +74,15 @@ void GameAudio::on_tick(const game::Mission& cm, const std::vector<game::GameEve
     in_menu_ = false;
     const int player = m.world().player_id();
     const game::World& w = m.world();
-    for (const game::GameEvent& e : we) world_sound(w, e, cur, player);  // before projectiles(): hit positions
+    unit_pos_.clear();  // one id -> position lookup per tick instead of a scan of cur.units per event
+    for (const game::UnitView& u : cur.units) unit_pos_.try_emplace(u.id, &u.pos);
+    for (const game::GameEvent& e : we) world_sound(w, e, player);  // before projectiles(): hit positions
     // Ctrl_run_walk / Ctrl_strafe re-enter Unit_set_action / Unit_set_movement_anim every frame while the player
     // moves, so FUN_0050db80 repeats the SOUND_TIME -1 step sound whenever its SOUNDTIME has passed.
     if (const game::Unit* u = w.unit(player); u && !u->deleted)
-        if (const game::MoveRecord* r = w.move(*u); r && unit_pos(cur, player)) {
-            if (r->sound_time == -1 && r->sound.starts_with("TS_")) footstep(w, player, r->sound, *unit_pos(cur, player), player);
-            if (r->sound_time2 == -1 && r->sound2.starts_with("TS_")) footstep(w, player, r->sound2, *unit_pos(cur, player), player);
+        if (const game::MoveRecord* r = w.move(*u); r && unit_pos(player)) {
+            if (r->sound_time == -1 && r->sound.starts_with("TS_")) footstep(w, player, r->sound, *unit_pos(player), player);
+            if (r->sound_time2 == -1 && r->sound2.starts_with("TS_")) footstep(w, player, r->sound2, *unit_pos(player), player);
         }
     for (const game::MissionEvent& e : me) {
         // b == 0: UI / script sounds at the listener (FUN_004ceef0). Otherwise set_dialog_voice (voices()),
@@ -112,6 +108,7 @@ void GameAudio::on_tick(const game::Mission& cm, const std::vector<game::GameEve
     voices(m);
     projectiles(cur);
     ambient(m, cur, player);
+    unit_pos_.clear();  // points into `cur`
     bool city = false;
     const MusicMood mm = mood(m, &city);
     music_.update(audio_, mm, m.scenario_no(), m.now());
@@ -120,8 +117,8 @@ void GameAudio::on_tick(const game::Mission& cm, const std::vector<game::GameEve
 
 // SE_play_trigger 0x4c0680: a .stg PLAY_SOUND / PLAY_AMB_SOUND emitter sounds at its position while the player
 // unit is inside its radius (0 = everywhere) and is cut when the player leaves.
-void GameAudio::ambient(const game::Mission& cm, const game::Snapshot& cur, int player) {
-    const game::Vec3* p = unit_pos(cur, player);
+void GameAudio::ambient(const game::Mission& cm, const game::Snapshot&, int player) {
+    const game::Vec3* p = unit_pos(player);
     const auto& ts = const_cast<game::Mission&>(cm).objects().triggers();
     for (std::size_t i = 0; i < ts.size(); ++i) {
         const game::MapTrigger& t = ts[i];
@@ -154,8 +151,13 @@ VoiceId GameAudio::trigger(std::string_view code, const game::Vec3& p, int seed,
     return v;
 }
 
-void GameAudio::world_sound(const game::World& w, const game::GameEvent& e, const game::Snapshot& cur, int player) {
-    const game::Vec3* at = unit_pos(cur, e.unit);
+const game::Vec3* GameAudio::unit_pos(int id) const {
+    const auto it = unit_pos_.find(id);
+    return it != unit_pos_.end() ? it->second : nullptr;
+}
+
+void GameAudio::world_sound(const game::World& w, const game::GameEvent& e, int player) {
+    const game::Vec3* at = unit_pos(e.unit);
     switch (e.type) {
     case Ev::Sound:
         if (e.other) {  // projectile impact (ThrowItem_on_hit_actor / ThrowItem_update): at the projectile

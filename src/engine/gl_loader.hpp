@@ -30,6 +30,7 @@
     X(PFNGLBINDTEXTUREPROC, glBindTexture)                                          \
     X(PFNGLACTIVETEXTUREPROC, glActiveTexture)                                      \
     X(PFNGLTEXIMAGE2DPROC, glTexImage2D)                                            \
+    X(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D)                                      \
     X(PFNGLTEXPARAMETERIPROC, glTexParameteri)                                      \
     X(PFNGLGENERATEMIPMAPPROC, glGenerateMipmap)                                    \
     X(PFNGLGENBUFFERSPROC, glGenBuffers)                                            \
@@ -95,8 +96,7 @@
     X(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC, glRenderbufferStorageMultisample)    \
     X(PFNGLGETINTEGERVPROC, glGetIntegerv)                                          \
     X(PFNGLGETTEXPARAMETERIVPROC, glGetTexParameteriv)                              \
-    X(PFNGLGETTEXLEVELPARAMETERIVPROC, glGetTexLevelParameteriv)                    \
-    X(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D)
+    X(PFNGLGETTEXLEVELPARAMETERIVPROC, glGetTexLevelParameteriv)
 
 namespace joa::engine::gl {
 #define JOA_GL_DECLARE(type, name) extern type name;

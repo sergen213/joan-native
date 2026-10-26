@@ -8,7 +8,6 @@
 
 #include <cfloat>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -52,7 +51,8 @@ struct PlayParams {
 };
 
 // FIFO of interleaved stereo frames at kOutputRate fed by a decoder thread/loop (music, movies).
-// frames_played() is the audio clock used for A/V sync.
+// frames_played() is the audio clock used for A/V sync. Ring buffer: pop() (the audio callback) never
+// allocates or frees; push() grows it, allocating with the lock released.
 class StreamQueue {
 public:
     void push(const float* stereo, std::size_t frames);
@@ -64,8 +64,13 @@ public:
     void clear();
 
 private:
+    // refill keeps ~1 s + one 4096-frame chunk queued; movies decode ~0.3 s ahead (larger bursts grow it).
+    static constexpr std::size_t kInitialFrames = std::size_t(kOutputRate) * 2;
+    std::size_t capacity() const { return buf_.size() / 2; }  // frames
+
     mutable std::mutex m_;
-    std::deque<float> data_;
+    std::vector<float> buf_;           // interleaved stereo ring
+    std::size_t head_ = 0, size_ = 0;  // frames
     std::uint64_t played_ = 0;
     bool finished_ = false;
 };
@@ -94,6 +99,9 @@ public:
 
     // Writes `frames` interleaved stereo frames (overwrites `out`).
     void mix(float* out, std::size_t frames);
+    // Game thread, once per frame: frees the buffers of voices that finished in mix() (the audio
+    // callback must not drop the last reference to a Pcm/StreamQueue).
+    void update();
     std::size_t active_voices() const;
 
 private:
@@ -111,9 +119,17 @@ private:
     const Voice* find(VoiceId v) const;
     Voice* find(VoiceId v) { return const_cast<Voice*>(std::as_const(*this).find(v)); }
 
+    static constexpr std::size_t kGraveyard = 64;  // preallocated: mix() only moves into reserved slots
+
     mutable std::mutex m_;
     std::vector<Voice> voices_;
-    std::vector<float> scratch_;
+    std::vector<std::shared_ptr<const void>> graveyard_ = reserved(kGraveyard);  // finished voices' buffers
+    static std::vector<std::shared_ptr<const void>> reserved(std::size_t n) {
+        std::vector<std::shared_ptr<const void>> v;
+        v.reserve(n);
+        return v;
+    }
+    std::vector<float> scratch_ = std::vector<float>(2 * 4096);  // stream pop buffer: no allocation in mix() up to 4096 frames
     Listener listener_;
     float bus_[std::size_t(Bus::Count)]{1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     float master_ = 1.0f;

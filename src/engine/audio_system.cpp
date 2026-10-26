@@ -144,13 +144,25 @@ const MusicTrack* MusicTable::find(std::string_view key) const {
     return nullptr;
 }
 
+namespace {
+bool pickable(const MusicTrack& t, int type, int env, int scenario) {
+    return t.type == type && (env == 0 || t.env_type == env) &&
+           (type == 5 || scenario == 0 || (t.start_sce <= scenario && scenario <= t.end_sce));
+}
+}  // namespace
+
 const MusicTrack* MusicTable::pick(int type, int env, int scenario, std::minstd_rand& rng) const {
-    std::vector<const MusicTrack*> pool;
+    std::size_t n = 0;  // two passes instead of a pool vector: same draw, same track
+    for (const auto& t : tracks_) n += pickable(t, type, env, scenario);
+    if (!n) return nullptr;
+    std::size_t k = rng() % n;
     for (const auto& t : tracks_)
-        if (t.type == type && (env == 0 || t.env_type == env) &&
-            (type == 5 || scenario == 0 || (t.start_sce <= scenario && scenario <= t.end_sce)))
-            pool.push_back(&t);
-    return pool.empty() ? nullptr : pool[rng() % pool.size()];
+        if (pickable(t, type, env, scenario) && !k--) return &t;
+    return nullptr;
+}
+
+bool MusicTable::any(int type, int env, int scenario) const {
+    return std::any_of(tracks_.begin(), tracks_.end(), [&](const MusicTrack& t) { return pickable(t, type, env, scenario); });
 }
 
 const MusicTrack* MusicTable::by_time(int type, float m) const {
@@ -271,7 +283,7 @@ bool AudioSystem::start(Channel& c, std::string_view key, Bus bus, bool loop) {
 
 void AudioSystem::refill(Channel& c) {
     if (!c.file) return;
-    std::vector<float> buf;
+    std::vector<float>& buf = refill_buf_;
     bool rewound_empty = false;  // a looping file that decodes nothing would otherwise rewind forever
     while (c.queue->queued() < std::size_t(kOutputRate)) {  // keep ~1 s queued
         buf.clear();
@@ -321,21 +333,23 @@ bool AudioSystem::env_playing(int slot) const {
 
 void AudioSystem::update() {
     for (Channel& c : channels_) refill(c);
+    mixer_.update();
 }
 
 void MusicDirector::update(AudioSystem& a, MusicMood mood, int scenario, std::uint32_t now) {
     if (mood != MusicMood::Normal) calm_since_ = 0;
-    const MusicTrack* t = a.music_table().pick(int(mood), 0, scenario, rng);
-    if (!t) return;
+    // rng is the director's own (not the sim's): drawn only when a track actually starts.
+    if (!a.music_table().any(int(mood), 0, scenario)) return;
+    const auto start = [&] { a.play_music(a.music_table().pick(int(mood), 0, scenario, rng)->code); };
     const MusicTrack* cur = a.current_music();
     if (a.music_fading()) {  // state 2: wait for the 8 s fade, then start the new mood's track
-        if (!a.music_playing()) a.play_music(t->code);
+        if (!a.music_playing()) start();
         return;
     }
     if (cur && cur->type == int(mood) && a.music_playing()) return;  // same mood keeps (and loops) its track
     if (!cur || !a.music_playing() || cur->type == int(MusicMood::Menu) || mood == MusicMood::Menu ||
         mood == MusicMood::Won || mood == MusicMood::GameOver) {
-        a.play_music(t->code);  // immediate switch, no fade
+        start();  // immediate switch, no fade
         return;
     }
     if (mood == MusicMood::Normal && cur->type == int(MusicMood::Battle)) {

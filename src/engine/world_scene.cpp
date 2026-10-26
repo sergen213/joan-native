@@ -316,8 +316,7 @@ int WorldScene::sector_at(glm::vec3 p) const {
     return -1;
 }
 
-void WorldScene::sector_lights(glm::vec3 p, int max, DrawItem& d) const {
-    const int s = sector_at(p);
+void WorldScene::sector_lights(int s, int max, DrawItem& d) const {
     if (s < 0) return;
     for (const std::uint16_t i : sectors_[std::size_t(s)].lights) {
         if (d.light_count >= std::min(max, kMaxDrawLights)) break;

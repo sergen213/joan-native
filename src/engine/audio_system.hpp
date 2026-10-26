@@ -67,6 +67,7 @@ public:
     // FUN_004b3940: uniform random among tracks of `type` (env_type must match if != 0) whose
     // STARTSCE..ENDSCE contains `scenario` (0 = any). Type 5 ignores the scenario.
     const MusicTrack* pick(int type, int env_type, int scenario, std::minstd_rand& rng) const;
+    bool any(int type, int env_type, int scenario) const;  // pick() would return a track (no draw)
     // FUN_004b3c70: first track of `type` whose [start_min, end_min) contains `minute` (wrapping).
     const MusicTrack* by_time(int type, float minute) const;
 
@@ -146,7 +147,8 @@ private:
     bool music_fading_ = false;
     bool enabled_ = true;
     SDL_AudioStream* device_ = nullptr;
-    std::vector<float> device_buf_;
+    std::vector<float> device_buf_ = std::vector<float>(2 * 4096);  // callback buffer, preallocated
+    std::vector<float> refill_buf_;  // refill() decode chunk, reused
 };
 
 // Port of the music half of FUN_004e6fe0 (called every game tick).
