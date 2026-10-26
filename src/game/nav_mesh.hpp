@@ -87,6 +87,7 @@ private:
     static constexpr int kBucket = 512;
     int bcols_ = 0, brows_ = 0;
     std::vector<std::vector<int>> buckets_;
+    std::vector<int> unbucketed_;  // polys no bucket lists (nearest_poly always scans them)
 };
 
 }  // namespace joa::game

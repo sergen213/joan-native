@@ -95,9 +95,11 @@ NavMesh::NavMesh(const formats::PfdMesh& m) : pts_(m.points), grid_(m.grid) {
     buckets_.resize(std::size_t(bcols_) * brows_);
     for (std::size_t i = 0; i < polys_.size(); ++i) {
         const auto& b = polys_[i].bbox;
+        bool listed = false;
         for (int by = std::max(0, b[1] / kBucket); by <= std::min(brows_ - 1, b[4] / kBucket); ++by)
             for (int bx = std::max(0, b[0] / kBucket); bx <= std::min(bcols_ - 1, b[3] / kBucket); ++bx)
-                buckets_[std::size_t(by) * bcols_ + bx].push_back(int(i));
+                buckets_[std::size_t(by) * bcols_ + bx].push_back(int(i)), listed = true;
+        if (!listed) unbucketed_.push_back(int(i));  // bbox wholly at x or y <= -512
     }
     compute_components();
 }
@@ -143,7 +145,8 @@ bool NavMesh::contains(int poly, float x, float y, float radius, bool ignore_blo
         if (c > 0) return false;
     }
     if (radius > 0) {
-        std::vector<int> seen;
+        thread_local std::vector<int> seen;  // reused: find_poly(radius) runs this per candidate, per path search
+        seen.clear();
         return clearance_ok(poly, x, y, radius, seen);
     }
     return true;
@@ -176,11 +179,14 @@ int NavMesh::find_poly_xy(float x, float y, float z, bool ignore_blocked) const 
 }
 
 int NavMesh::nearest_poly(float x, float y, float z) const {
+    // The ascending scan keeping the first of equal (d, c) picks the lexicographic min of (d, c, index), so any visit
+    // order gives the same poly. ponytail: visit bucket rings around (x,y) and stop once the next ring lies farther
+    // than the best d (a poly's nearest bbox point lies in a bucket that lists it), not the whole-mesh scan.
     int best = -1;
     double bd = 0, bc = 0;
-    for (std::size_t i = 0; i < polys_.size(); ++i) {
-        const auto& p = polys_[i];
-        if (p.state == 1) continue;
+    auto consider = [&](int i) {
+        const auto& p = polys_[std::size_t(i)];
+        if (p.state == 1) return;
         const float q[3] = {x, y, z};
         double d = 0;
         for (int k = 0; k < 3; ++k) {
@@ -188,7 +194,29 @@ int NavMesh::nearest_poly(float x, float y, float z) const {
             d += e * e;
         }
         const double c = (double(x) - p.cx) * (x - p.cx) + (double(y) - p.cy) * (y - p.cy);
-        if (best < 0 || d < bd || (d == bd && c < bc)) { best = int(i); bd = d; bc = c; }
+        if (best < 0 || d < bd || (d == bd && (c < bc || (c == bc && i < best)))) { best = i; bd = d; bc = c; }
+    };
+    if (std::isnan(x) || std::isnan(y)) {  // NaN centroid distances never tie-break: ascending scan as before
+        for (int i = 0; i < int(polys_.size()); ++i) consider(i);
+        return best;
+    }
+    for (int i : unbucketed_) consider(i);
+    auto cell = [](float v, int n) { return v < 0 ? 0 : int(std::min<double>(std::floor(v) / kBucket, n - 1)); };
+    const int cx = cell(x, bcols_), cy = cell(y, brows_);
+    const int maxk = std::max(std::max(cx, bcols_ - 1 - cx), std::max(cy, brows_ - 1 - cy));
+    for (int k = 0; k <= maxk; ++k) {
+        // Every bucket of ring k is >= (k - 1) * kBucket from (x,y) in x or y (q lies in, or clamped outward of, (cx,cy)).
+        const double lb = double(k - 1) * kBucket - 1;
+        if (best >= 0 && lb > 0 && lb * lb > bd) break;
+        auto visit = [&](int bx, int by) { for (int i : buckets_[std::size_t(by) * bcols_ + bx]) consider(i); };
+        for (int by = std::max(0, cy - k); by <= std::min(brows_ - 1, cy + k); ++by) {
+            if (by == cy - k || by == cy + k) {
+                for (int bx = std::max(0, cx - k); bx <= std::min(bcols_ - 1, cx + k); ++bx) visit(bx, by);
+            } else {
+                if (cx - k >= 0) visit(cx - k, by);
+                if (cx + k < bcols_) visit(cx + k, by);
+            }
+        }
     }
     return best;
 }
