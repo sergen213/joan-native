@@ -1,8 +1,9 @@
 #include "game/physics_char.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <climits>
 #include <cmath>
-#include <unordered_map>
 #include <vector>
 
 #include "formats/vfs_bytes.hpp"
@@ -36,11 +37,9 @@ bool CharPhysics::walkable(const World& w, float x, float y, float z) const {
     return !w.terrain() || w.terrain()->walkable(x, y);
 }
 
-// The edge of the poly under (x0,y0) that the step to (x1,y1) crosses, as a unit direction.
-bool CharPhysics::wall_edge(float x0, float y0, float z, float x1, float y1, float& ex, float& ey) const {
-    if (!nav_) return false;
-    const int p = nav_->find_poly_xy(x0, y0, z);
-    if (p < 0) return false;
+// The edge of poly p (the one under (x0,y0)) that the step to (x1,y1) crosses, as a unit direction.
+bool CharPhysics::wall_edge(int p, float x0, float y0, float x1, float y1, float& ex, float& ey) const {
+    if (!nav_ || p < 0) return false;
     const NavLevel& l = nav_->levels()[std::size_t(nav_->level_of_poly(p))];
     const int lp = p - l.base;
     const float ax = x0 - l.ox, ay = y0 - l.oy, bx = x1 - l.ox, by = y1 - l.oy;
@@ -71,14 +70,16 @@ void CharPhysics::integrate(World& w, float dt_s) {
     auto key = [](float x, float y) {
         return (std::int64_t(std::floor(x / kCell)) << 32) ^ std::int64_t(std::uint32_t(std::int32_t(std::floor(y / kCell))));
     };
-    std::unordered_map<std::int64_t, std::vector<int>> grid;
     auto radius_of = [&](const Unit& u) { return w.data().units[std::size_t(u.cls)].cyl_radius; };
     // Inactive units (+0x2ed == 0) have no body actor; climbers (0x4ac910), cart drivers (0x454b20)
     // and riders (0x5174e0) have theirs disabled: neither move nor block (ladder / cart / mount sync
     // places them).
     auto bodiless = [](const Unit& u) { return u.deleted || !u.m.active || u.m.climb || u.m.cart || u.mount; };
+    // (cell, id) sorted: a cell's bodies are a contiguous run in unit order (ids ascend with the unit index).
+    cells_.clear();
     for (const Unit& u : units)
-        if (!bodiless(u) && !w.dead(u)) grid[key(u.pos.x, u.pos.y)].push_back(u.id);
+        if (!bodiless(u) && !w.dead(u)) cells_.emplace_back(key(u.pos.x, u.pos.y), u.id);
+    std::sort(cells_.begin(), cells_.end());
 
     for (auto it = slide_.begin(); it != slide_.end();)  // contact older than 100 ms: no slide memory
         it = float(now) - it->second.z > 100.0f ? slide_.erase(it) : std::next(it);
@@ -99,6 +100,27 @@ void CharPhysics::integrate(World& w, float dt_s) {
         const float g = 9.81f * float(u.gravity_scale) * World::kUnitsPerMetre;
         float left = float(frame_ms) / 1000.0f;
         bool turned = false;   // wall-slide heading step taken this tick
+        // find_poly_xy memo (bitwise x, y, z): the mesh is fixed during integrate, and a substep asks the same
+        // points again (ground under the body, ok()'s walkable + ground, the final ground, wall_edge's poly; the next
+        // substep's body point is this one's target). ground / walkable / ok below are the nav_ forms of the
+        // functions above, sharing one lookup.
+        struct Look { std::uint32_t x, y, z; int p; };
+        Look memo[4] = {{0, 0, 0, INT_MIN}, {0, 0, 0, INT_MIN}, {0, 0, 0, INT_MIN}, {0, 0, 0, INT_MIN}};
+        int mnext = 0;
+        auto poly_at = [&](float x, float y, float z) {
+            const auto bx = std::bit_cast<std::uint32_t>(x), by = std::bit_cast<std::uint32_t>(y), bz = std::bit_cast<std::uint32_t>(z);
+            for (const Look& m : memo)
+                if (m.p != INT_MIN && m.x == bx && m.y == by && m.z == bz) return m.p;
+            const int p = nav_->find_poly_xy(x, y, z);
+            memo[mnext] = {bx, by, bz, p};
+            mnext = (mnext + 1) & 3;
+            return p;
+        };
+        auto ground_at = [&](float x, float y, float z) {  // == ground()
+            if (!nav_) return ground(w, x, y, z);
+            const int p = poly_at(x, y, z);
+            return p >= 0 ? nav_->poly_height(p, x, y) : nav_->grid_height(x, y);
+        };
         for (int s = 0; s < steps && left > 0; ++s) {
             const float h = std::min(left, kSubstepMs / 1000.0f);
             left -= h;
@@ -109,9 +131,10 @@ void CharPhysics::integrate(World& w, float dt_s) {
                 const float nx = u.pos.x + vx * h, ny = u.pos.y + vy * h;
                 for (int dx = -1; dx <= 1; ++dx)
                     for (int dy = -1; dy <= 1; ++dy) {
-                        auto c = grid.find(key(nx + dx * kCell, ny + dy * kCell));
-                        if (c == grid.end()) continue;
-                        for (int oid : c->second) {
+                        const std::int64_t ck = key(nx + dx * kCell, ny + dy * kCell);
+                        auto c = std::lower_bound(cells_.begin(), cells_.end(), std::pair<std::int64_t, int>(ck, INT_MIN));
+                        for (; c != cells_.end() && c->first == ck; ++c) {
+                            const int oid = c->second;
                             if (oid == u.id) continue;
                             Unit& o = units[std::size_t(oid - 1)];
                             if (std::fabs(o.pos.z - u.pos.z) > 150.0f) continue;  // different level (wall walk)
@@ -141,10 +164,18 @@ void CharPhysics::integrate(World& w, float dt_s) {
             // Navmesh walls and the 80-unit step-up limit; airborne, from the feet (higher of ground and body). Exempting
             // airborne bodies let a hit's knock-up beside a shut gate (passage poly blocked, so the lookup finds only the
             // gatehouse top 480 above) step in and "land" up there, through the gate (Beaugency's middle gates, S9L1).
-            const float g0 = ground(w, u.pos.x, u.pos.y, u.pos.z);
+            const float g0 = ground_at(u.pos.x, u.pos.y, u.pos.z);
             auto ok = [&](float x, float y) {
-                if (!walkable(w, x, y, u.pos.z)) return false;
-                return ground(w, x, y, u.pos.z) - (u.airborne ? std::max(g0, u.pos.z) : g0) <= kStepUp;
+                float gh;
+                if (nav_) {  // walkable(): a poly under (x,y); ground(): its height
+                    const int p = poly_at(x, y, u.pos.z);
+                    if (p < 0) return false;
+                    gh = nav_->poly_height(p, x, y);
+                } else {
+                    if (!walkable(w, x, y, u.pos.z)) return false;
+                    gh = ground(w, x, y, u.pos.z);
+                }
+                return gh - (u.airborne ? std::max(g0, u.pos.z) : g0) <= kStepUp;
             };
             float tx = u.pos.x + vx * h, ty = u.pos.y + vy * h;
             if (!ok(tx, ty)) {
@@ -168,7 +199,7 @@ void CharPhysics::integrate(World& w, float dt_s) {
                 // (asm 0x6aa1c3: +-0.01, +-0.21, .. rad; step ftol(1 unit / max axis step) = 0 when running, so
                 // it only re-aims +0x10e) are not ported.
                 float ex = 0, ey = 0;
-                if (wall_edge(u.pos.x, u.pos.y, u.pos.z, tx, ty, ex, ey)) {
+                if (wall_edge(nav_ ? poly_at(u.pos.x, u.pos.y, u.pos.z) : -1, u.pos.x, u.pos.y, tx, ty, ex, ey)) {
                     const float sp = std::sqrt(vx * vx + vy * vy);
                     const auto prev = slide_.find(u.id);
                     const float mx = prev != slide_.end() ? prev->second.x : vx / sp;
@@ -196,7 +227,7 @@ void CharPhysics::integrate(World& w, float dt_s) {
                 else tx = u.pos.x, ty = u.pos.y, vx = vy = 0;
             }
             if (px == 0 && py == 0) u.vel.x = vx, u.vel.y = vy;
-            const float gnd = ground(w, tx, ty, u.pos.z);
+            const float gnd = ground_at(tx, ty, u.pos.z);
             float tz = u.pos.z;
             if (u.airborne) {
                 u.vel.z -= g * h;

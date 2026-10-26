@@ -2,7 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <queue>
+#include <cstdint>
+#include <functional>
 #include <tuple>
 
 namespace joa::game {
@@ -101,54 +102,77 @@ PathResult find_path(const NavMesh& mesh, const PathQuery& q) {
         return res;
     }
 
-    const std::size_t N = polys.size();
-    std::vector<int> g(N), h(N), f(N), parent(N, -1), seq(N, 0);
-    std::vector<char> visited(N, 0), closed(N, 0);
-    std::vector<int> order;
-    // (f, -seq, poly): smallest f first; among equal f the newest insertion first (0066fca0 inserts before equals).
+    // Search state reused across calls (100+ searches per tick in battles), one per thread: a node's slot is live
+    // only while its stamp equals this search's epoch, so nothing is cleared or allocated per call.
+    struct Node { int g, h, f, parent, seq; std::uint32_t stamp; char closed; };
     using E = std::tuple<int, int, int>;
-    std::priority_queue<E, std::vector<E>, std::greater<E>> open;
+    struct Scratch {
+        std::vector<Node> node;
+        std::vector<int> order;
+        std::vector<E> heap;
+        std::uint32_t epoch = 0;
+    };
+    thread_local Scratch S;
+    const std::size_t N = polys.size();
+    if (S.node.size() < N) S.node.resize(N, Node{0, 0, 0, -1, 0, 0, 0});
+    if (++S.epoch == 0) {  // wrapped: forget every stamp
+        for (auto& x : S.node) x.stamp = 0;
+        S.epoch = 1;
+    }
+    const std::uint32_t ep = S.epoch;
+    Node* nd = S.node.data();
+    std::vector<int>& order = S.order;
+    order.clear();
+    // (f, -seq, poly): smallest f first; among equal f the newest insertion first (0066fca0 inserts before equals).
+    // Min-heap on a reused vector: exactly std::priority_queue<E, vector<E>, greater<E>>'s push_heap / pop_heap.
+    std::vector<E>& open = S.heap;
+    open.clear();
+    const std::greater<E> cmp;
     int counter = 0;
-    auto push = [&](int p) { seq[std::size_t(p)] = ++counter; open.emplace(f[std::size_t(p)], -counter, p); };
+    auto push = [&](int p) {
+        nd[p].seq = ++counter;
+        open.emplace_back(nd[p].f, -counter, p);
+        std::push_heap(open.begin(), open.end(), cmp);
+    };
 
-    visited[std::size_t(sp)] = 1;
-    g[std::size_t(sp)] = 0;
-    h[std::size_t(sp)] = idist(tx - polys[std::size_t(sp)].cx, ty - polys[std::size_t(sp)].cy);
-    f[std::size_t(sp)] = h[std::size_t(sp)];
+    nd[sp] = Node{0, 0, 0, -1, 0, ep, 0};
+    nd[sp].h = idist(tx - polys[std::size_t(sp)].cx, ty - polys[std::size_t(sp)].cy);
+    nd[sp].f = nd[sp].h;
     order.push_back(sp);
     push(sp);
 
     int budget = q.max_expand, goal = -1;
     while (!open.empty() && budget > 0) {
-        auto [ff, ns, p] = open.top();
-        open.pop();
-        const std::size_t up = std::size_t(p);
-        if (closed[up] || -ns != seq[up]) continue;  // stale entry
-        closed[up] = 1;
+        std::pop_heap(open.begin(), open.end(), cmp);
+        const auto [ff, ns, p] = open.back();
+        open.pop_back();
+        Node& cur = nd[p];
+        if (cur.closed || -ns != cur.seq) continue;  // stale entry
+        cur.closed = 1;
         --budget;
         ++res.expanded;
         if (mesh.contains(p, q.to.x, q.to.y)) { goal = p; break; }
-        const auto& pp = polys[up];
+        const auto& pp = polys[std::size_t(p)];
         for (std::size_t e = 0; e < pp.nb.size(); ++e) {
             const int n = pp.nb[e];
-            if (n < 0 || n == parent[up]) continue;
+            if (n < 0 || n == cur.parent) continue;
             const auto& np = polys[std::size_t(n)];
             if (np.state == 1 || (np.state == -1 && reff > 0)) continue;
             const int fx = p == sp ? sx : pp.cx, fy = p == sp ? sy : pp.cy;
-            const int ng = g[up] + idist(np.cx - fx, np.cy - fy);
+            const int ng = cur.g + idist(np.cx - fx, np.cy - fy);
             const int nh = idist(tx - np.cx, ty - np.cy);
-            const std::size_t un = std::size_t(n);
-            if (!visited[un]) {
-                visited[un] = 1;
+            Node& nn = nd[n];
+            if (nn.stamp != ep) {  // first visit
+                nn.stamp = ep;
                 order.push_back(n);
-            } else if (ng + nh >= f[un]) {
+            } else if (ng + nh >= nn.f) {
                 continue;
             }
             // ponytail: improved closed nodes are re-opened instead of 0066ddb0's in-place subtree
             // propagation; identical routes with a consistent heuristic, may cost an extra expansion.
-            parent[un] = p;
-            g[un] = ng; h[un] = nh; f[un] = ng + nh;
-            closed[un] = 0;
+            nn.parent = p;
+            nn.g = ng; nn.h = nh; nn.f = ng + nh;
+            nn.closed = 0;
             push(n);
         }
     }
@@ -156,9 +180,9 @@ PathResult find_path(const NavMesh& mesh, const PathQuery& q) {
     NavPt dest = q.to;
     int end = goal;
     if (goal < 0) {
-        int best = sp, bv = h[std::size_t(sp)] + g[std::size_t(sp)] / 16;
+        int best = sp, bv = nd[sp].h + nd[sp].g / 16;
         for (int p : order) {
-            const int v = h[std::size_t(p)] + g[std::size_t(p)] / 16;
+            const int v = nd[p].h + nd[p].g / 16;
             if (v < bv) { bv = v; best = p; }
         }
         end = best;
@@ -188,10 +212,10 @@ PathResult find_path(const NavMesh& mesh, const PathQuery& q) {
     }
 
     std::vector<Portal> portals;
-    for (int p = end; parent[std::size_t(p)] >= 0; p = parent[std::size_t(p)]) {
+    for (int p = end; nd[p].parent >= 0; p = nd[p].parent) {
         const auto& pp = polys[std::size_t(p)];
         for (std::size_t e = 0; e < pp.nb.size(); ++e)
-            if (pp.nb[e] == parent[std::size_t(p)]) {
+            if (pp.nb[e] == nd[p].parent) {
                 portals.push_back({P(mesh.pt(p, int(e))), P(mesh.pt(p, int(e) + 1))});
                 break;
             }
