@@ -14,6 +14,7 @@
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -200,8 +201,14 @@ struct Buffer {
     Allocation memory;
     VkDeviceSize size = 0;
 };
+// update_mesh streaming: host-visible vertex/index buffers of kMeshRegions regions each, written in place. Every update
+// frame writes a region no frame in flight reads: each in-flight frame reads its pose and its TAA previous pose, so with
+// updates every frame and kFramesInFlight = 2 three regions are busy when the next frame's update runs.
+constexpr std::uint32_t kMeshRegions = 4;
+constexpr std::uint64_t kNeverRead = ~0ull;
 struct Mesh {
-    Buffer vertices, indices;
+    Buffer vertices, indices;  // dynamic: kMeshRegions regions of vertex_capacity / index_capacity bytes
+    VkDeviceSize vertex_offset = 0, index_offset = 0;  // the bound region
     std::uint32_t index_count = 0;
     // Ray tracing (docs/RAYTRACING.md): device addresses (0 without RT), object-space bounds, CPU-skinning state.
     std::uint32_t vertex_count = 0, generation = 0;
@@ -209,8 +216,18 @@ struct Mesh {
     VkDeviceAddress vertex_address = 0, index_address = 0;
     glm::vec3 centre{0.0f};
     float radius = 0.0f;
-    // TAA motion vectors (update_mesh): the vertices shown before the update of frame `updated` (empty = none).
-    Buffer prev;
+    // Streaming state (dynamic): region bound, frame_ of each region's last read (kNeverRead = never; cur's is
+    // stale while it is cur), index content version held by each region, CPU copy of the indices (change test).
+    VkDeviceSize vertex_capacity = 0, index_capacity = 0, vertex_bytes = 0;
+    std::uint32_t region = 0, index_version = 0;
+    std::array<std::uint64_t, kMeshRegions> region_read{kNeverRead, kNeverRead, kNeverRead, kNeverRead};
+    std::array<std::uint32_t, kMeshRegions> region_indices{};
+    std::vector<std::uint32_t> index_data;
+    // TAA motion vectors (update_mesh): the vertices shown before the update of frame `updated` (prev = none): a
+    // region of `vertices`, or of prev_owned (the static buffers the first update replaced, kept to the next update).
+    VkBuffer prev = VK_NULL_HANDLE;
+    VkDeviceSize prev_offset = 0, prev_bytes = 0;
+    Buffer prev_owned;
     std::uint64_t updated = ~0ull;
 };
 struct Texture {
@@ -219,6 +236,9 @@ struct Texture {
     Allocation memory;
     std::uint32_t slot = 0;
     bool repeat = false, mipmaps = false;  // sampler choice (samplers_[repeat][mipmaps])
+    int width = 0, height = 0;  // update_texture: same size, format and mip count only
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    std::uint32_t mips = 1;
 };
 struct Image2D {
     VkImage image = VK_NULL_HANDLE;
@@ -309,6 +329,7 @@ public:
             destroy_fg_targets();
             destroy_remaster();
             destroy_target();
+            destroy(present_bridge_);
             destroy_swapchain(swapchain_);
             for (VkSemaphore s : present_done_) vk_.vkDestroySemaphore(device_, s, nullptr);
             for (Slot& s : slots_) {
@@ -351,31 +372,75 @@ public:
         return {id};
     }
 
-    // Same handle, new buffers; the old ones retire once in-flight frames finish.
-    // ponytail: synchronous staging upload per call; switch to per-frame host-visible streaming if CPU skinning gets heavy.
+    // Same handle, rewritten in place (CPU-skinned characters and their shadow volumes, particles, water: every frame).
+    // Host-visible streaming buffers of kMeshRegions regions: the first update of a frame writes a region no frame in
+    // flight reads, later ones that frame rewrite it; indices are copied only when they changed or the region holds an
+    // older version. Larger data regrows the buffers (x1.5); the old ones retire once in-flight frames finish.
     bool update_mesh(MeshHandle h, const MeshData& data) override {
         const auto it = meshes_.find(h.id);
         if (it == meshes_.end()) return false;
-        // Per-frame data (CPU-skinned characters): host-visible buffers written directly, no
-        // staging copy and no queue wait; the old buffers retire once the GPU is done with them.
-        Mesh m;
+        Mesh& m = it->second;
         const VkDeviceSize vbytes = data.vertices.size() * sizeof(Vertex), ibytes = data.indices.size() * sizeof(std::uint32_t);
-        m.vertices = create_buffer(std::max<VkDeviceSize>(vbytes, 4), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_usage(), kHost, 0);
-        m.indices = create_buffer(std::max<VkDeviceSize>(ibytes, 4), VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_usage(), kHost, 0);
-        if (vbytes) std::memcpy(m.vertices.memory.mapped, data.vertices.data(), vbytes);
-        if (ibytes) std::memcpy(m.indices.memory.mapped, data.indices.data(), ibytes);
+        if (m.updated != frame_) {
+            // TAA motion vectors: the first update of a frame keeps the vertices shown so far as `prev` (read by this frame
+            // too); a later one in the same frame keeps that. A changed vertex count has no previous pose.
+            if (m.prev_owned.buffer) retire([this, b = m.prev_owned]() mutable { destroy(b); });
+            m.prev_owned = {};
+            m.prev = VK_NULL_HANDLE;
+            const bool keep = m.vertex_bytes == vbytes;
+            if (!m.dynamic) {  // first update of a create_mesh mesh: its device-local buffers are replaced
+                if (keep) m.prev_owned = m.vertices, m.prev = m.vertices.buffer, m.prev_offset = 0;
+                else retire([this, b = m.vertices]() mutable { destroy(b); });
+                retire([this, b = m.indices]() mutable { destroy(b); });
+                m.vertices = m.indices = {};
+                m.dynamic = true;  // CPU-skinned: refit BLAS (vk_rt.hpp)
+            } else {
+                m.region_read[m.region] = frame_;
+                if (keep) m.prev = m.vertices.buffer, m.prev_offset = m.vertex_offset;
+            }
+            m.prev_bytes = vbytes;
+        } else if (m.prev && m.prev_bytes != vbytes) {
+            m.prev = VK_NULL_HANDLE;
+        }
+        const auto grow = [](VkDeviceSize cap, VkDeviceSize bytes) { return (std::max({bytes, cap + cap / 2, VkDeviceSize(1)}) + 255) & ~VkDeviceSize(255); };
+        if (!m.vertices.buffer || vbytes > m.vertex_capacity) {  // regions of the old buffer: never this frame's prev (smaller)
+            if (m.vertices.buffer) retire([this, b = m.vertices]() mutable { destroy(b); });
+            if (m.prev == m.vertices.buffer) m.prev = VK_NULL_HANDLE;
+            m.vertex_capacity = grow(m.vertex_capacity, vbytes);
+            m.vertices = create_buffer(m.vertex_capacity * kMeshRegions, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rt_usage(), kHost, 0);
+            m.region_read.fill(kNeverRead);
+        }
+        if (!m.indices.buffer || ibytes > m.index_capacity) {
+            if (m.indices.buffer) retire([this, b = m.indices]() mutable { destroy(b); });
+            m.index_capacity = grow(m.index_capacity, ibytes);
+            m.indices = create_buffer(m.index_capacity * kMeshRegions, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rt_usage(), kHost, 0);
+            m.region_indices.fill(~0u);
+        }
+        if (m.updated != frame_) {
+            // A region whose last reader retired (never the one just shown or the prev); with more frames queued than
+            // regions allow, wait for the oldest reader.
+            std::uint32_t pick = kMeshRegions, oldest = 0;
+            for (std::uint32_t r = 0; r < kMeshRegions && pick == kMeshRegions; ++r) {
+                const std::uint64_t f = m.region_read[r];
+                if (f == kNeverRead || (f < frame_ && submit_value(f) <= completed_value_)) pick = r;
+                else if (f < m.region_read[oldest]) oldest = r;
+            }
+            if (pick == kMeshRegions) wait(submit_value(m.region_read[pick = oldest]));
+            m.region = pick;
+        }
+        m.vertex_offset = m.region * m.vertex_capacity;
+        m.index_offset = m.region * m.index_capacity;
+        if (vbytes) std::memcpy(m.vertices.memory.mapped + m.vertex_offset, data.vertices.data(), vbytes);
+        if (data.indices != m.index_data) m.index_data = data.indices, ++m.index_version;
+        if (m.region_indices[m.region] != m.index_version) {
+            if (ibytes) std::memcpy(m.indices.memory.mapped + m.index_offset, data.indices.data(), ibytes);
+            m.region_indices[m.region] = m.index_version;
+        }
+        m.vertex_bytes = vbytes;
         m.index_count = std::uint32_t(data.indices.size());
-        m.dynamic = true;  // CPU-skinned: refit BLAS (vk_rt.hpp)
-        Mesh& old = it->second;
-        m.generation = old.generation + 1;
-        rt_mesh_info(m, data);
-        // TAA motion vectors: the first update of a frame keeps the replaced (last shown) vertices as `prev`; a later
-        // one in the same frame keeps that. A changed vertex count has no previous pose.
-        Buffer& keep = old.updated == frame_ ? old.prev : old.vertices;
-        if (keep.size == m.vertices.size) m.prev = keep, keep = {};
+        ++m.generation;
         m.updated = frame_;
-        retire([this, old]() mutable { destroy(old); });
-        old = m;
+        rt_mesh_info(m, data);
         return true;
     }
 
@@ -390,8 +455,8 @@ public:
     void rt_mesh_info(Mesh& m, const MeshData& data) {
         if (!rt_caps_.usable()) return;
         m.vertex_count = std::uint32_t(data.vertices.size());
-        m.vertex_address = address(m.vertices);
-        m.index_address = address(m.indices);
+        m.vertex_address = address(m.vertices) + m.vertex_offset;
+        m.index_address = address(m.indices) + m.index_offset;
         glm::vec3 lo(1e30f), hi(-1e30f);
         for (const Vertex& v : data.vertices) lo = glm::min(lo, v.position), hi = glm::max(hi, v.position);
         m.centre = data.vertices.empty() ? glm::vec3(0.0f) : (lo + hi) * 0.5f;
@@ -425,12 +490,14 @@ public:
                 const VkBufferCopy c{vbytes, 0, ibytes};
                 vk_.vkCmdCopyBuffer(cmd, staging.buffer, m.indices.buffer, 1, &c);
             }
-            // Every later reader: vertex input, BLAS builds, ray-query shaders through device addresses.
-            const VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                     VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT};
+            // Every later reader: vertex input, BLAS builds, ray-query shaders through device addresses; and later writers
+            // (a later upload into this memory once the sub-allocator reuses it).
+            const VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, nullptr, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
             memory_barrier(cmd, b);
         });
         m.index_count = std::uint32_t(data.indices.size());
+        m.vertex_bytes = vbytes;
         rt_mesh_info(m, data);
         return m;
     }
@@ -438,13 +505,12 @@ public:
     TextureHandle create_texture(const TextureData& t) override {
         if (t.width <= 0 || t.height <= 0 || t.pixels.size() < std::size_t(t.width) * t.height * 4) return {};
         if (free_slots_.empty() && next_slot_ >= kMaxTextures) throw std::runtime_error("Vulkan: bindless texture table full");
-        const bool own_mips = t.mipmaps && !t.mip_pixels.empty();
-        const std::uint32_t mips = own_mips    ? std::uint32_t(t.mip_pixels.size()) + 1
-                                   : t.mipmaps ? std::uint32_t(std::floor(std::log2(std::max(t.width, t.height)))) + 1
-                                               : 1;
-        const VkFormat format = t.format == PixelFormat::Rgba8Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
         Texture tex;
-        Image2D img = create_image(format, {std::uint32_t(t.width), std::uint32_t(t.height)}, mips,
+        tex.width = t.width;
+        tex.height = t.height;
+        tex.format = t.format == PixelFormat::Rgba8Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        tex.mips = texture_mips(t);
+        Image2D img = create_image(tex.format, {std::uint32_t(t.width), std::uint32_t(t.height)}, tex.mips,
                                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                    VK_IMAGE_ASPECT_COLOR_BIT);
         tex.image = img.image;
@@ -452,6 +518,46 @@ public:
         tex.memory = img.memory;
         tex.repeat = t.repeat;
         tex.mipmaps = t.mipmaps;
+        upload_texture(tex, t, VK_PIPELINE_STAGE_2_NONE);
+
+        if (!free_slots_.empty()) {
+            tex.slot = free_slots_.back();
+            free_slots_.pop_back();
+        } else {
+            tex.slot = next_slot_++;
+        }
+        write_texture_slot(tex);
+        const std::uint32_t id = next_id_++;
+        textures_[id] = tex;
+        return {id};
+    }
+
+    // Same size, format, sampler and mip count: the image is rewritten by a submit_upload. That runs on the frame queue
+    // ahead of every later frame, and its first barrier waits for the earlier (possibly in-flight) frames' reads, so
+    // neither the CPU nor a frame in flight waits on, or sees, a half-written image.
+    bool update_texture(TextureHandle h, const TextureData& t) override {
+        const auto it = textures_.find(h.id);
+        if (it == textures_.end() || t.pixels.size() < std::size_t(t.width) * t.height * 4) return false;
+        const Texture& tex = it->second;
+        const VkFormat format = t.format == PixelFormat::Rgba8Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        if (t.width != tex.width || t.height != tex.height || format != tex.format || t.repeat != tex.repeat || t.mipmaps != tex.mipmaps ||
+            texture_mips(t) != tex.mips)
+            return false;
+        upload_texture(tex, t, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+        return true;
+    }
+
+    static std::uint32_t texture_mips(const TextureData& t) {
+        return t.mipmaps && !t.mip_pixels.empty() ? std::uint32_t(t.mip_pixels.size()) + 1
+               : t.mipmaps                        ? std::uint32_t(std::floor(std::log2(std::max(t.width, t.height)))) + 1
+                                                  : 1;
+    }
+
+    // Staged copy of `t` into every level of tex.image (whose contents are discarded), ending SHADER_READ_ONLY; `after`
+    // = the earlier work it must wait for (an update: the frames that sampled the old contents).
+    void upload_texture(const Texture& tex, const TextureData& t, VkPipelineStageFlags2 after) {
+        const bool own_mips = t.mipmaps && !t.mip_pixels.empty();
+        const std::uint32_t mips = tex.mips;
         // Staging holds level 0, then the file mip levels back to back.
         std::vector<VkBufferImageCopy> copies;
         VkDeviceSize bytes = 0;
@@ -469,7 +575,7 @@ public:
         submit_upload(staging, [&](VkCommandBuffer cmd) {
             const auto color = VK_IMAGE_ASPECT_COLOR_BIT;
             image_barrier(cmd, tex.image, range(color), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                          after, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
             // Rows are uploaded top-first, so UV (0,0) addresses the top-left texel (Direct3D convention).
             vk_.vkCmdCopyBufferToImage(cmd, staging.buffer, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, std::uint32_t(copies.size()),
                                        copies.data());
@@ -499,17 +605,6 @@ public:
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                           VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         });
-
-        if (!free_slots_.empty()) {
-            tex.slot = free_slots_.back();
-            free_slots_.pop_back();
-        } else {
-            tex.slot = next_slot_++;
-        }
-        write_texture_slot(tex);
-        const std::uint32_t id = next_id_++;
-        textures_[id] = tex;
-        return {id};
     }
 
     void write_texture_slot(const Texture& tex) {
@@ -644,6 +739,7 @@ public:
             render_pass(&f);
             finish_scene();
         }
+        submit_values_[frame_ % kSubmitValues] = timeline_value_;
         ++frame_;  // Mesh::updated of the next frame's update_mesh calls
     }
 
@@ -696,9 +792,32 @@ public:
                           VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                           VK_ACCESS_2_TRANSFER_WRITE_BIT);
         }
-        // Blit (not copy): converts RGBA -> the swapchain's BGRA order; sRGB on both ends keeps bytes intact.
+        // Blit (not copy): converts RGBA -> the swapchain's BGRA order; sRGB on both ends keeps bytes intact. A non-sRGB
+        // swapchain would get the decoded (linear, too dark) values, so the sRGB-encoded bytes are first copied (no
+        // conversion) into the UNORM present_bridge_, whose blit then carries them over as they are.
+        VkImage blit_source = source;
+        if (!swapchain_srgb_) {
+            if (bridge_size_ != target_size_) {
+                if (present_bridge_.image) retire([this, b = present_bridge_]() mutable { destroy(b); });
+                // SAMPLED only because create_image also makes a view.
+                present_bridge_ = create_image(kUiColorFormat, {std::uint32_t(target_size_.x), std::uint32_t(target_size_.y)}, 1,
+                                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                               color);
+                bridge_size_ = target_size_;
+            }
+            // Earlier presents' blits read the bridge (same queue: the barrier orders after them).
+            image_barrier(cmd_, present_bridge_.image, range(color), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const VkImageCopy copy{{color, 0, 0, 1}, {0, 0, 0}, {color, 0, 0, 1}, {0, 0, 0}, {std::uint32_t(w), std::uint32_t(h), 1}};
+            vk_.vkCmdCopyImage(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, present_bridge_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &copy);
+            image_barrier(cmd_, present_bridge_.image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                          VK_ACCESS_2_TRANSFER_READ_BIT);
+            blit_source = present_bridge_.image;
+        }
         const VkImageBlit blit{{color, 0, 0, 1}, {{0, 0, 0}, {w, h, 1}}, {color, 0, 0, 1}, {{0, 0, 0}, {w, h, 1}}};
-        vk_.vkCmdBlitImage(cmd_, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+        vk_.vkCmdBlitImage(cmd_, blit_source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                            VK_FILTER_NEAREST);
         image_barrier(cmd_, image, range(color), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                       VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
@@ -1297,7 +1416,7 @@ private:
     void destroy(Mesh& m) {
         destroy(m.vertices);
         destroy(m.indices);
-        destroy(m.prev);
+        destroy(m.prev_owned);
     }
 
     // Grows a per-slot host buffer (the slot is idle: begin_frame waited for it).
@@ -1372,12 +1491,18 @@ private:
         vk_.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface_, &n, nullptr);
         std::vector<VkSurfaceFormatKHR> formats(n);
         vk_.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface_, &n, formats.data());
+        // 8-bit sRGB preferred (the colour target's bytes blit unchanged), else an 8-bit UNORM one that present() fills
+        // through present_bridge_, else whatever the surface lists first.
+        const auto rank = [](const VkSurfaceFormatKHR& f) {
+            if (f.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return 0;
+            if (f.format == VK_FORMAT_B8G8R8A8_SRGB || f.format == VK_FORMAT_R8G8B8A8_SRGB) return 2;
+            return f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM ? 1 : 0;
+        };
         VkSurfaceFormatKHR format = formats.at(0);
         for (const auto& f : formats)
-            if ((f.format == VK_FORMAT_B8G8R8A8_SRGB || f.format == VK_FORMAT_R8G8B8A8_SRGB) && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-                format = f;
-                break;
-            }
+            if (rank(f) > rank(format)) format = f;
+        if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+            throw std::runtime_error("Vulkan: the surface's swapchain images cannot be transfer destinations (presentation blits into them)");
         vk_.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, nullptr);
         std::vector<VkPresentModeKHR> modes(n);
         vk_.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface_, &n, modes.data());
@@ -1408,6 +1533,8 @@ private:
         destroy_swapchain(swapchain_);
         swapchain_ = created;
         swapchain_extent_ = extent;
+        swapchain_srgb_ = format.format == VK_FORMAT_B8G8R8A8_SRGB || format.format == VK_FORMAT_R8G8B8A8_SRGB ||
+                          format.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
         vk_.vkGetSwapchainImagesKHR(device_, swapchain_, &n, nullptr);
         swapchain_images_.resize(n);
         vk_.vkGetSwapchainImagesKHR(device_, swapchain_, &n, swapchain_images_.data());
@@ -1417,8 +1544,8 @@ private:
         const VkSemaphoreCreateInfo sem{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         for (VkSemaphore& s : present_done_) check(vk_.vkCreateSemaphore(device_, &sem, nullptr, &s), "vkCreateSemaphore");
         static const char* const names[] = {"immediate", "mailbox", "fifo", "fifo-relaxed"};
-        std::fprintf(stderr, "joan-native: vulkan swapchain %ux%u, %u images, %s\n", extent.width, extent.height, n,
-                     mode <= VK_PRESENT_MODE_FIFO_RELAXED_KHR ? names[mode] : "?");
+        std::fprintf(stderr, "joan-native: vulkan swapchain %ux%u, %u images, %s%s\n", extent.width, extent.height, n,
+                     mode <= VK_PRESENT_MODE_FIFO_RELAXED_KHR ? names[mode] : "?", swapchain_srgb_ ? "" : ", non-sRGB format (bridged)");
     }
 
     // ---- frame ------------------------------------------------------------------------------------
@@ -1576,9 +1703,8 @@ private:
                 vk_.vkCmdSetCullMode(cmd_, d.material.two_sided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT);
             }
             if (&m != bound_mesh) {
-                const VkDeviceSize zero = 0;
-                vk_.vkCmdBindVertexBuffers(cmd_, 0, 1, &m.vertices.buffer, &zero);
-                vk_.vkCmdBindIndexBuffer(cmd_, m.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
+                vk_.vkCmdBindVertexBuffers(cmd_, 0, 1, &m.vertices.buffer, &m.vertex_offset);
+                vk_.vkCmdBindIndexBuffer(cmd_, m.indices.buffer, m.index_offset, VK_INDEX_TYPE_UINT32);
                 bound_mesh = &m;
             }
             vk_.vkCmdDrawIndexed(cmd_, count, 1, first, 0, std::uint32_t(i));  // firstInstance = draw table index
@@ -2303,10 +2429,11 @@ private:
             }
             if (&m != bound_mesh) {
                 // Binding 1: the pose shown last frame if update_mesh replaced it for this one, else this frame's vertices.
-                const VkBuffer vertices[2] = {m.vertices.buffer, m.updated == frame_ && m.prev.buffer ? m.prev.buffer : m.vertices.buffer};
-                const VkDeviceSize zero[2] = {0, 0};
-                vk_.vkCmdBindVertexBuffers(cmd_, 0, 2, vertices, zero);
-                vk_.vkCmdBindIndexBuffer(cmd_, m.indices.buffer, 0, VK_INDEX_TYPE_UINT32);
+                const bool moved = m.updated == frame_ && m.prev;
+                const VkBuffer vertices[2] = {m.vertices.buffer, moved ? m.prev : m.vertices.buffer};
+                const VkDeviceSize offsets[2] = {m.vertex_offset, moved ? m.prev_offset : m.vertex_offset};
+                vk_.vkCmdBindVertexBuffers(cmd_, 0, 2, vertices, offsets);
+                vk_.vkCmdBindIndexBuffer(cmd_, m.indices.buffer, m.index_offset, VK_INDEX_TYPE_UINT32);
                 bound_mesh = &m;
             }
             vk_.vkCmdDrawIndexed(cmd_, count, 1, first, 0, std::uint32_t(i));
@@ -3141,6 +3268,12 @@ private:
         completed_value_ = std::max(completed_value_, value);
     }
 
+    // Timeline value reached once submit number `frame` (< frame_) stopped reading meshes; older submits than the ring
+    // holds are bounded by its oldest entry (values never decrease).
+    std::uint64_t submit_value(std::uint64_t frame) const {
+        return submit_values_[std::max(frame, frame_ > kSubmitValues ? frame_ - kSubmitValues : 0) % kSubmitValues];
+    }
+
     // Defers destruction until every frame submitted so far has retired.
     void retire(std::function<void()> fn) { graveyard_.emplace_back(timeline_value_, std::move(fn)); }
 
@@ -3309,6 +3442,9 @@ private:
     std::vector<VkImage> swapchain_images_;
     std::vector<VkSemaphore> present_done_;
     bool swapchain_dirty_ = false;
+    bool swapchain_srgb_ = true;  // false: UNORM swapchain, presented through present_bridge_
+    Image2D present_bridge_;      // kUiColorFormat copy of the presented image (sRGB-encoded bytes), target size
+    glm::ivec2 bridge_size_{0, 0};
 
     std::unordered_map<std::uint32_t, Mesh> meshes_;
     std::unordered_map<std::uint32_t, Texture> textures_;
@@ -3365,6 +3501,8 @@ private:
     MotionHistory motion_;
     std::vector<glm::mat4> prev_models_;  // per FrameData::draws index, of the frame being drawn
     std::uint64_t frame_ = 0;              // submits so far
+    static constexpr std::uint64_t kSubmitValues = 16;
+    std::array<std::uint64_t, kSubmitValues> submit_values_{};  // timeline value after each recent submit (Mesh::region_read)
 
     // Ray tracing (docs/RAYTRACING.md).
     RtCaps rt_caps_;

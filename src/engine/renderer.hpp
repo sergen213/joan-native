@@ -235,6 +235,9 @@ public:
     virtual bool update_mesh(MeshHandle, const MeshData&) { return false; }
     virtual TextureHandle create_texture(const TextureData& texture) = 0;
     virtual void destroy_texture(TextureHandle texture) = 0;
+    // Replaces a texture's pixels in place (movie frames): same size, format and mipmaps, no mip_pixels. Returns false
+    // if the texture differs or the backend cannot; callers then destroy + create.
+    virtual bool update_texture(TextureHandle, const TextureData&) { return false; }
 
     // Remaster settings (preset.hpp); Original (the default) keeps the faithful path bit-for-bit.
     // May be called between frames; backends (re)create their remaster resources lazily.

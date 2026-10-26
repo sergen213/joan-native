@@ -93,7 +93,9 @@
     X(PFNGLREADBUFFERPROC, glReadBuffer)                                            \
     X(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC, glRenderbufferStorageMultisample)    \
     X(PFNGLGETINTEGERVPROC, glGetIntegerv)                                          \
-    X(PFNGLGETTEXPARAMETERIVPROC, glGetTexParameteriv)
+    X(PFNGLGETTEXPARAMETERIVPROC, glGetTexParameteriv)                              \
+    X(PFNGLGETTEXLEVELPARAMETERIVPROC, glGetTexLevelParameteriv)                    \
+    X(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D)
 
 namespace joa::engine::gl {
 #define JOA_GL_DECLARE(type, name) extern type name;
