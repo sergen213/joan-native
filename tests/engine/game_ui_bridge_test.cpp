@@ -100,7 +100,10 @@ int main() {
     for (const auto* l : {&hud.message_log, &hud.messages})
         if (!l->empty()) std::fprintf(stderr, "message %s: %s\n", l->front().icon.c_str(), l->front().text.c_str());
     CHECK(std::any_of(hud.objective_list.begin(), hud.objective_list.end(), [](const auto& l) { return l.type == 0 && !l.des.empty(); }));
+    hud.show_mission_brief = true;  // the brief lists are filled only while the brief is shown
+    b.fill(m, s.current(), view_proj(m), kViewport, hud);
     CHECK(!hud.brief_commanders.empty());
+    hud.show_mission_brief = false;
     CHECK(name_bar_seen);
     CHECK(std::any_of(hud.map_icons.begin(), hud.map_icons.end(), [](const HudMapIcon& i) { return i.sprite == "fcastle"; }));
 

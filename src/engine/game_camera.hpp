@@ -28,6 +28,7 @@ class World;
 namespace joa::engine {
 
 class AssetCache;
+struct Model;
 class GameInput;
 
 // One original CameraState (CamMan +0x04..+0x1c) in original world units, z up: the camera looks from
@@ -234,6 +235,16 @@ private:
     std::bitset<8> prev_buttons_;
     bool pressing_ = false, dragging_ = false;
     glm::vec2 drag_from_{0.0f}, drag_to_{0.0f};
+    // pick_item: per map item recno, the model of its ITEM\<dir>\<Model> (resolved once; re-resolved when the
+    // item's dir / model change); cleared with reset() and when `assets` changes.
+    struct ItemModel {
+        bool resolved = false;
+        std::string dir, model;
+        const Model* md = nullptr;
+    };
+    mutable std::vector<ItemModel> item_models_;
+    mutable const AssetCache* item_models_assets_ = nullptr;
+    std::vector<ItemModel>& item_models() const;  // item_models_ for the current `assets`
 };
 
 }  // namespace joa::engine

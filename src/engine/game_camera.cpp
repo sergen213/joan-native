@@ -147,6 +147,7 @@ const CamTrack* GameCamera::track(std::string_view name) const {
 
 void GameCamera::reset(const game::Mission& cm) {
     game::Mission& m = mut(cm);
+    item_models_.clear();  // a new WorldView (AssetCache) may reuse the old address
     tracks_.clear();
     for (const std::string& path : {std::string("Resource\\cutscene.cm"), std::string("Resource\\rts.cm"),
                                     m.map_dir() + "\\" + m.info().stem() + ".cm"}) {

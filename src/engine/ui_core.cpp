@@ -8,6 +8,8 @@
 #include <SDL3/SDL_scancode.h>
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -44,7 +46,36 @@ TextureHandle upload(IRenderer& r, int w, int h, std::vector<std::uint8_t> rgba)
     return r.create_texture(t);
 }
 
+char fold(char c, bool on) { return on ? char(std::tolower(static_cast<unsigned char>(c))) : c; }  // as lower()
+
 }  // namespace
+
+template <bool Fold>
+std::size_t Ui::KeyHash<Fold>::operator()(const Key& k) const {  // FNV-1a over a + sep + b
+    std::uint64_t h = 1469598103934665603ull;
+    const auto mix = [&](char c) { h = (h ^ std::uint8_t(fold(c, Fold))) * 1099511628211ull; };
+    for (char c : k.a) mix(c);
+    if (k.sep) mix(k.sep);
+    for (char c : k.b) mix(c);
+    return std::size_t(h);
+}
+
+template <bool Fold>
+bool Ui::KeyEq<Fold>::operator()(const Key& k, std::string_view s) const {
+    const std::size_t n = k.a.size() + (k.sep ? 1 : 0);
+    if (s.size() != n + k.b.size()) return false;
+    const auto eq = [](std::string_view x, std::string_view y) {
+        for (std::size_t i = 0; i < x.size(); ++i)
+            if (fold(x[i], Fold) != fold(y[i], Fold)) return false;
+        return true;
+    };
+    return eq(k.a, s.substr(0, k.a.size())) && (!k.sep || fold(s[k.a.size()], Fold) == fold(k.sep, Fold)) && eq(k.b, s.substr(n));
+}
+
+template struct Ui::KeyHash<true>;
+template struct Ui::KeyHash<false>;
+template struct Ui::KeyEq<true>;
+template struct Ui::KeyEq<false>;
 
 glm::vec4 ui_rgba(int r, int g, int b, int a) { return {srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), float(a) / 255.0f}; }
 
@@ -100,8 +131,8 @@ Ui::~Ui() {
 // ---------------------------------------------------------------- data
 
 TextureHandle Ui::texture(std::string_view name) {
+    if (auto it = textures_.find(name); it != textures_.end()) return it->second.first;
     const std::string key = lower(name);
-    if (auto it = textures_.find(key); it != textures_.end()) return it->second.first;
     std::pair<TextureHandle, glm::ivec2> entry{};
     if (auto img = load_dds(vfs_, name)) {
         entry.second = {int(img->width), int(img->height)};  // layout/UV basis stays the original size
@@ -114,7 +145,7 @@ TextureHandle Ui::texture(std::string_view name) {
 
 glm::ivec2 Ui::texture_size(std::string_view name) {
     texture(name);
-    return textures_[lower(name)].second;
+    return textures_.find(name)->second.second;  // texture() caches every name, found or not
 }
 
 TextureHandle Ui::bitmap(std::string_view game_path, bool reload) {
@@ -187,8 +218,8 @@ void Ui::load_sprites() {
 
 const UiSprite* Ui::sprite(std::string_view set, std::string_view name) {
     if (!sprites_loaded_) load_sprites();
+    if (auto it = sprites_.find(Key{set, '/', name}); it != sprites_.end()) return it->second ? &*it->second : nullptr;
     const std::string key = lower(set) + "/" + lower(name);
-    if (auto it = sprites_.find(key); it != sprites_.end()) return it->second ? &*it->second : nullptr;
     // Resolve on first use: only the atlases a screen draws get decoded.
     std::optional<UiSprite> out;
     if (auto rec = sprite_records_.find(key); rec != sprite_records_.end()) {
@@ -236,8 +267,8 @@ const UiSprite* Ui::sprite(std::string_view set, std::string_view name) {
 }
 
 const UiFont* Ui::font(std::string_view name) {
+    if (auto it = fonts_.find(name); it != fonts_.end()) return it->second.get();
     const std::string key = lower(name);
-    if (auto it = fonts_.find(key); it != fonts_.end()) return it->second.get();
     std::unique_ptr<UiFont> f;
     if (auto img = load_dds(vfs_, name)) {
         const int w = int(img->width), h = int(img->height);
@@ -288,7 +319,10 @@ void Ui::load_text() {
 
 std::string_view Ui::text(std::string_view section, int index) {
     if (!text_loaded_) load_text();
-    auto it = text_.find(std::string(section) + "|" + std::to_string(index));
+    char n[16];  // std::to_string(index) digits
+    const auto [end, ec] = std::to_chars(n, n + sizeof n, index);
+    (void)ec;
+    auto it = text_.find(Key{section, '|', std::string_view(n, std::size_t(end - n))});
     return it == text_.end() ? std::string_view{} : std::string_view(it->second);
 }
 
@@ -435,7 +469,7 @@ void Ui::sprite(std::string_view set, std::string_view name, glm::vec2 pos, glm:
 
 bool Ui::has_sprite(std::string_view set, std::string_view name) {
     if (!sprites_loaded_) load_sprites();
-    return sprite_records_.count(lower(set) + "/" + lower(name)) != 0;
+    return sprite_records_.find(Key{set, '/', name}) != sprite_records_.end();
 }
 
 int Ui::text(const UiFont* f, std::string_view s, glm::vec2 pos, glm::vec4 color, TextAlign align, float scale, TextOp op) {

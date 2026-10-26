@@ -217,6 +217,7 @@ void GameUiBridge::reset(game::Mission& m, HudModel& hud) {
     live_messages_.clear();
     party_.clear();
     brief_shown_ = false;
+    weapon_slot_data_ = nullptr;
     typed_id_ = 0, typed_ = 0.0f;
     win_time_ = over_time_ = -1.0f;
     end_menu_ = false;
@@ -412,29 +413,9 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
     hud.brief_strategy = hud.brief_siege = m.scenario_no() >= 5;
 
     // ---- brief: commanders (0x4cdd40: descending recno, rank > 3; FRENCH / ENGLISH / MERCEN) and siege weapons ----
-    hud.brief_commanders.clear();
-    hud.brief_weapons.fill(false);
-    static constexpr const char* kWeapons[6] = {"BATTERRAM", "CROSSBOW", "BOMBARD", "CANNON", "FAUCONNEAU", "TREBUCHET"};
-    static constexpr const char* kNations[3] = {"FRENCH", "ENGLISH", "MERCEN"};
-    for (int id = int(w.units().size()); id >= 1; --id) {
-        const game::Unit& u = w.units()[std::size_t(id - 1)];
-        if (u.deleted || w.dead(u)) continue;
-        const game::UnitClass* c = cls(m, u);
-        for (int k = 0; c && k < 6; ++k)
-            if (formats::iequals(c->code, kWeapons[k])) hud.brief_weapons[std::size_t(k)] = true;
-        if (u.rank <= 3 || int(hud.brief_commanders.size()) >= 31) continue;
-        int nation = -1;
-        for (int k = 0; k < 3; ++k)
-            if (u.nation == m.data().nation_id(kNations[k])) nation = k;
-        if (nation < 0) continue;
-        BriefCommander bc{u.name, nation, w.hostile_to_player(u), {}};
-        for (int mid : u.members)
-            if (const game::Unit* t = w.unit(mid); t && t->id != u.id && !t->deleted) {
-                const game::UnitClass* tc = cls(m, *t);
-                bc.team.push_back({tc ? tc->code : "", t->level, std::clamp(float(t->hp) / float(std::max(1, w.max_hp(*t))), 0.0f, 1.0f)});
-            }
-        hud.brief_commanders.push_back(std::move(bc));
-    }
+    // Read only by the brief pages (hud_brief), i.e. while show_mission_brief: built then (every opening path sets the
+    // flag before this fill), not every frame.
+    if (hud.show_mission_brief) fill_brief(m, hud);
 
     // ---- live attention messages (FUN_004ace90 states 3..5: the panel is open; typed = chars at 0.04/ms) ----
     hud.messages.clear();
@@ -446,6 +427,43 @@ void GameUiBridge::fill(game::Mission& m, const game::Snapshot& snap, const glm:
         }
     fill_effects(m, hud);  // HudGaps: interact indicator, target HUD, effect clock
     hud_crit_fill(m, hud);  // HudGaps crit: crit sequence/banner, kill interface counters
+}
+
+void GameUiBridge::fill_brief(game::Mission& m, HudModel& hud) {
+    game::World& w = m.world();
+    const game::GameData& gd = m.data();
+    static constexpr const char* kWeapons[6] = {"BATTERRAM", "CROSSBOW", "BOMBARD", "CANNON", "FAUCONNEAU", "TREBUCHET"};
+    static constexpr const char* kNations[3] = {"FRENCH", "ENGLISH", "MERCEN"};
+    if (weapon_slot_data_ != &gd || weapon_slot_.size() != gd.units.size()) {  // class index -> kWeapons slot, -1 none
+        weapon_slot_data_ = &gd;
+        weapon_slot_.assign(gd.units.size(), -1);
+        for (std::size_t i = 0; i < gd.units.size(); ++i)
+            for (int k = 0; k < 6; ++k)
+                if (formats::iequals(gd.units[i].code, kWeapons[k])) weapon_slot_[i] = std::int8_t(k);
+    }
+    int nation_ids[3];
+    for (int k = 0; k < 3; ++k) nation_ids[k] = gd.nation_id(kNations[k]);
+    hud.brief_commanders.clear();
+    hud.brief_weapons.fill(false);
+    for (int id = int(w.units().size()); id >= 1; --id) {
+        const game::Unit& u = w.units()[std::size_t(id - 1)];
+        if (u.deleted || w.dead(u)) continue;
+        if (cls(m, u)) {
+            if (const int k = weapon_slot_[std::size_t(u.cls)]; k >= 0) hud.brief_weapons[std::size_t(k)] = true;
+        }
+        if (u.rank <= 3 || int(hud.brief_commanders.size()) >= 31) continue;
+        int nation = -1;
+        for (int k = 0; k < 3; ++k)
+            if (u.nation == nation_ids[k]) nation = k;
+        if (nation < 0) continue;
+        BriefCommander bc{u.name, nation, w.hostile_to_player(u), {}};
+        for (int mid : u.members)
+            if (const game::Unit* t = w.unit(mid); t && t->id != u.id && !t->deleted) {
+                const game::UnitClass* tc = cls(m, *t);
+                bc.team.push_back({tc ? tc->code : "", t->level, std::clamp(float(t->hp) / float(std::max(1, w.max_hp(*t))), 0.0f, 1.0f)});
+            }
+        hud.brief_commanders.push_back(std::move(bc));
+    }
 }
 
 bool GameUiBridge::handle(const UiCommand& c, game::Mission& m) {
