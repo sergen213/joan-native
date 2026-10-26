@@ -13,6 +13,7 @@ public:
     bool update_mesh(MeshHandle, const MeshData&) override { return true; }
     TextureHandle create_texture(const TextureData&) override { return {++next_}; }
     void destroy_texture(TextureHandle) override {}
+    bool update_texture(TextureHandle, const TextureData&) override { return true; }
     void begin_frame(glm::ivec2 size) override { size_ = size; }
     void submit(const FrameData&) override {}
     void end_frame() override {}

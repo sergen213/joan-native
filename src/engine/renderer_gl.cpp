@@ -251,6 +251,28 @@ public:
         }
     }
 
+    // Same size, format and mipmapping (no file mips): level 0 rewritten in place (GL orders it after earlier draws).
+    bool update_texture(TextureHandle h, const TextureData& t) override {
+        const auto it = textures_.find(h.id);
+        if (it == textures_.end() || !t.mip_pixels.empty() || t.pixels.size() < std::size_t(t.width) * t.height * 4) return false;
+        GLint w = 0, hgt = 0, format = 0, min = 0;
+        glBindTexture(GL_TEXTURE_2D, it->second);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &hgt);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &min);
+        if (w != t.width || hgt != t.height || format != (t.format == PixelFormat::Rgba8Srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8) ||
+            (min == GL_LINEAR_MIPMAP_LINEAR) != t.mipmaps)
+            return false;
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.width, t.height, GL_RGBA, GL_UNSIGNED_BYTE, t.pixels.data());
+        const GLint wrap = t.repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+        if (t.mipmaps) glGenerateMipmap(GL_TEXTURE_2D);
+        return true;
+    }
+
     void set_graphics(const GraphicsSettings& g) override {
         if (g.shadow_map_size != gfx_.shadow_map_size) destroy_shadow_map();
         if (g.anisotropy != gfx_.anisotropy)  // already uploaded mipmapped textures follow the new setting

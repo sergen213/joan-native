@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <deque>
 #include <optional>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -152,15 +153,20 @@ bool play_movie(Platform& platform, IRenderer& renderer, Mixer* mixer, const std
     std::deque<VideoFrame> ahead;
     VideoFrame shown;
     TextureHandle tex;
+    std::vector<std::vector<std::uint8_t>> spare;  // pixel buffers of shown/skipped frames, refilled by the decoder
     const auto upload = [&](VideoFrame f) {
-        if (tex) renderer.destroy_texture(tex);  // ponytail: new texture per movie frame (30 Hz); add IRenderer::update_texture if it shows in profiles
         TextureData t;
         t.width = f.width;
         t.height = f.height;
         t.pixels = std::move(f.rgba);
         t.mipmaps = false;
         t.repeat = false;
-        tex = renderer.create_texture(t);
+        // The same texture rewritten in place while the size holds (30 Hz movie frames).
+        if (!tex || f.width != shown.width || f.height != shown.height || !renderer.update_texture(tex, t)) {
+            if (tex) renderer.destroy_texture(tex);
+            tex = renderer.create_texture(t);
+        }
+        spare.push_back(std::move(t.pixels));
         shown.width = f.width;
         shown.height = f.height;
         shown.pts = f.pts;
@@ -213,6 +219,7 @@ bool play_movie(Platform& platform, IRenderer& renderer, Mixer* mixer, const std
         auto audio = dec->audio();
         while (decoding && ahead.size() < 90 && (ahead.size() < 2 || (voice && audio->queued() < kOutputRate * 3 / 10))) {
             VideoFrame f;
+            if (!spare.empty()) f.rgba = std::move(spare.back()), spare.pop_back();
             if (!dec->next(f)) decoding = false;
             else ahead.push_back(std::move(f));
         }
@@ -228,6 +235,7 @@ bool play_movie(Platform& platform, IRenderer& renderer, Mixer* mixer, const std
                                                     : double(audio->frames_played()) / kOutputRate);
         while (!ahead.empty() && ahead.front().pts <= clock) {
             if (ahead.size() == 1 || ahead[1].pts > clock) upload(std::move(ahead.front()));
+            else spare.push_back(std::move(ahead.front().rgba));
             ahead.pop_front();
         }
         if (!decoding && ahead.empty() && (!voice || !mixer->playing(voice))) break;
