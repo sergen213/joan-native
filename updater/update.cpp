@@ -287,9 +287,13 @@ void extract_artifact(const fs::path& archivePath, const fs::path& stageInput, F
         require(!archive_entry_hardlink(entry), "Payload hard links are not allowed: " + name);
         require(!(archive_entry_mode(entry) & (S_ISUID | S_ISGID | S_ISVTX)), "Payload setuid/setgid/sticky bit: " + name);
         if (type == AE_IFLNK) {
+            // Same-directory or descending targets only (shipped: lib/libX.so.N -> libX.so.N.M). A ".." cannot be
+            // checked lexically: it may cancel a component that is itself a payload symlink (lib/a/s -> ../../bin,
+            // lib/t -> a/s/../../../x lexically stays in lib/ but resolves outside the install).
             const fs::path target(archive_entry_symlink(entry) ? archive_entry_symlink(entry) : "");
-            const auto resolved = (relative.parent_path()/target).lexically_normal();
-            require(!target.empty() && !target.is_absolute() && safeRelative(resolved), "Payload symlink escapes: " + name);
+            bool plain = !target.empty() && !target.is_absolute();
+            for (const auto& part : target) plain = plain && part != ".." && part != "." && !part.empty();
+            require(plain && safeRelative(relative.parent_path()/target), "Payload symlink escapes: " + name);
         }
         if (type != AE_IFDIR) {
             // NO_OVERWRITE silently skips existing files; overlapping artifacts are an error.

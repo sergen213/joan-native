@@ -3,6 +3,11 @@
 #include "formats/vfs_bytes.hpp"
 #include "formats/vfs_fs.hpp"
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace joa::formats {
 
 static bool set_err(std::string* err, const char* msg) {
@@ -11,6 +16,25 @@ static bool set_err(std::string* err, const char* msg) {
 }
 
 std::optional<ResArchive> ResArchive::open(const std::filesystem::path& p, std::string* err) {
+    // WAVE.RES is ~80 MB and voice packs stay open for good, but only a few entries are ever read:
+    // map the file (pages fault in on use) instead of copying it. Empty files cannot be mapped.
+    if (const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC); fd >= 0) {
+        struct stat st {};
+        void* m = MAP_FAILED;
+        const bool stat_ok = ::fstat(fd, &st) == 0;
+        if (stat_ok && S_ISREG(st.st_mode) && st.st_size > 0)
+            m = ::mmap(nullptr, std::size_t(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+        ::close(fd);   // the mapping keeps its own reference to the file
+        if (stat_ok && S_ISDIR(st.st_mode)) {   // read_file would "read" it as LLONG_MAX bytes
+            set_err(err, "cannot read file");
+            return std::nullopt;
+        }
+        if (m != MAP_FAILED) {
+            const std::size_t n = std::size_t(st.st_size);
+            std::shared_ptr<const void> owner(m, [n](void* q) { ::munmap(q, n); });
+            return parse(std::move(owner), {static_cast<const std::uint8_t*>(m), n}, err);
+        }
+    }
     auto bytes = read_file(p);
     if (!bytes) {
         set_err(err, "cannot read file");
@@ -43,6 +67,13 @@ static bool try_index(std::span<const std::uint8_t> b, bool wide_count, std::siz
 }
 
 std::optional<ResArchive> ResArchive::parse(std::vector<std::uint8_t> bytes, std::string* err) {
+    auto owner = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+    const std::span<const std::uint8_t> view(*owner);
+    return parse(std::move(owner), view, err);
+}
+
+std::optional<ResArchive> ResArchive::parse(std::shared_ptr<const void> owner, std::span<const std::uint8_t> bytes,
+                                            std::string* err) {
     ResArchive a;
     // Name34 first: a Name9 reading of a Name34 file fails the first-offset check and vice versa.
     if (try_index(bytes, true, 34, a.entries_, a.end_)) a.format_ = ResIndexFormat::Name34;
@@ -51,7 +82,8 @@ std::optional<ResArchive> ResArchive::parse(std::vector<std::uint8_t> bytes, std
         set_err(err, "not a resource index container");
         return std::nullopt;
     }
-    a.bytes_ = std::move(bytes);
+    a.owner_ = std::move(owner);
+    a.bytes_ = bytes;
     return a;
 }
 

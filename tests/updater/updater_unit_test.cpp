@@ -1,9 +1,13 @@
-// Version ordering, release selection and signed-manifest validation (no network).
+// Version ordering, release selection, signed-manifest validation and payload extraction (no network).
 #include "update.hpp"
+#include <archive.h>
+#include <archive_entry.h>
 #include <sodium.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unistd.h>
+#include <vector>
 
 using namespace joa::update;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "%s:%d: CHECK(%s)\n", __FILE__, __LINE__, #x); std::exit(1); } } while (0)
@@ -18,6 +22,36 @@ static bool rejects(const std::string& manifest, const std::string& signature, c
     try { verify_manifest(manifest, signature, key); }
     catch (const std::exception& error) { return std::string(error.what()).find(reason) != std::string::npos; }
     return false;
+}
+
+// tar.gz of {path, symlink target ("" = regular file)} into a fresh temp dir; true if extract_artifact accepts it.
+static bool extracts(const std::vector<std::pair<std::string, std::string>>& entries) {
+    std::string tmpl = (fs::temp_directory_path() / "joa-updater-unit-XXXXXX").string();
+    CHECK(::mkdtemp(tmpl.data()));
+    const fs::path dir(tmpl), tarball = dir / "payload.tar.gz", stage = dir / "stage";
+    fs::create_directory(stage);
+    archive* out = archive_write_new();
+    archive_write_add_filter_gzip(out);
+    archive_write_set_format_pax_restricted(out);
+    CHECK(archive_write_open_filename(out, tarball.c_str()) == ARCHIVE_OK);
+    for (const auto& [path, link] : entries) {
+        archive_entry* e = archive_entry_new();
+        archive_entry_set_pathname(e, path.c_str());
+        archive_entry_set_filetype(e, link.empty() ? AE_IFREG : AE_IFLNK);
+        archive_entry_set_perm(e, link.empty() ? 0644 : 0777);
+        if (!link.empty()) archive_entry_set_symlink(e, link.c_str());
+        archive_entry_set_size(e, link.empty() ? 1 : 0);
+        CHECK(archive_write_header(out, e) == ARCHIVE_OK);
+        if (link.empty()) CHECK(archive_write_data(out, "x", 1) == 1);
+        archive_entry_free(e);
+    }
+    CHECK(archive_write_close(out) == ARCHIVE_OK);
+    archive_write_free(out);
+    bool ok = true;
+    try { FileIndex files; extract_artifact(tarball, stage, files); }
+    catch (const std::exception&) { ok = false; }
+    fs::remove_all(dir);
+    return ok;
 }
 
 int main() {
@@ -66,5 +100,16 @@ int main() {
     auto badComponent = good; badComponent.replace(badComponent.find("x86_64-updater"), 14, "x86_64-engine"); badComponent.replace(badComponent.find("\"updater\""), 9, "\"engine\"");
     CHECK(signedReject(badComponent, "duplicate component"));
     CHECK(signedReject(R"({"format":2})", "Unsupported manifest format"));
+
+    // Symlink targets: shipped same-directory sonames and descending paths extract; any ".." is refused,
+    // since it can cancel a component that is itself a payload symlink. The pair below normalizes
+    // lexically to lib/... and bin/x, yet lib/t resolves through s (-> bin) five levels up, out of the install.
+    CHECK(extracts({{"lib/libfoo.so.1.2", ""}, {"lib/libfoo.so.1", "libfoo.so.1.2"}, {"share/doc/x", "sub/y"}}));
+    CHECK(!extracts({{"bin/x", ""}, {"lib/a/b/c/s", "../../../../bin"}, {"lib/t", "a/b/c/s/../../../../../bin/x"}}));
+    CHECK(!extracts({{"lib/t", "a/b/c/s/../../../../../bin/x"}}));
+    CHECK(!extracts({{"bin/x", ""}, {"lib/y", "../bin/x"}}));
+    CHECK(!extracts({{"lib/y", "./libfoo.so"}}));
+    CHECK(!extracts({{"lib/y", "/etc/passwd"}}));
+    CHECK(!extracts({{"lib/y", "../../escape"}}));
     std::puts("updater unit checks passed");
 }

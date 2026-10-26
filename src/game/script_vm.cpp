@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <unordered_set>
 
 #include "formats/script_ast.hpp"
 #include "formats/text_strings.hpp"
@@ -228,6 +229,7 @@ struct Vm::Impl {
     std::vector<std::unique_ptr<Unit>> cache;  // SCRIPT() sub-scripts (FUN_00648c50, _stricmp)
     std::uint32_t pause_wake = 0;              // DAT_00a6a254
     std::uint32_t next_site = 0;               // site_id counter, reset by load_main
+    std::unordered_set<std::string> reported{};  // mirror of vm.errors_ (rebuilt on load; not saved)
 
     // ---------------------------------------------------------------- compile
     struct Scope {
@@ -425,9 +427,17 @@ struct Vm::Impl {
         return u;
     }
 
+    // Each distinct message is logged once: a WAIT re-polls and a loop re-evaluates the same failing
+    // site every tick, and errors_ is saved and hashed. Capped as a backstop.
+    static constexpr std::size_t kMaxErrors = 1000;
+    void report(std::string m) {
+        if (vm.errors_.size() >= kMaxErrors || !reported.insert(m).second) return;
+        vm.errors_.push_back(std::move(m));
+    }
+
     // ---------------------------------------------------------------- execute
     void error(const Expr& e, const std::string& m) {
-        vm.errors_.push_back((e.unit ? e.unit->path : std::string("?")) + ":" + std::to_string(e.line) + ": " + m);
+        report((e.unit ? e.unit->path : std::string("?")) + ":" + std::to_string(e.line) + ": " + m);
     }
 
     // ---------------------------------------------------------------- save / load
@@ -502,6 +512,7 @@ struct Vm::Impl {
                 }
             }
             if (a.commit && n == 0) vm.errors_.clear();
+            if (a.commit) reported = {vm.errors_.begin(), vm.errors_.end()};
         } else {
             for (auto& s : vm.errors_) a.str(s);
         }
@@ -803,7 +814,7 @@ struct Vm::Impl {
     }
     size_t slot(std::int32_t s) {  // 1-based, unchecked in the original
         if (s >= 1 && s <= 5) return static_cast<size_t>(s - 1);
-        vm.errors_.push_back("challenge slot " + std::to_string(s) + " out of range (out-of-bounds in original)");
+        report("challenge slot " + std::to_string(s) + " out of range (out-of-bounds in original)");
         return 0;
     }
 
@@ -901,8 +912,8 @@ struct Vm::Impl {
                 if (w == 3) digits += "%";
                 out += digits;
             } else {
-                vm.errors_.push_back(std::string(c.script) + ":" + std::to_string(c.line) + ": format_string letter '" +
-                                     letter + "' not implemented");
+                report(std::string(c.script) + ":" + std::to_string(c.line) + ": format_string letter '" + letter +
+                       "' not implemented");
             }
         }
         if (out.size() > kStrMax) out.resize(kStrMax);
@@ -923,7 +934,7 @@ bool Vm::load_main_text(std::string_view name, std::string_view text) {
         impl_->main = impl_->compile_main(std::string(name), text);
         return true;
     } catch (const CompileError& e) {
-        errors_.push_back(e.msg);
+        impl_->report(e.msg);
         return false;
     }
 }
@@ -931,7 +942,7 @@ bool Vm::load_main_text(std::string_view name, std::string_view text) {
 bool Vm::load_main(std::string_view game_path) {
     auto src = impl_->load(game_path);
     if (!src) {
-        errors_.push_back("Cannot open script " + std::string(game_path));
+        impl_->report("Cannot open script " + std::string(game_path));
         return false;
     }
     return load_main_text(game_path, *src);
@@ -940,14 +951,14 @@ bool Vm::load_main(std::string_view game_path) {
 std::optional<int> Vm::run_once(std::string_view game_path) {
     auto src = impl_->load(game_path);
     if (!src) {
-        errors_.push_back("Cannot open script " + std::string(game_path));
+        impl_->report("Cannot open script " + std::string(game_path));
         return std::nullopt;
     }
     try {
         auto u = impl_->compile_main(std::string(game_path), *src);
         return impl_->run_unit(*u);
     } catch (const CompileError& e) {
-        errors_.push_back(e.msg);
+        impl_->report(e.msg);
         return std::nullopt;
     }
 }

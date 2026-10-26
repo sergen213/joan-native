@@ -15,21 +15,28 @@ constexpr std::int32_t kMaxCount = 1 << 22;  // sanity bound against garbage
 std::optional<PfdMesh> parse_pfd(std::span<const std::uint8_t> bytes, std::string* err) {
     ByteReader r(bytes);
     PfdMesh m;
-    auto count = [&](const char* what) -> std::int32_t {
+    // min_size = smallest record: a count the remaining bytes cannot hold is rejected before anything
+    // is allocated for it (12 bytes could otherwise ask for 2^22 polys, each with its own vector).
+    auto count = [&](const char* what, std::size_t min_size) -> std::int32_t {
+        if (!r.ok()) return 0;  // keep the first error
         const std::int32_t n = r.i32();
-        if (!r.ok() || n < 0 || n > kMaxCount) { fail(err, std::string("bad ") + what + " count"); r.fail(); return 0; }
+        if (!r.ok() || n < 0 || n > kMaxCount || std::uint64_t(n) * min_size > r.remaining()) {
+            fail(err, std::string("bad ") + what + " count");
+            r.fail();
+            return 0;
+        }
         return n;
     };
 
-    const std::int32_t nm = count("model");
+    const std::int32_t nm = count("model", 2);
     for (std::int32_t i = 0; i < nm && r.ok(); ++i) {
         const std::uint16_t len = r.u16();  // read_block: u16 length + bytes (always 0x80)
         m.models.push_back(ByteReader::cstr(r.bytes(len)));
     }
-    const std::int32_t np = count("point");
+    const std::int32_t np = count("point", 12);
     m.points.resize(std::size_t(np));
     for (auto& p : m.points) { p.x = r.i32(); p.y = r.i32(); p.z = r.i32(); }
-    const std::int32_t npoly = count("poly");
+    const std::int32_t npoly = count("poly", 48);  // type, bbox[6], model, nv, >= 3 verts
     m.polys.resize(std::size_t(npoly));
     for (auto& p : m.polys) {
         if (!r.ok()) break;
@@ -45,7 +52,7 @@ std::optional<PfdMesh> parse_pfd(std::span<const std::uint8_t> bytes, std::strin
         }
         if (p.model < 0 || p.model > nm) { fail(err, "model index out of range"); return std::nullopt; }
     }
-    const std::int32_t nl = count("link");
+    const std::int32_t nl = count("link", 16);
     m.links.resize(std::size_t(nl));
     for (auto& l : m.links) {
         l.poly_a = r.i32(); l.edge_a = r.i32(); l.poly_b = r.i32(); l.edge_b = r.i32();
@@ -66,9 +73,10 @@ std::optional<PfdMesh> parse_pfd(std::span<const std::uint8_t> bytes, std::strin
             fail(err, "bad grid header");
             return std::nullopt;
         }
+        if (std::uint64_t(g.cols) * g.rows * 4 > r.remaining()) { fail(err, "truncated grid"); return std::nullopt; }
         g.h.resize(std::size_t(g.cols) * g.rows);
         for (auto& v : g.h) v = std::int16_t(r.i32());  // stored as i32, engine keeps i16 (plasma array)
-        const std::int32_t nsub = count("sub-grid");
+        const std::int32_t nsub = count("sub-grid", 24);
         for (std::int32_t i = 0; i < nsub && r.ok(); ++i) {
             r.i32(); r.i32();
             const std::int32_t c = r.i32(), rr = r.i32();

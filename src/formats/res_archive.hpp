@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -23,8 +24,10 @@ struct ResEntry {
     std::uint32_t size = 0;
 };
 
+// The bytes are shared by copies and stay valid (spans from data()/text() included) as long as any copy lives.
 class ResArchive {
 public:
+    // mmap()s the file read-only (falls back to reading it into memory if mapping fails).
     static std::optional<ResArchive> open(const std::filesystem::path& p, std::string* err = nullptr);
     // Auto-detects the index format; fails unless offsets are monotonic, start right after the
     // index and end inside the file.
@@ -34,7 +37,7 @@ public:
     const std::vector<ResEntry>& entries() const { return entries_; }
     const ResEntry* find(std::string_view name) const;  // case-insensitive
     std::span<const std::uint8_t> data(const ResEntry& e) const {
-        return std::span(bytes_).subspan(e.offset, e.size);
+        return bytes_.subspan(e.offset, e.size);
     }
     std::optional<std::string_view> text(std::string_view name) const;
     std::string_view text(const ResEntry& e) const {  // no name lookup (iterating entries() stays linear)
@@ -45,7 +48,10 @@ public:
     std::size_t file_size() const { return bytes_.size(); }
 
 private:
-    std::vector<std::uint8_t> bytes_;
+    static std::optional<ResArchive> parse(std::shared_ptr<const void> owner, std::span<const std::uint8_t> bytes,
+                                           std::string* err);
+    std::shared_ptr<const void> owner_;   // mapping or vector behind bytes_
+    std::span<const std::uint8_t> bytes_;
     std::vector<ResEntry> entries_;
     ResIndexFormat format_ = ResIndexFormat::Name34;
     std::uint32_t end_ = 0;
