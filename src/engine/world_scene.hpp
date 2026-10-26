@@ -115,7 +115,9 @@ public:
     // Advances RANDOM_ATTENUATION light flicker by one 30 Hz tick.
     void tick_lights();
     // Appends the lights of the scene sector containing engine-space p (at most `max`, .stg order) to d.
-    void sector_lights(glm::vec3 p, int max, DrawItem& d) const;
+    void sector_lights(glm::vec3 p, int max, DrawItem& d) const { sector_lights(sector_at(p), max, d); }
+    void sector_lights(int sector, int max, DrawItem& d) const;  // sector = sector_at(p), -1 = none
+    int sector_at(glm::vec3 p) const;  // scene sector index containing engine-space p, -1 = none
     // .day CloudTexture1, CloudTexture2 (e.g. newcloud02, newcloud01); empty without a .day.
     const std::vector<std::string>& cloud_textures() const { return clouds_; }
 
@@ -131,7 +133,6 @@ private:
     void load_objects(Node& n, const formats::BlockText& stg);
     void load_lighting(const std::string& dir, const std::string& world, const std::string& map, float clock_minutes);
     void load_lights(Node& n, const formats::BlockText& stg);
-    int sector_at(glm::vec3 p) const;
     void add_light(PointLight light, int sector, WorldStats& st);
 
     AssetCache& assets_;

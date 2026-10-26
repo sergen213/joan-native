@@ -309,8 +309,11 @@ void ParticleSystem::build(float dt, const glm::mat4& view, const glm::mat4& vie
     const glm::vec3 flat_right = glm::length(glm::vec2(right.x, right.z)) > 1e-4f ? glm::normalize(glm::vec3(right.x, 0, right.z)) : glm::vec3(1, 0, 0);
     const auto planes = frustum_planes(view_proj);
 
-    MeshData mesh;
-    std::vector<DrawItem> out;
+    MeshData& mesh = mesh_data_;
+    std::vector<DrawItem>& out = out_;
+    mesh.vertices.clear(), mesh.indices.clear(), out.clear();
+    const std::size_t live = particle_count();  // before this frame's deaths/births: close enough to reserve
+    mesh.vertices.reserve(live * 4), mesh.indices.reserve(live * 6);
     for (Emitter& e : emitters_) {
         e.age += dt;
         // ponytail: every emitter is simulated every frame (S1L1: ~1k particles); the original only
@@ -411,7 +414,7 @@ void ParticleSystem::build(float dt, const glm::mat4& view, const glm::mat4& vie
                 const glm::vec4 col(srgb_to_linear(p.color.r / 255.0f), srgb_to_linear(p.color.g / 255.0f), srgb_to_linear(p.color.b / 255.0f),
                                     p.color.a / 255.0f);
                 const auto base = std::uint32_t(mesh.vertices.size());
-                for (const auto [x, y] : {std::pair{-1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, 1.0f}, {1.0f, -1.0f}}) {
+                for (const auto& [x, y] : {std::pair{-1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, 1.0f}, {1.0f, -1.0f}}) {
                     Vertex v;
                     v.position = c + h * (x * a + y * b);
                     v.uv = {x < 0 ? u0 : u0 + du, y > 0 ? 0.0f : 1.0f};

@@ -1,5 +1,7 @@
 #include "engine/grass_field.hpp"
 
+#include "engine/world_scene.hpp"
+
 #include "formats/config_dat.hpp"
 #include "formats/res_archive.hpp"
 #include "formats/world_text.hpp"
@@ -163,6 +165,7 @@ GrassField::Patch GrassField::generate(int px, int py) const {
         for (Vertex v : in.kind->mesh.vertices) {
             v.position = glm::vec3(in.m * glm::vec4(v.position, 1.0f));
             v.normal = glm::normalize(nm * v.normal);
+            p.radius = std::max(p.radius, glm::length(v.position));
             all.vertices.push_back(v);
         }
     }
@@ -182,7 +185,7 @@ GrassField::Patch GrassField::generate(int px, int py) const {
     return p;
 }
 
-void GrassField::build(glm::vec3 camera, std::vector<DrawItem>& draws) {
+void GrassField::build(glm::vec3 camera, const std::array<glm::vec4, 6>& planes, glm::vec3 to_ground, std::vector<DrawItem>& draws) {
     visible_ = 0;
     if (!enabled_ || kinds_.empty() || grid_.cells_x <= 0 || grid_.cells_y <= 0) return;
     // Original x/y of the camera eye (engine (x, z) = original (x, -y)).
@@ -212,6 +215,10 @@ void GrassField::build(glm::vec3 camera, std::vector<DrawItem>& draws) {
         if (!p.mesh) continue;
         const float d = glm::distance(glm::vec2(p.centre.x, -p.centre.z), glm::vec2(cx, cy));
         if (d > radius_) continue;
+        // Frustum cull (as WorldView's units): no tuft rises more than the sphere's diameter above the ground it
+        // shades, so a shadow lands at most 2r / sin(elevation) away along the sun (low sun capped like the units').
+        const float reach = 2.0f * p.radius / std::max(-to_ground.y, 0.25f);
+        if (!sphere_visible(planes, p.centre + to_ground * (reach * 0.5f), p.radius + reach * 0.5f)) continue;
         ++visible_;
         if (d <= kOpaqueDistance) {
             draws.insert(draws.end(), p.draws.begin(), p.draws.end());

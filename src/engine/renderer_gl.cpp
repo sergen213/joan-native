@@ -1016,13 +1016,42 @@ private:
     void ensure_env(const Lighting& l) {
         const std::uint64_t key = env_key(l);
         if (env_radiance_ && key == env_key_) return;
-        destroy_texture(env_radiance_);
-        destroy_texture(env_irradiance_);
         const EnvMaps m = build_env_maps(l);
-        env_radiance_ = create_texture(m.radiance);
-        env_irradiance_ = create_texture(m.irradiance);
         env_levels_ = m.radiance_levels;
         env_key_ = key;
+        // Later changes (the fog colour follows the view direction: nearly every frame while turning) rewrite both
+        // textures in place when their shape is unchanged (as the Vulkan ensure_env): no new ids, no reallocation.
+        if (env_radiance_ && rewrite_env(env_radiance_, m.radiance, env_shape_[0]) && rewrite_env(env_irradiance_, m.irradiance, env_shape_[1]))
+            return;
+        destroy_texture(env_radiance_);
+        destroy_texture(env_irradiance_);
+        env_radiance_ = create_texture(m.radiance);
+        env_irradiance_ = create_texture(m.irradiance);
+        env_shape_[0] = env_shape(m.radiance);
+        env_shape_[1] = env_shape(m.irradiance);
+    }
+
+    struct EnvShape {
+        int width = 0, height = 0;
+        PixelFormat format = PixelFormat::Rgba8Srgb;
+        bool mipmaps = false;
+        std::size_t mips = 0;
+        bool operator==(const EnvShape&) const = default;
+    };
+    static EnvShape env_shape(const TextureData& t) { return {t.width, t.height, t.format, t.mipmaps, t.mip_pixels.size()}; }
+
+    // glTexSubImage2D of every level of an environment texture created from data of the same shape.
+    bool rewrite_env(TextureHandle h, const TextureData& t, const EnvShape& shape) {
+        const auto it = textures_.find(h.id);
+        if (it == textures_.end() || env_shape(t) != shape || t.pixels.size() < std::size_t(t.width) * t.height * 4) return false;
+        glBindTexture(GL_TEXTURE_2D, it->second);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.width, t.height, GL_RGBA, GL_UNSIGNED_BYTE, t.pixels.data());
+        for (std::size_t i = 0; t.mipmaps && i < t.mip_pixels.size(); ++i)
+            glTexSubImage2D(GL_TEXTURE_2D, GLint(i + 1), 0, 0, std::max(t.width >> (i + 1), 1), std::max(t.height >> (i + 1), 1), GL_RGBA,
+                            GL_UNSIGNED_BYTE, t.mip_pixels[i].data());
+        if (t.mipmaps && t.mip_pixels.empty()) glGenerateMipmap(GL_TEXTURE_2D);
+        return true;
     }
 
     static bool is_terrain(const Material& m) { return m.lightmap && m.vertex_diffuse; }
@@ -1369,6 +1398,7 @@ private:
     TextureHandle smaa_area_{}, smaa_search_{};
     GLuint shadow_tex_ = 0, shadow_fbo_ = 0;
     TextureHandle env_radiance_{}, env_irradiance_{};
+    EnvShape env_shape_[2];  // of env_radiance_, env_irradiance_ (in-place rewrites)
     std::uint64_t env_key_ = 0;
     int env_levels_ = 1;
     RemasterHistory history_{};

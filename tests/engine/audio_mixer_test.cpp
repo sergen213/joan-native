@@ -120,6 +120,56 @@ int main() {
     CHECK(!m.playing(mv));  // faded to 0 at exactly 0.1 s
     CHECK(q->frames_played() == 4410);
 
+    // StreamQueue ring: FIFO order across the wrap, growth past the capacity keeps the order, finish/drained, clear.
+    {
+        StreamQueue r;
+        std::vector<float> in, got(2 * 8192);
+        float next = 0, expect = 0;
+        const auto push = [&](std::size_t frames) {
+            in.resize(frames * 2);
+            for (float& x : in) x = next++;
+            r.push(in.data(), frames);
+        };
+        const auto pop = [&](std::size_t frames) {
+            const std::size_t n = r.pop(got.data(), frames);
+            bool ok = true;
+            for (std::size_t i = 0; i < n * 2; ++i) ok = ok && got[i] == expect++;
+            CHECK(ok);
+            return n;
+        };
+        std::size_t popped = 0;
+        for (int i = 0; i < 200; ++i) {  // ~1 s window sliding over the 2 s ring: wraps many times
+            push(4096);
+            if (r.queued() > std::size_t(kOutputRate)) popped += pop(5000);
+        }
+        CHECK(r.queued() == 200 * 4096 - popped && r.frames_played() == popped);
+        push(std::size_t(kOutputRate) * 3);  // larger than the free space: grows, order kept
+        while (r.queued()) popped += pop(8192);
+        CHECK(r.frames_played() == popped && popped == 200 * 4096 + std::size_t(kOutputRate) * 3);
+        CHECK(r.pop(got.data(), 16) == 0 && !r.drained());
+        push(10);
+        r.finish();
+        CHECK(!r.drained() && pop(4) == 4 && pop(100) == 6 && r.drained());
+        r.clear();
+        CHECK(!r.drained() && r.queued() == 0 && r.frames_played() == 0);
+        push(3);
+        CHECK(pop(3) == 3);
+    }
+
+    // A voice finishing in mix() does not free its buffers there (audio callback): Mixer::update does.
+    {
+        auto s = std::make_shared<StreamQueue>();
+        std::weak_ptr<StreamQueue> alive = s;
+        s->push(ones.data(), 100);
+        s->finish();
+        const VoiceId sv = m.play_stream(std::move(s), Bus::Music);
+        std::vector<float> buf(2 * 256);
+        m.mix(buf.data(), 256);
+        CHECK(!m.playing(sv) && !alive.expired());
+        m.update();
+        CHECK(alive.expired());
+    }
+
     // With the original data: music director rules and an offline render of real game audio.
     const char* dir = std::getenv("JOA_GAME_DIR");
     const joa::formats::Vfs vfs(dir ? dir : ".");

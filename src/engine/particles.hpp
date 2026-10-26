@@ -86,6 +86,8 @@ private:
     int stage_emitters_ = 0, item_emitters_ = 0, missing_ = 0;
     std::minstd_rand rng_{1};
     MeshHandle mesh_;
+    MeshData mesh_data_;              // build() scratch, reused across frames
+    std::vector<DrawItem> out_;
     std::size_t drawn_ = 0;
 };
 

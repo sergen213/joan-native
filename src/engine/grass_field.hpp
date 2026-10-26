@@ -19,6 +19,7 @@
 #include "engine/assets_cache.hpp"
 #include "formats/map_grid.hpp"
 
+#include <array>
 #include <map>
 #include <string>
 #include <utility>
@@ -34,7 +35,10 @@ public:
     GrassField(const GrassField&) = delete;
     GrassField& operator=(const GrassField&) = delete;
 
-    void build(glm::vec3 camera, std::vector<DrawItem>& draws);
+    // planes: view frustum in the field's space (frustum_planes); to_ground: normalised sun direction. A patch is
+    // drawn only when its bounds swept along the sun by its shadow's reach meet the frustum (remaster shadow maps and
+    // RT shadow rays are fed from the draw list, so grass just off-screen keeps its visible shadow).
+    void build(glm::vec3 camera, const std::array<glm::vec4, 6>& planes, glm::vec3 to_ground, std::vector<DrawItem>& draws);
     std::size_t tufts() const;                              // in the cached patches
     std::size_t visible_patches() const { return visible_; }  // drawn last build()
     float radius() const { return radius_; }
@@ -50,6 +54,7 @@ private:
     struct Patch {
         MeshHandle mesh;
         glm::vec3 centre{0.0f};  // engine space; vertices are relative to it
+        float radius = 0.0f;     // bounding sphere about centre
         std::vector<DrawItem> draws;
         std::size_t tufts = 0;
     };

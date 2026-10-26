@@ -85,7 +85,7 @@ WorldView::WorldView(IRenderer& renderer, const formats::Vfs& vfs, const game::M
             continue;
         }
         linked[std::size_t(recno)] = true;
-        map_actors_.push_back({recno, res, objects_->item(recno)->stage, i});
+        map_actors_.push_back({recno, res, objects_->item(recno)->stage, i, {}, {}});
     }
 
     // Attack-script emitter slots (Resource/animscr.res, AnimScript_parse 0x419320): EmitterFlag 1, then
@@ -338,16 +338,17 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     sky_->build(eye, time_s_, glm::clamp(horizon / glm::max(sky_noon_, glm::vec3(1e-3f)), 0.0f, 4.0f), draws);
     scene_->build(view_proj, eye, draws);
     if (world_water_) world_water_->build(time_s_, eye, draws);
+    const glm::vec3 sun = lighting_.sun_direction;
+    const glm::vec3 to_ground = glm::length(sun) > 0.0f ? glm::normalize(sun) : glm::vec3(0.0f, -1.0f, 0.0f);
     for (Node& n : nodes_) {
         n.water->build(time_s_, eye, draws);
         // Grass patches live in node-local space.
         const std::size_t first = draws.size();
-        n.grass->build(eye - n.offset, draws);
+        n.grass->build(eye - n.offset, frustum_planes(view_proj * glm::translate(glm::mat4(1.0f), n.offset)), to_ground, draws);
         for (std::size_t i = first; i < draws.size(); ++i) draws[i].model = glm::translate(glm::mat4(1.0f), n.offset) * draws[i].model;
         n.particles->build(dt, view.view, view_proj, draws);
     }
 
-    const glm::vec3 sun = lighting_.sun_direction;
     shadow_stats_ = {};
     frames_.clear();
     // Units outside the view are neither skinned nor drawn (as WorldScene::build culls objects): their bounds are the
@@ -355,7 +356,6 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
     // keeps its caster. The stencil volume extrudes height + 300; a ray-traced one lands height / sin(elevation) away.
     const auto planes = frustum_planes(view_proj);
     const bool volumes = assets_->renderer().draws_shadow_volumes();
-    const glm::vec3 to_ground = glm::length(sun) > 0.0f ? glm::normalize(sun) : glm::vec3(0.0f, -1.0f, 0.0f);
     // Range mode (0x42a6c0 enter / 0x42b6e0 exit): the hero's actor is hidden (FUN_0042cf20(0/1): actor +0x10a)
     // behind the first-person aim camera. HIGH (the call's ECX = unit +0x2f5 actor is inferred from the guard).
     const bool aiming = world_ && world_->controller().range_mode;
@@ -385,7 +385,8 @@ void WorldView::frame(float alpha, const CameraPose& pose, float dt, FrameView& 
         // counts to 1 point + 1 directional): the first light of their sector.
         const std::size_t first = draws.size();
         c.build(t, draws);
-        for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(at, 1, draws[i]), draws[i].object = std::uint32_t(id) + 1;
+        const int sector = scene_->sector_at(at);  // one sector lookup per unit, not per part
+        for (std::size_t i = first; i < draws.size(); ++i) scene_->sector_lights(sector, 1, draws[i]), draws[i].object = std::uint32_t(id) + 1;
         // Scene::draw_shadow actor loop 0x5f1cc0: a volume within 1000 units of the eye (mode 3: every
         // unit, mode 2: the player's hero), else the ShadowModel within 2000 (CONFIRMED thresholds).
         if (shadow_mode <= 0 || !volumes) continue;

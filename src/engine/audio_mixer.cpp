@@ -25,12 +25,34 @@ glm::vec2 pan_gains(const glm::vec3& position, const Listener& l) {
 }
 
 void StreamQueue::push(const float* s, std::size_t frames) {
-    std::lock_guard l(m_);
-    data_.insert(data_.end(), s, s + frames * 2);
+    for (;;) {
+        std::size_t want;
+        {
+            std::lock_guard l(m_);
+            const std::size_t cap = capacity();
+            if (size_ + frames <= cap) {
+                const std::size_t tail = cap ? (head_ + size_) % cap : 0, n1 = std::min(frames, cap - tail);
+                std::copy_n(s, n1 * 2, buf_.data() + tail * 2);
+                std::copy_n(s + n1 * 2, (frames - n1) * 2, buf_.data());
+                size_ += frames;
+                return;
+            }
+            want = std::max({kInitialFrames, cap * 2, size_ + frames});
+        }
+        std::vector<float> bigger(want * 2);  // allocated (and the old ring freed) outside the lock
+        std::lock_guard l(m_);
+        const std::size_t cap = capacity();
+        if (want <= cap) continue;  // grown by another producer meanwhile
+        const std::size_t n1 = std::min(size_, cap - head_);
+        std::copy_n(buf_.data() + head_ * 2, n1 * 2, bigger.data());
+        std::copy_n(buf_.data(), (size_ - n1) * 2, bigger.data() + n1 * 2);
+        buf_.swap(bigger);
+        head_ = 0;
+    }
 }
 std::size_t StreamQueue::queued() const {
     std::lock_guard l(m_);
-    return data_.size() / 2;
+    return size_;
 }
 std::uint64_t StreamQueue::frames_played() const {
     std::lock_guard l(m_);
@@ -38,19 +60,23 @@ std::uint64_t StreamQueue::frames_played() const {
 }
 bool StreamQueue::drained() const {
     std::lock_guard l(m_);
-    return finished_ && data_.empty();
+    return finished_ && !size_;
 }
 std::size_t StreamQueue::pop(float* s, std::size_t frames) {
     std::lock_guard l(m_);
-    const std::size_t n = std::min(frames, data_.size() / 2);
-    std::copy_n(data_.begin(), n * 2, s);
-    data_.erase(data_.begin(), data_.begin() + std::ptrdiff_t(n * 2));
+    const std::size_t n = std::min(frames, size_);
+    if (!n) return 0;
+    const std::size_t cap = capacity(), n1 = std::min(n, cap - head_);
+    std::copy_n(buf_.data() + head_ * 2, n1 * 2, s);
+    std::copy_n(buf_.data(), (n - n1) * 2, s + n1 * 2);
+    head_ = (head_ + n) % cap;
+    size_ -= n;
     played_ += n;
     return n;
 }
 void StreamQueue::clear() {
     std::lock_guard l(m_);
-    data_.clear();
+    head_ = size_ = 0;  // keeps the ring
     played_ = 0;
     finished_ = false;
 }
@@ -202,7 +228,25 @@ void Mixer::mix(float* out, std::size_t frames) {
             if (v.fade <= 0.0f) v.done = true;
         }
     }
-    std::erase_if(voices_, [](const Voice& v) { return v.done; });
+    // Finished voices' buffers go to the graveyard (reserved slots, no allocation) for update() to free.
+    std::erase_if(voices_, [&](Voice& v) {
+        if (!v.done) return false;
+        if (graveyard_.size() + 2 <= graveyard_.capacity()) {  // else (nobody calls update()) freed here
+            if (v.pcm) graveyard_.push_back(std::move(v.pcm));
+            if (v.stream) graveyard_.push_back(std::move(v.stream));
+        }
+        return true;
+    });
 }
+
+void Mixer::update() {
+    {
+        std::lock_guard l(m_);
+        if (graveyard_.empty()) return;
+    }
+    auto dead = reserved(kGraveyard);
+    std::lock_guard l(m_);
+    graveyard_.swap(dead);
+}  // `dead` (the finished buffers) is freed after the lock is released
 
 }  // namespace joa::engine

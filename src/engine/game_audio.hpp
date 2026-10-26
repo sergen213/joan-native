@@ -10,6 +10,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 namespace joa::engine {
@@ -32,7 +33,7 @@ public:
 
     int sounds_3d = 0;  // positional effects that got a mixer voice (stats / tests)
 
-    void world_sound(const game::World&, const game::GameEvent&, const game::Snapshot&, int player);
+    void world_sound(const game::World&, const game::GameEvent&, int player);  // positions: unit_pos_
     void footstep(const game::World&, int unit, const std::string& name, const game::Vec3& at, int player);
     void voices(const game::Mission&);
     void projectiles(const game::Snapshot&);
@@ -51,6 +52,8 @@ public:
     std::map<int, game::Vec3> projectile_pos_; // last known projectile positions (hit sounds after removal)
     std::map<int, int> last_step_;             // unit -> game ms of its last footstep (unit +0x1d6)
     std::map<int, VoiceId> ambient_;           // map trigger index -> emitter voice while the player is inside
+    std::unordered_map<int, const game::Vec3*> unit_pos_;  // on_tick's snapshot: unit id -> position (first hit)
+    const game::Vec3* unit_pos(int id) const;
     VoiceId siege_built_ = 0;                  // last "RTS_SIEGE_009" (workshop 0x46a040 skips 008 while it plays)
     struct EnvSlot {
         int state = 0;  // 0 idle, 1 playing, 2 fading (DAT_00a5cd80[slot])

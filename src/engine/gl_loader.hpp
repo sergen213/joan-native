@@ -30,6 +30,7 @@
     X(PFNGLBINDTEXTUREPROC, glBindTexture)                                          \
     X(PFNGLACTIVETEXTUREPROC, glActiveTexture)                                      \
     X(PFNGLTEXIMAGE2DPROC, glTexImage2D)                                            \
+    X(PFNGLTEXSUBIMAGE2DPROC, glTexSubImage2D)                                      \
     X(PFNGLTEXPARAMETERIPROC, glTexParameteri)                                      \
     X(PFNGLGENERATEMIPMAPPROC, glGenerateMipmap)                                    \
     X(PFNGLGENBUFFERSPROC, glGenBuffers)                                            \
