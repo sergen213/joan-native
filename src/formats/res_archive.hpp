@@ -37,6 +37,10 @@ public:
         return std::span(bytes_).subspan(e.offset, e.size);
     }
     std::optional<std::string_view> text(std::string_view name) const;
+    std::string_view text(const ResEntry& e) const {  // no name lookup (iterating entries() stays linear)
+        const auto d = data(e);
+        return {reinterpret_cast<const char*>(d.data()), d.size()};
+    }
     std::uint32_t end_offset() const { return end_; }   // usually == file size
     std::size_t file_size() const { return bytes_.size(); }
 

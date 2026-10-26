@@ -40,6 +40,7 @@
     X(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays)                            \
     X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)                                  \
     X(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray)                  \
+    X(PFNGLDISABLEVERTEXATTRIBARRAYPROC, glDisableVertexAttribArray)                \
     X(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer)                          \
     X(PFNGLVERTEXATTRIBIPOINTERPROC, glVertexAttribIPointer)                        \
     X(PFNGLDRAWELEMENTSPROC, glDrawElements)                                        \

@@ -213,10 +213,15 @@ public:
                     glEnableVertexAttribArray(7);
                     glVertexAttribPointer(7, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, position)));
                 }
+                glEnableVertexAttribArray(7);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, m.prev_vbo);
                 glBufferData(GL_COPY_WRITE_BUFFER, bytes, nullptr, GL_STREAM_COPY);
                 glBindBuffer(GL_COPY_READ_BUFFER, m.vbo);
                 glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes);
+            } else if (m.prev_vbo) {
+                // The vertex count changed: prev_vbo is smaller than the new mesh, so fetching attribute 7 from it
+                // would read past its end. A disabled attribute reads the constant default instead.
+                glDisableVertexAttribArray(7);
             }
         }
         glBindBuffer(GL_ARRAY_BUFFER, m.vbo);

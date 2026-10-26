@@ -73,8 +73,9 @@ std::optional<TerrainGrid> parse_gri(std::span<const std::uint8_t> bytes, std::s
 }
 
 float TerrainGrid::height_at(float wx, float wy) const {
-    const float fx = std::clamp(wx / kCellSize, 0.0f, float(cells_x));
-    const float fy = std::clamp(wy / kCellSize, 0.0f, float(cells_y));
+    // !(v >= 0) also catches NaN, which std::clamp passes through and int() turns into an out-of-range index.
+    const float fx = !(wx >= 0) ? 0.0f : std::min(wx / kCellSize, float(cells_x));
+    const float fy = !(wy >= 0) ? 0.0f : std::min(wy / kCellSize, float(cells_y));
     const int x0 = std::min(int(fx), cells_x - 1), y0 = std::min(int(fy), cells_y - 1);
     const float tx = fx - x0, ty = fy - y0;
     const float h00 = height(x0, y0), h10 = height(x0 + 1, y0);

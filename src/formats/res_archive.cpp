@@ -84,7 +84,7 @@ std::optional<DbfTable> DbfTable::parse(std::span<const std::uint8_t> bytes, std
         return std::nullopt;
     }
     std::uint32_t off = 1;  // byte 0 of a record is the delete flag
-    while (r.ok() && r.pos() < t.header_len_ && bytes[r.pos()] != 0x0D) {
+    while (r.remaining() > 0 && r.pos() < t.header_len_ && bytes[r.pos()] != 0x0D) {
         DbfField f;
         f.name = r.fixed_string(11);
         f.type = char(r.u8());

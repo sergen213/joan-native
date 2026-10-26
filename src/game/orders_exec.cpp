@@ -481,15 +481,17 @@ void AiSystem::execute_order(Unit& u) {  // OrderQueue_process 0x4baf80
                 units[std::size_t(k)].ranking == 0 && units[std::size_t(k)].unit_class != 0) { t = k; break; }
         if (t < 0) { done(); break; }
         std::vector<int> fresh;
-        while (int(u.members.size()) < kMaxTeam && spend_recruit && spend_recruit(u.nation)) {
-            const int r = w_.spawn_unit(units[std::size_t(t)].code, u.nation, u.pos, u.yaw_deg);
+        const int uid = u.id, nation = u.nation;  // u dangles once spawn_unit reallocates the unit array
+        for (Unit* me = &u; int(me->members.size()) < kMaxTeam && spend_recruit && spend_recruit(nation);
+             me = w_.unit(uid)) {
+            const int r = w_.spawn_unit(units[std::size_t(t)].code, nation, me->pos, me->yaw_deg);
             Unit* v = w_.unit(r);
             if (!v) break;
-            join_team(*v, u.id);
+            join_team(*v, uid);
             st(*v).spawned = 1;
             fresh.push_back(r);
         }
-        Unit& L = *w_.unit(u.id);  // spawn may reallocate the unit array
+        Unit& L = *w_.unit(uid);  // spawn may reallocate the unit array
         for (int r : fresh) {
             Unit* v = w_.unit(r);
             v->pos = {L.pos.x + st(*v).slot.x, L.pos.y + st(*v).slot.y, L.pos.z + st(*v).slot.z};

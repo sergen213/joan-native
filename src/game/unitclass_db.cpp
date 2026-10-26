@@ -58,7 +58,7 @@ std::vector<std::pair<std::string, Kv>> load_kv_res(const std::filesystem::path&
     std::vector<std::pair<std::string, Kv>> out;
     auto res = ResArchive::open(p, err);
     if (!res) return out;
-    for (const auto& e : res->entries()) out.push_back({e.name, Kv{formats::parse_kv_text(res->text(e.name).value_or(""))}});
+    for (const auto& e : res->entries()) out.push_back({e.name, Kv{formats::parse_kv_text(res->text(e))}});
     return out;
 }
 
@@ -130,7 +130,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         if (!res) return nullptr;
         std::vector<formats::GameVar> vars;
         for (const auto& e : res->entries())
-            if (auto v = formats::parse_game_vars(res->text(e.name).value_or(""))) vars.insert(vars.end(), v->begin(), v->end());
+            if (auto v = formats::parse_game_vars(res->text(e))) vars.insert(vars.end(), v->begin(), v->end());
         auto raw = [&](std::string_view sec, std::string_view key) -> const std::string* {
             for (const auto& v : vars)
                 if (formats::iequals(v.section, sec) && formats::iequals(v.key, key)) return &v.value;

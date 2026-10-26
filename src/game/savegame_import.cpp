@@ -107,6 +107,13 @@ bool decode_inventory(std::span<const std::uint8_t> rest, std::span<const std::u
     inv = std::move(out);
     return true;
 }
+// Item ids come straight from the file; one outside the item table would index GameData::items out of bounds.
+void drop_unknown_items(Inventory& inv, std::size_t n_items) {
+    const auto bad = [&](const ItemInstance& it) { return it.item < 0 || std::size_t(it.item) >= n_items; };
+    for (ItemInstance* s : {&inv.melee[0], &inv.melee[1], &inv.ranged, &inv.ammo})
+        if (bad(*s)) *s = {};
+    std::erase_if(inv.bag, bad);
+}
 }  // namespace
 
 std::optional<OriginalSave> import_original_save(std::span<const std::uint8_t> bytes, const GameData& gd, std::string* err) {
@@ -170,7 +177,9 @@ std::optional<OriginalSave> import_original_save(std::span<const std::uint8_t> b
             c.finish = at<std::int16_t>(e, 9), c.para1 = at<std::int16_t>(e, 0xb), c.para2 = at<std::int16_t>(e, 0xd);
             c.enabled = at<std::int16_t>(e, 0xf), c.gold = at<std::int32_t>(e, 0x11), c.exp = at<std::int32_t>(e, 0x15);
             c.awarded = e[0x19];
-            o.end.push_back(std::move(c));
+            // MissionState holds at most 40 (a native save with more is rejected on load); extras are still read
+            // so the following records stay in sync.
+            if (int(o.end.size()) < MissionState::kMaxEndConditions) o.end.push_back(std::move(c));
         }
         if (at<std::int32_t>(g, 0x720) || at<std::int32_t>(g, 0x72c))
             o.notes.push_back("item-hint lists not decoded (element layout unconfirmed)");
@@ -228,7 +237,10 @@ void apply_original_save(Mission& m, const OriginalSave& o) {
             u.medals = s.medals, u.kills = s.kills, u.officer_kills = s.officer_kills;
             w.set_hp(u, s.hp);
             w.set_ep(u, s.ep);
-            if (h.inventory) u.inv = s.inv;   // equipment + bag items with their grid cells (+0x15 / +0x16)
+            if (h.inventory) {  // equipment + bag items with their grid cells (+0x15 / +0x16)
+                u.inv = s.inv;
+                drop_unknown_items(u.inv, w.data().items.size());
+            }
             break;
         }
 }

@@ -1,5 +1,8 @@
 # joa_engine: native client core (platform, input, simulation, camera, render abstraction, GL + Vulkan backends).
 # joan-native: the game executable.
+if(NOT JOA_BUILD_ENGINE)
+  return()
+endif()
 find_package(SDL3 REQUIRED CONFIG)
 find_package(glm REQUIRED CONFIG)
 find_package(ZLIB REQUIRED)

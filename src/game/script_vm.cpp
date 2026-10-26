@@ -84,9 +84,15 @@ namespace {
 // Original string objects are 0x191-byte buffers; copies go through strncpy(..., 400)
 // (FUN_005a1440) and concatenation through strncat to 400 (FUN_005a14f0).
 constexpr size_t kStrMax = 400;
+constexpr int kMaxScriptDepth = 64;  // SCRIPT() nesting cap (self-inclusion would recurse forever)
 Value clip(Value v) {
     if (v.type == ScriptType::String && v.str.size() > kStrMax) v.str.resize(kStrMax);
     return v;
+}
+// clip() into an existing value: copy-assignment reuses dst's string buffer instead of allocating a temporary.
+void clip_into(Value& dst, const Value& src) {
+    dst = src;
+    if (dst.type == ScriptType::String && dst.str.size() > kStrMax) dst.str.resize(kStrMax);
 }
 
 enum class Op : std::uint8_t { Add, Sub, Mul, Div, Pow, Lt, Gt, Le, Ge, Eq, Ne, And, Or };
@@ -435,7 +441,17 @@ struct Vm::Impl {
     }
     void walk(Archive& a, Stmt& s) {
         a.shape(static_cast<std::uint64_t>(s.k) | s.kids.size() << 8 | (s.e ? 1ull << 40 : 0));
-        a.num(s.cur);
+        if (a.mode == Archive::Mode::Read) {  // a resume cursor past the kids would index out of bounds on the next tick
+            const bool commit = a.commit;
+            auto cur = s.cur;
+            a.commit = true;
+            a.num(cur);
+            a.commit = commit;
+            if (cur != 0 && cur >= s.kids.size()) a.ok = false;
+            else if (commit) s.cur = cur;
+        } else {
+            a.num(s.cur);
+        }
         a.num(s.flag);
         if (s.e) walk(a, *s.e);
         for (auto& k : s.kids) walk(a, *k);
@@ -496,7 +512,19 @@ struct Vm::Impl {
         return a.h;
     }
 
-    int run_unit(Unit& u) { return run_block(u.root); }
+    // A script that includes itself (SCRIPT("a.sce") inside a.sce) re-enters its own cursor forever; cap the
+    // nesting instead of overflowing the stack.
+    int run_depth = 0;
+    int run_unit(Unit& u) {
+        if (run_depth >= kMaxScriptDepth) {
+            vm.errors_.push_back(u.path + ": sub-script nesting deeper than " + std::to_string(kMaxScriptDepth));
+            return 1;
+        }
+        ++run_depth;
+        const int r = run_block(u.root);
+        --run_depth;
+        return r;
+    }
 
     // Block executor (root FUN_00649060, ID/INIT/RESET 0x63f790/0x63fb80/0x63fde0).
     int run_block(Stmt& s) {
@@ -621,7 +649,7 @@ struct Vm::Impl {
             error(at, "string/number assignment mismatch (memory corruption in original)");
             return;
         }
-        if (x.type == ScriptType::String) v.v.str = clip(x).str;
+        if (x.type == ScriptType::String) v.v.str.assign(x.str, 0, kStrMax);
         else v.v.bits = x.bits;
     }
 
@@ -738,7 +766,7 @@ struct Vm::Impl {
     void call(Expr& e) {
         for (size_t i = e.args.size(); i-- > 0;) {
             eval(*e.args[i]);
-            e.argv[i] = clip(e.args[i]->val);
+            clip_into(e.argv[i], e.args[i]->val);
         }
         const formats::ScriptExecutor x = e.fn->executor;
         const bool runs = (e.kw == Keyword::Func && x == formats::ScriptExecutor::Func) ||

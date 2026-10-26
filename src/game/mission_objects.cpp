@@ -222,7 +222,7 @@ void MapObjects::load_res(Mission& m, const formats::Vfs& vfs) {
         if (auto a = formats::ResArchive::open(*p))
             for (const auto& e : a->entries()) {
                 ObjRes r;
-                parse_res(r, a->text(e.name).value_or(""), e.name);
+                parse_res(r, a->text(e), e.name);
                 res_.push_back(std::move(r));
             }
     // FUN_0049fdf0: ITEM\*.pro, then each subdirectory recursively.
@@ -248,7 +248,7 @@ void MapObjects::load_res(Mission& m, const formats::Vfs& vfs) {
         if (auto a = formats::ResArchive::open(*p))
             for (const auto& e : a->entries()) {
                 std::string code = e.name;
-                for (const auto& l : formats::parse_kv_text(a->text(e.name).value_or("")))
+                for (const auto& l : formats::parse_kv_text(a->text(e)))
                     if (formats::iequals(trim(l.key), "Code")) { code = first_token(l.value); break; }
                 sell_lists_.push_back(upper(code));
             }

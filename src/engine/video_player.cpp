@@ -196,6 +196,9 @@ bool play_movie(Platform& platform, IRenderer& renderer, Mixer* mixer, const std
     const VoiceId voice = mixer && dec->has_audio() ? mixer->play_stream(dec->audio(), Bus::Movie) : 0;
     const double origin = shown.pts;
     const std::uint64_t t0 = SDL_GetTicksNS();
+    bool audio_done = false;
+    double audio_end = 0;
+    std::uint64_t t_end = 0;
     bool decoding = true, prev_esc = true, prev_click = true;  // a key held from the previous movie must be released first
     RawInput raw;
     for (;;) {
@@ -213,7 +216,16 @@ bool play_movie(Platform& platform, IRenderer& renderer, Mixer* mixer, const std
             if (!dec->next(f)) decoding = false;
             else ahead.push_back(std::move(f));
         }
-        const double clock = origin + (voice ? double(audio->frames_played()) / kOutputRate : double(SDL_GetTicksNS() - t0) * 1e-9);
+        // The audio clock stops once the soundtrack runs out (drained, or starved while the decode-ahead is full because
+        // the audio track is shorter than the video); continue on wall time from there so the last frames still play.
+        if (voice && !audio_done && (audio->drained() || (audio->queued() == 0 && ahead.size() >= 90))) {
+            audio_done = true;
+            audio_end = double(audio->frames_played()) / kOutputRate;
+            t_end = SDL_GetTicksNS();
+        }
+        const double clock = origin + (!voice ? double(SDL_GetTicksNS() - t0) * 1e-9
+                                       : audio_done ? audio_end + double(SDL_GetTicksNS() - t_end) * 1e-9
+                                                    : double(audio->frames_played()) / kOutputRate);
         while (!ahead.empty() && ahead.front().pts <= clock) {
             if (ahead.size() == 1 || ahead[1].pts > clock) upload(std::move(ahead.front()));
             ahead.pop_front();

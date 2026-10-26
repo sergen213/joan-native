@@ -118,11 +118,12 @@ bool AiSystem::set_unit_team(Unit& u, int team_id) {  // 0x657fd0
 
 int AiSystem::recruit_team_member(Unit& u, std::string_view class_code, int n) {  // 0x6584e0
     const int lid = leader_of(u);
+    const int nation = u.nation;  // spawn_unit may reallocate the unit array (u dangles after the first spawn)
     int made = 0;
     for (int i = 0; i < n; ++i) {
         Unit* L = w_.unit(lid);
         if (!L || int(L->members.size()) == kMaxTeam) break;
-        const int r = w_.spawn_unit(class_code, u.nation, L->pos, L->yaw_deg);
+        const int r = w_.spawn_unit(class_code, nation, L->pos, L->yaw_deg);
         Unit* v = w_.unit(r);
         if (!v) break;
         join_team(*v, lid);

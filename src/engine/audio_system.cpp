@@ -272,14 +272,18 @@ bool AudioSystem::start(Channel& c, std::string_view key, Bus bus, bool loop) {
 void AudioSystem::refill(Channel& c) {
     if (!c.file) return;
     std::vector<float> buf;
+    bool rewound_empty = false;  // a looping file that decodes nothing would otherwise rewind forever
     while (c.queue->queued() < std::size_t(kOutputRate)) {  // keep ~1 s queued
         buf.clear();
         if (c.file->read(buf, 4096)) {
             c.queue->push(buf.data(), buf.size() / 2);
-        } else if (!c.loop || !c.file->rewind()) {  // FUN_0059b1c0 restarts a finished looping track
+            rewound_empty = false;
+        } else if (!c.loop || rewound_empty || !c.file->rewind()) {  // FUN_0059b1c0 restarts a finished looping track
             c.queue->finish();
             c.file.reset();
             return;
+        } else {
+            rewound_empty = true;
         }
     }
 }

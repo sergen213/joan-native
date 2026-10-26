@@ -1305,7 +1305,9 @@ private:
         if (b.buffer && b.size >= bytes) return;
         destroy(b);
         b = create_buffer(std::max<VkDeviceSize>(bytes, 4096) * 3 / 2, usage, kHost, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        if (usage != VK_BUFFER_USAGE_STORAGE_BUFFER_BIT || !s.draws.buffer || !s.lights.buffer) return;
+        // Only draws/lights live in set 1; rewriting it for any other buffer (rt_instances is grown after set 1 is bound
+        // in render_remaster) would update a descriptor set in use by the command buffer being recorded.
+        if ((&b != &s.draws && &b != &s.lights) || !s.draws.buffer || !s.lights.buffer) return;
         const VkDescriptorBufferInfo infos[3] = {
             {s.uniforms.buffer, 0, VK_WHOLE_SIZE}, {s.draws.buffer, 0, VK_WHOLE_SIZE}, {s.lights.buffer, 0, VK_WHOLE_SIZE}};
         VkWriteDescriptorSet w[3]{};

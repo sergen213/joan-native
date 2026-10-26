@@ -138,11 +138,13 @@ void AiSystem::execute_orders(World& w, Unit& u) {
         auto_join(u);
         update_formation(u, false, true);
     }
+    const int id = u.id;
     execute_order(u);
-    u.m.task_id = s.task.id;                              // mirror for scripts / UI
-    u.m.task_state = s.task.state;
-    u.m.task_params[0] = s.task.p1, u.m.task_params[1] = s.task.p2, u.m.task_params[2] = s.task.p3;
-    u.m.order_id = s.orders.cur.action;
+    Unit& me = *w.unit(id);                               // an order that spawns units (RECRUIT_TROOP) may reallocate them
+    me.m.task_id = s.task.id;                             // mirror for scripts / UI
+    me.m.task_state = s.task.state;
+    me.m.task_params[0] = s.task.p1, me.m.task_params[1] = s.task.p2, me.m.task_params[2] = s.task.p3;
+    me.m.order_id = s.orders.cur.action;
 }
 
 void AiSystem::think(World& w, Unit& u) {  // Unit_ai_think 0x49d810
