@@ -63,7 +63,10 @@ def tarinfo(name: str, path: Path) -> tuple[tarfile.TarInfo, bytes | None]:
     if stat.S_ISLNK(info.st_mode):
         target = os.readlink(path)
         resolved = PurePosixPath(os.path.normpath(PurePosixPath(name).parent / target))
-        if target.startswith("/") or resolved.parts[:1] == ("..",) or resolved.parts[0] not in TOP:
+        # Same rule as the updater (update.cpp): relative, no "." / ".." / empty components (a ".." can cancel a
+        # component that is itself a payload symlink, so lexical containment is not enough).
+        plain = bool(target) and all(part not in ("", ".", "..") for part in target.split("/"))
+        if target.startswith("/") or not plain or resolved.parts[:1] == ("..",) or resolved.parts[0] not in TOP:
             fail(f"symlink escapes payload: {name} -> {target}")
         entry.type, entry.linkname, entry.mode = tarfile.SYMTYPE, target, 0o777
         return entry, None

@@ -528,7 +528,7 @@ struct Vm::Impl {
     int run_depth = 0;
     int run_unit(Unit& u) {
         if (run_depth >= kMaxScriptDepth) {
-            vm.errors_.push_back(u.path + ": sub-script nesting deeper than " + std::to_string(kMaxScriptDepth));
+            report(u.path + ": sub-script nesting deeper than " + std::to_string(kMaxScriptDepth));
             return 1;
         }
         ++run_depth;
