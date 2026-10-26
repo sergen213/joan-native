@@ -44,7 +44,7 @@ public:
 private:
     std::vector<SoundDef> defs_;
     std::filesystem::path waves_path_;
-    mutable std::optional<formats::ResArchive> waves_;  // ponytail: whole 80 MB file in memory; mmap if RSS matters
+    mutable std::optional<formats::ResArchive> waves_;  // mmapped (ResArchive::open): pages load on first use
     mutable std::vector<std::shared_ptr<const Pcm>> cache_;
 };
 
