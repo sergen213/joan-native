@@ -73,6 +73,7 @@ struct ThrowConsts {
 
 struct ItemDef {
     std::string code, name, item_class;  // item_class = ITEMCLAS code (WEAPON, ENHANCER, ...)
+    bool enhancer = false;               // item_class == "ENHANCER" (set with it: Inv_bonus runs per stat getter)
     int type = 0;                        // 1-based ITEMTYPE row (0xb bow, 0xd arrow, 0x15 red potion...)
     int range = 0;                       // +0x32 weapon reach
     int damage = 0, inc_damage = 0;      // +0x4e / +0x52 (potions: amount)

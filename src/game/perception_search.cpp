@@ -268,21 +268,21 @@ int AiSystem::search_for_unit(Unit& u, std::string_view type, int radius, bool c
     const int cap = radius < 200 ? 2 : radius < 1000 ? 5 : radius < 2000 ? 10 : radius < 3000 ? 20 : 100;
     int accepted = 0;
     const int my_class = class_of(u);
-    // ponytail: linear scan in recno order instead of the scene-sector walk (same candidates, different
-    // visiting order); fine for <= a few hundred units.
-    for (auto& o : w_.units()) {
-        if (accepted > cap) break;
-        if (o.deleted || o.id == u.id) continue;
-        if ((o.hp < 1 && o.lives == 0) || o.retreat == -1) continue;
+    // ponytail: recno order instead of the scene-sector walk (same candidates, different visiting order); the
+    // units within radius of c come from the unit grid (the others fail the dd > r2 test), else a full scan.
+    auto visit = [&](Unit& o) {   // false = stop (cap reached)
+        if (accepted > cap) return false;
+        if (o.deleted || o.id == u.id) return true;
+        if ((o.hp < 1 && o.lives == 0) || o.retreat == -1) return true;
         float dd = d2(c, o.pos);
-        if (dd > r2) continue;
+        if (dd > r2) return true;
         const auto& ot = w_.data().units[std::size_t(o.cls)];
         bool ok = false;
         switch (type[0]) {
         case 'P': ok = o.id == player; break;
-        case 'E':
+        case 'E':   // the line of sight (the costly test) after the remaining pure filters below
             if (o.nation == 0 || !alive_or_player(w_, o, player) || !w_.hostile(u.nation, o.nation)) break;
-            if (!los_ok(o) || !(ot.trigger_mask & 1) || ot.unit_class == 8 || in_cart_slot(o)) break;
+            if (!(ot.trigger_mask & 1) || ot.unit_class == 8 || in_cart_slot(o)) break;
             if (by_place) {
                 auto pl = places.find(place);
                 if (pl == places.end() || !pl->second.contains(o.pos)) break;
@@ -299,13 +299,14 @@ int AiSystem::search_for_unit(Unit& u, std::string_view type, int radius, bool c
         case 'O': ok = o.m.training != 0; break;
         default: break;
         }
-        if (!ok) continue;
+        if (!ok) return true;
         int rad = radius;
         if (ot.unit_class == 0 && rad > 399) rad = int(double(rad) / 1.2);
         const float rr = float(rad) * float(rad);
-        if (dd > rr) continue;
-        if (max_yaw != 0 && int(std::fabs(w_.rel_angle(u, o.pos))) > max_yaw) continue;
-        if (max_pitch != 0 && int(pitch_deg(o)) > max_pitch) continue;
+        if (dd > rr) return true;
+        if (max_yaw != 0 && int(std::fabs(w_.rel_angle(u, o.pos))) > max_yaw) return true;
+        if (max_pitch != 0 && int(pitch_deg(o)) > max_pitch) return true;
+        if (type[0] == 'E' && !los_ok(o)) return true;
         ++accepted;
         switch (u.attack_behaviour) {
         case ai::NEAREST:
@@ -350,6 +351,15 @@ int AiSystem::search_for_unit(Unit& u, std::string_view type, int radius, bool c
             break;
         default: break;
         }
+        return true;
+    };
+    const float rf = std::fabs(float(radius));
+    if (w_.units_in(c.x - rf, c.y - rf, c.x + rf, c.y + rf, search_scan_)) {
+        for (int i : search_scan_)
+            if (!visit(w_.units()[std::size_t(i)])) break;
+    } else {
+        for (auto& o : w_.units())
+            if (!visit(o)) break;
     }
     if (type[0] == 'E' && rand(100) < 51) {
         const Unit* t = w_.unit(u.target);

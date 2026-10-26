@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -143,8 +146,84 @@ void World::delete_unit(int id) {
     if (Unit* h = unit(u->mount)) horse_set_rider(*this, *h, 0);
     if (Unit* r = unit(u->m.rider); r && u->m.active && r->mount == id) ride_horse(*this, *r, 0);
     u->deleted = true;
+    grid_.built = false;   // the dismount moved the rider
     if (brain_) brain_->removed(*this, id);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Unit grid
+
+void World::grid_open(bool on) {
+    grid_.open = on;
+    grid_.built = false;
+    grid_.fixed = units_.size();
+}
+
+void World::grid_build() {
+    UnitGrid& g = grid_;
+    g.built = true;
+    g.loose.clear();
+    g.at.assign(g.fixed, Vec3{});
+    double lo[2] = {0, 0}, hi[2] = {0, 0};
+    bool any = false;
+    for (std::size_t i = 0; i < g.fixed; ++i) {
+        const Unit& u = units_[i];
+        if (u.deleted || !std::isfinite(u.pos.x) || !std::isfinite(u.pos.y)) continue;
+        const double x = u.pos.x, y = u.pos.y;
+        if (!any) lo[0] = hi[0] = x, lo[1] = hi[1] = y, any = true;
+        lo[0] = std::min(lo[0], x), hi[0] = std::max(hi[0], x), lo[1] = std::min(lo[1], y), hi[1] = std::max(hi[1], y);
+    }
+    g.x0 = lo[0], g.y0 = lo[1];
+    g.cell = std::max({256.0, (hi[0] - lo[0]) / 127.0, (hi[1] - lo[1]) / 127.0});   // at most 128 x 128 cells
+    g.nx = int((hi[0] - lo[0]) / g.cell) + 1, g.ny = int((hi[1] - lo[1]) / g.cell) + 1;
+    g.start.assign(std::size_t(g.nx) * std::size_t(g.ny) + 1, 0);
+    std::vector<int> cell_of(g.fixed, -1);
+    for (std::size_t i = 0; i < g.fixed; ++i) {
+        const Unit& u = units_[i];
+        if (u.deleted) continue;
+        g.at[i] = u.pos;
+        if (!std::isfinite(u.pos.x) || !std::isfinite(u.pos.y)) { g.loose.push_back(int(i)); continue; }
+        const int cx = std::clamp(int((double(u.pos.x) - g.x0) / g.cell), 0, g.nx - 1);
+        const int cy = std::clamp(int((double(u.pos.y) - g.y0) / g.cell), 0, g.ny - 1);
+        cell_of[i] = cy * g.nx + cx;
+        ++g.start[std::size_t(cell_of[i]) + 1];
+    }
+    for (std::size_t c = 1; c < g.start.size(); ++c) g.start[c] += g.start[c - 1];
+    g.items.assign(std::size_t(g.start.back()), 0);
+    std::vector<int> fill(g.start.begin(), g.start.end() - 1);
+    for (std::size_t i = 0; i < g.fixed; ++i)   // ascending recno within each cell
+        if (cell_of[i] >= 0) g.items[std::size_t(fill[std::size_t(cell_of[i])]++)] = int(i);
+}
+
+bool World::units_in(float x0, float y0, float x1, float y1, std::vector<int>& out) {
+    out.clear();
+    if (!grid_.open) return false;
+    // Padding covers the float rounding of the callers' distance tests (relative 1e-6 at worst).
+    const double pad = 1.0 + 1e-4 * std::max({std::fabs(double(x0)), std::fabs(double(y0)), std::fabs(double(x1)), std::fabs(double(y1))});
+    const double qx0 = double(x0) - pad, qy0 = double(y0) - pad, qx1 = double(x1) + pad, qy1 = double(y1) + pad;
+    if (!std::isfinite(qx0) || !std::isfinite(qy0) || !std::isfinite(qx1) || !std::isfinite(qy1) || qx1 < qx0 || qy1 < qy0) return false;
+    if (!grid_.built) grid_build();
+    const UnitGrid& g = grid_;
+#ifndef NDEBUG
+    for (std::size_t i = 0; i < g.fixed; ++i)   // the window's contract: binned units have not moved
+        if (!units_[i].deleted && std::memcmp(&units_[i].pos, &g.at[i], sizeof(Vec3)) != 0) {
+            std::fprintf(stderr, "World::units_in: unit %zu moved inside a grid window\n", i + 1);
+            std::abort();
+        }
+#endif
+    auto cell = [&](double v, double o, int n) { return int(std::clamp(std::floor((v - o) / g.cell), 0.0, double(n - 1))); };
+    const int cx0 = cell(qx0, g.x0, g.nx), cx1 = cell(qx1, g.x0, g.nx), cy0 = cell(qy0, g.y0, g.ny), cy1 = cell(qy1, g.y0, g.ny);
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+            const std::size_t c = std::size_t(cy) * std::size_t(g.nx) + std::size_t(cx);
+            out.insert(out.end(), g.items.begin() + g.start[c], g.items.begin() + g.start[c + 1]);
+        }
+    out.insert(out.end(), g.loose.begin(), g.loose.end());
+    if (cy1 > cy0 || cx1 > cx0 || !g.loose.empty()) std::sort(out.begin(), out.end());
+    for (std::size_t i = g.fixed; i < units_.size(); ++i) out.push_back(int(i));   // spawned in this window
+    return true;
+}
+
 Unit* World::unit(int id) {
     return id >= 1 && id <= int(units_.size()) && !units_[id - 1].deleted ? &units_[id - 1] : nullptr;
 }
@@ -242,10 +321,27 @@ const MoveRecord* World::find_move(const Unit& u, int action, std::string_view c
     if (posture < 0) posture = u.posture;
     const int sp = u.special == 4 && action != WALK && action != RUN ? 0 : u.special;
     const bool attack = action == ATTACK || action == H_ATTACK;
+    // Rows of (posture, action, item_using) from the per-table index, visited from the last as the full scan.
+    const int tbl = gd_.units[std::size_t(u.cls)].move_table;
+    if (tbl >= int(move_index_.size())) move_index_.resize(std::size_t(tbl) + 1);
+    MoveIndex& ix = move_index_[std::size_t(tbl)];
+    if (ix.rows != mt->rows.data() || ix.n != mt->rows.size()) {   // first use (tables never change once loaded)
+        ix.rows = mt->rows.data(), ix.n = mt->rows.size();
+        ix.keys.clear();
+        for (std::size_t i = 0; i < ix.n; ++i) ix.keys.push_back({ix.rows[i].position, ix.rows[i].movement, ix.rows[i].item_using, int(i)});
+        std::sort(ix.keys.begin(), ix.keys.end(), [](const MoveKey& a, const MoveKey& b) {
+            return std::tie(a.position, a.movement, a.item_using, a.row) < std::tie(b.position, b.movement, b.item_using, b.row);
+        });
+    }
+    const MoveKey want{posture, action, u.item_using, 0};
+    auto lo = std::lower_bound(ix.keys.begin(), ix.keys.end(), want, [](const MoveKey& a, const MoveKey& b) {
+        return std::tie(a.position, a.movement, a.item_using) < std::tie(b.position, b.movement, b.item_using);
+    });
+    auto hi = lo;
+    while (hi != ix.keys.end() && hi->position == posture && hi->movement == action && hi->item_using == u.item_using) ++hi;
     const MoveRecord* best[4] = {};  // [special fallback][combo mismatch]
-    for (auto it = mt->rows.rbegin(); it != mt->rows.rend(); ++it) {
-        const MoveRecord& r = *it;
-        if (r.position != posture || r.movement != action || r.item_using != u.item_using) continue;
+    for (auto it = hi; it != lo;) {
+        const MoveRecord& r = mt->rows[std::size_t((--it)->row)];
         if (r.special != sp && r.special != 0) continue;
         const bool cm = r.combo == combo;
         if (!cm && attack) continue;
@@ -581,12 +677,14 @@ void World::tick_units(const InputFrame& in) {
     auto tier = [](int lo, int hi) { return [=](const Unit& u) { return u.lod_tier >= lo && u.lod_tier <= hi; }; };
     pass(tier(2, 2), 0), pass(tier(2, 2), 1);  // pass 1 (phase 0 then 1 per unit in the original; equivalent)
     pass(tier(3, 99), 0), pass(tier(3, 99), 1);
+    grid_open(true);   // phases 2-3 move no unit (orders and AI steer through velocities, paths and actions)
     pass([](const Unit& u) { return u.lod_tier <= 1 && u.rank >= 4; }, 2);
     pass([](const Unit& u) { return u.lod_tier <= 1 && u.rank < 4; }, 2);
     pass(tier(2, 2), 2), pass(tier(3, 3), 2), pass(tier(4, 99), 2);
     pass([](const Unit& u) { return u.lod_tier <= 1 && u.rank >= 4; }, 3);
     pass(tier(0, 1), 3);   // generals/kings near the player think twice per tick (quirk)
     pass(tier(2, 2), 3), pass(tier(3, 3), 3), pass(tier(4, 99), 3);
+    grid_open(false);
 
     process_projectiles();   // #9 ThrowItem manager
     process_triggers();      // #10 Trigger_process
@@ -915,18 +1013,20 @@ void World::deliver_trigger(const Trigger& t) {
     if (t.type == 1 || t.type == 0x400) {
         if (!src || !is_attacking(src->action)) return;
     }
+    if (t.target_id > 0) {   // one target: the only unit the scan below could match (no distance test)
+        Unit* d = unit(t.target_id);
+        if (d && !(t.src_kind == 1 && d->id == t.sender) && (gd_.units[d->cls].trigger_mask & unsigned(t.type))) on_attack_message(*d, t);
+        return;
+    }
     const bool area_cyl = t.type == 0x40 || t.type == 0x2000 || t.type == 0x4000;
     for (size_t i = 0; i < units_.size(); ++i) {
         Unit& d = units_[i];
         if (d.deleted || (t.src_kind == 1 && d.id == t.sender)) continue;
-        if (t.target_id > 0 && d.id != t.target_id) continue;
         if (!(gd_.units[d.cls].trigger_mask & unsigned(t.type))) continue;
         const float dx = d.pos.x - t.pos.x, dy = d.pos.y - t.pos.y, dz = d.pos.z - t.pos.z;
-        if (t.target_id <= 0) {
-            if (area_cyl) {
-                if (dx * dx + dy * dy > t.radius * t.radius || std::fabs(dz) > t.radius) continue;
-            } else if (dx * dx + dy * dy + dz * dz > t.radius * t.radius) continue;
-        }
+        if (area_cyl) {
+            if (dx * dx + dy * dy > t.radius * t.radius || std::fabs(dz) > t.radius) continue;
+        } else if (dx * dx + dy * dy + dz * dz > t.radius * t.radius) continue;
         if (on_attack_message(d, t) == 2) break;   // down attack / throw stop the scan
     }
 }
@@ -1036,6 +1136,8 @@ void World::serialize(std::vector<std::uint8_t>& out) const {
 bool World::deserialize(std::span<const std::uint8_t> in) {
     Reader rd{in};
     Impl::visit(*this, rd);
+    grid_open(false);
+    ++load_gen_;
     return rd.ok && rd.pos == in.size();
 }
 std::uint64_t World::hash() const {

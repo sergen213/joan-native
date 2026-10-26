@@ -10,6 +10,7 @@ int main() {
         ItemDef d;
         d.code = "T" + std::to_string(gd.items.size());
         d.item_class = cls;
+        d.enhancer = d.item_class == "ENHANCER";
         d.type = type;
         d.primary_effect = primary;
         d.damage = dmg, d.inc_damage = inc, d.min_level = 1;

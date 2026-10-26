@@ -252,6 +252,7 @@ std::unique_ptr<GameData> GameData::load(const std::filesystem::path& dir, std::
         it.code = kv.str("Code").empty() ? rec : kv.str("Code");
         it.name = kv.str("Name");
         it.item_class = upper(tok(kv.str("ItemClass")));
+        it.enhancer = it.item_class == "ENHANCER";
         const std::string ty = kv.str("ItemType");
         for (size_t k = 0; k < itemtypes.size(); ++k)
             if (formats::iequals(itemtypes[k], ty)) { it.type = int(k) + 1; break; }
