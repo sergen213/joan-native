@@ -18,3 +18,4 @@
 /build*/
 /work/
 __pycache__/
+!/CONTRIBUTING.md

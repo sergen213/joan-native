@@ -13,5 +13,6 @@ ctest --test-dir build --output-on-failure
 
 ## License
 
-GPL-3.0-or-later (`LICENSE`). *Wars and Warriors: Joan of Arc* and its data are © Enlight Software and are not
-included; third-party components: [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).
+Source-available, all rights reserved (`LICENSE`); contributions via pull request only (`CONTRIBUTING.md`). Versions
+published before this change remain under GPL-3.0-or-later. *Wars and Warriors: Joan of Arc* and its data are
+© Enlight Software and are not included; third-party components: [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).
