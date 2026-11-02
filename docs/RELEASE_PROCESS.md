@@ -98,7 +98,8 @@ joan-native and no `joa-*` tools are installed, so current releases have three c
 ## Key management
 
 - Production public key: `packaging/release/update_pubkey.txt` (base64 raw 32 bytes), compiled into
-  `joa-updater` at configure time. Current key: `dtJpUuwS8OO5af1s3I4aC4/tfJaQMJd5Eoh0Her5coo=`.
+  `joa-updater` at configure time. Current key: `bkC8czgjWGDJhSQLXyJA7+MPhzMt6Wl8VKzeusE4wMo=` (since
+  0.1.0-alpha.20; that release was signed with the previous key `dtJpUuwS8OO5af1s3I4aC4/tfJaQMJd5Eoh0Her5coo=`).
 - Production private key: generated on the maintainer workstation at
   `~/.local/share/joan-native-release-keys/update-ed25519.key` (mode 0600, base64 raw 32-byte seed,
   outside the repository). Never commit or print it; keep an offline backup. Losing it means
