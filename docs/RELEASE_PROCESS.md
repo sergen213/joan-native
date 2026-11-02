@@ -110,8 +110,11 @@ joan-native and no `joa-*` tools are installed, so current releases have three c
 - Dev/test keys: `packaging/release/sign_manifest.py --generate-key work/updater/dev-ed25519.key`
   (work/ is gitignored). The CTest generates throwaway keys in a temp dir.
 - Rotation: generate a new key, put its public key in `update_pubkey.txt`, ship one release signed
-  with the **old** key (its payload contains the updater with the new key), then switch the CI
-  secret. A compromised key cannot be revoked remotely: publish an advisory and require reinstall.
+  with the **old** key (its payload contains the updater with the new key; for that tag `release.yml`
+  checks and verifies against the old public key, as in v0.1.0-alpha.20), then switch the CI secret
+  and restore the normal check. Updaters only consider the highest release, so an install that has
+  not taken the transition release (or rolled back past it) cannot verify later releases and needs
+  a new AppImage. A compromised key cannot be revoked remotely: publish an advisory and require reinstall.
 
 ```sh
 python3 packaging/release/sign_manifest.py --generate-key NEWKEY   # 0600; prints public key only

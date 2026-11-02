@@ -41,9 +41,8 @@ jobs:
         run: |
           test -n "$JOA_UPDATE_SIGNING_KEY" || { echo "Secret JOA_UPDATE_SIGNING_KEY is not configured"; exit 1; }
           actual=$(python3 packaging/release/sign_manifest.py --public-key)
-          # Key rotation (0.1.0-alpha.20 only): signed with the previous key, ships the new update_pubkey.txt.
-          test "$actual" = "dtJpUuwS8OO5af1s3I4aC4/tfJaQMJd5Eoh0Her5coo=" \
-            || { echo "JOA_UPDATE_SIGNING_KEY is not the previous (rotation) key"; exit 1; }
+          test "$actual" = "$(tr -d '[:space:]' < packaging/release/update_pubkey.txt)" \
+            || { echo "JOA_UPDATE_SIGNING_KEY does not match packaging/release/update_pubkey.txt"; exit 1; }
       - name: Cache LGPL FFmpeg + pinned downloads
         uses: actions/cache@v4
         with:
@@ -67,7 +66,7 @@ jobs:
             --work-dir "$RUNNER_TEMP/release-work" --output-dir "$DIST"
       - name: Verify signature, AppImage and license audit
         run: |
-          python3 packaging/release/sign_manifest.py --verify "$DIST/manifest.json" --public dtJpUuwS8OO5af1s3I4aC4/tfJaQMJd5Eoh0Her5coo=
+          python3 packaging/release/sign_manifest.py --verify "$DIST/manifest.json"
           mkdir -p "$RUNNER_TEMP/checks" && ln -s "$DIST" "$RUNNER_TEMP/checks/dist" && chown -R ci: "$RUNNER_TEMP/checks"
           su ci -c "python3 tests/release/release_checks.py appimage --out $RUNNER_TEMP/checks \
             && python3 tests/release/release_checks.py license-audit --out $RUNNER_TEMP/checks"
