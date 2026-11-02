@@ -11,7 +11,7 @@ license_audit, install_flow, product_update, selftest), and the 30-test legitima
 
 | Phase | Status | Evidence |
 |---|---|---|
-| 0 Existing projects | Done | [EXISTING_PROJECT_AUDIT](EXISTING_PROJECT_AUDIT.md) |
+| 0 Existing projects | Done | — |
 | 1 Community work | Done: FOV fix hooks byte-matched in GOG `joan.exe` (0x7674D1/0x7674DA); Camera Fix = NOP at 0x431893; HD Update v0.95 inventoried (not redistributable) | [EXISTING_MODS_AND_TOOLS](EXISTING_MODS_AND_TOOLS.md), [CAMERA_AND_WIDESCREEN](CAMERA_AND_WIDESCREEN.md) |
 | 2 Source audit / engine ID | Done: Enlight in-house C++ engine, MSVC 6, D3D8 + DInput8 + DSound/OpenAL + WMF9; legal/asset policy | [SOURCE_AUDIT](SOURCE_AUDIT.md), [ASSET_RIGHTS](ASSET_RIGHTS.md), [ENGINE_IDENTIFICATION](ENGINE_IDENTIFICATION.md) |
 | 3 Ghidra | Done: project + full decompile export (18,802 functions), ~1,100 named functions, rerunnable scripts `tools/ghidra/` | [REVERSE_ENGINEERING](REVERSE_ENGINEERING.md), [reverse-engineering/](reverse-engineering/) |
