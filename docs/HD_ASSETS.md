@@ -3,7 +3,7 @@
 Code: `src/engine/hd_pack.{hpp,cpp}` (pack resolution, lookup, material class, PNG/DDS loading),
 `src/engine/assets_cache.cpp` (overrides + `IRenderer::set_material_maps`), `src/engine/png.cpp`
 (`decode_png`), `tools/hd-upscale/`, `joa-install hd-import` (`src/install/`). Tests: `engine.hd_pack`,
-`tools.hd_upscale`, `install.hd_import`. Spec: `goal.txt` §13. Rights: `docs/ASSET_RIGHTS.md`.
+`tools.hd_upscale`, `install.hd_import`. Rights: `docs/ASSET_RIGHTS.md`.
 
 The port ships no HD content. A pack is a read-only directory the user creates (from their own game
 with `hd-upscale`) or imports (the community HD Update, downloaded by the user). Packs are never

@@ -36,7 +36,7 @@ The launcher looks for `joan-native`, `joa-updater` (and the updater swaps `joa-
 
 | Section | Key | Values | Default |
 |---|---|---|---|
-| `renderer` | `backend` | `opengl` \| `vulkan` | `opengl` (engine Vulkan backend not available yet) |
+| `renderer` | `backend` | `opengl` \| `vulkan` | `opengl` |
 | `renderer` | `preset` | `original` \| `enhanced` \| `ultra` \| `custom` | `enhanced` (launcher); the engine without a settings file uses `original` |
 | `graphics` | `hd_packs` | comma list of pack names / absolute dirs, first wins ([HD_ASSETS.md](HD_ASSETS.md)); works with every preset | empty |
 | `graphics` | `pbr`, `normal_maps`, `ibl`, `hdr`, `ssao`, `volumetric_fog`, `particle_lighting` | bool; read only when `preset=custom` (unset keys = Enhanced values) | Enhanced |
@@ -86,5 +86,6 @@ game_dir=
 
 - Controller button remapping lives in the game (Options → Input → Input Method Gamepad/Joystick → Remap Keys, stored
   in options.ini, docs/PLAYING.md "Gamepad"); the launcher only edits deadzone/sensitivity (no `rumble` checkbox yet).
-- The `joa-updater` integration is untested end to end here (the updater is built separately).
+- The launcher's Update / Roll Back buttons are not driven by an automated test; the updater they call is
+  (`updater.e2e`, `release.product_update`, docs/RELEASE_PROCESS.md).
 - No in-launcher log viewer; Open Logs opens the folder in the desktop file manager.

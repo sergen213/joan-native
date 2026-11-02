@@ -1,6 +1,6 @@
 # Progress
 
-Status per roadmap phase (goal.txt §24). "Verified" means exercised by a command/test whose result is recorded in the
+Status per roadmap phase. "Verified" means exercised by a command/test whose result is recorded in the
 linked document; implementation, smoke tests and parity with the original are separate claims.
 
 Last full verification (2026-10-15, RX 7900 XTX/RADV, CachyOS, `build/` RelWithDebInfo, `-DJOA_FFMPEG_PREFIX=work/tools/ffmpeg-prefix`):
@@ -17,7 +17,7 @@ license_audit, install_flow, product_update, selftest), and the 30-test legitima
 | 3 Ghidra | Done: project + full decompile export (18,802 functions), ~1,100 named functions, rerunnable scripts `tools/ghidra/` | [REVERSE_ENGINEERING](REVERSE_ENGINEERING.md), [reverse-engineering/](reverse-engineering/) |
 | Dynamic reference | Done: original run under Wine/Xvfb, 94 screenshots + videos, D3D8 params, file load order; differential original-vs-port harness with live memory reads (mission 1: stats, movement, damage, block, archers, potion, XP, aggro match; 2 port bugs fixed) | [ORIGINAL_BEHAVIOR](reverse-engineering/ORIGINAL_BEHAVIOR.md), [DIFFERENTIAL_VERIFICATION](reverse-engineering/DIFFERENTIAL_VERIFICATION.md) |
 | 4 Assets / formats | Done: every format parsed and validated over all original files (meshes 1228+588, anims 357, DDS 4346, RES 35, maps, scripts, saves) | [ASSET_FORMATS](ASSET_FORMATS.md) |
-| 5 Build infra | Done: CMake C++20, CTest, sanitizer option, own Ghidra/reference tooling | README |
+| 5 Build infra | Done: CMake C++20, CTest, sanitizer option, own Ghidra/reference tooling | [BUILDING](BUILDING.md) |
 | 6 Gameplay + OpenGL | Done: native World sim (combat, controller, root motion, items, progression), script VM (399/407 builtins; all 270 used), AI/troops/navmesh, mounts/siege/gates/multimap, interact; OpenGL original-look renderer | [GAMEPLAY_IMPLEMENTATION](GAMEPLAY_IMPLEMENTATION.md), [GRAPHICS_ROADMAP](GRAPHICS_ROADMAP.md) |
 | 7 Camera / widescreen / input | Done: Hor+ preserving 45° vFOV (4:3…32:9, custom), 4:3 UI safe area + edge anchoring, original 55 bindings, remap, gamepad | [CAMERA_AND_WIDESCREEN](CAMERA_AND_WIDESCREEN.md), [PLAYING](PLAYING.md) |
 | 8 Campaign progression | Verified by the test bot: one legitimate CTest chain wins missions 1–8 through the Ending (1–4 Normal, 5–8 Easy) with carried progression; scripted play-through menu → mission 1 → save/load → win → mission 2 in GL and VK | [SAVES_AND_CAMPAIGN](SAVES_AND_CAMPAIGN.md) §8.1 |
